@@ -10,7 +10,7 @@
   "crons": [
     {
       "path": "/api/cron/alerts",
-      "schedule": "*/15 * * * *"
+      "schedule": "15 10 * * 1-5"
     }
   ],
   "routes": [
