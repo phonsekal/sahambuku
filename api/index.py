@@ -1036,7 +1036,7 @@ def idx_edge_quota_out() -> bool:
 def _bandarmology_note(ticker: str = "") -> str:
     """Catatan jujur kenapa data bandarmology tidak tampil (bukan instruksi membingungkan)."""
     if idx_edge_quota_out():
-        return ("Kuota harian API Broker Summary (1000 req/hari) sudah habis hari ini — "
+        return ("Kuota harian API Broker Summary sudah habis hari ini — "
                 "bandarmology otomatis kembali besok. Bisa tambah limit di "
                 "stock.arjum.com → Usage Analytics & Limit.")
     if not IDX_EDGE_API_KEYS:
@@ -1049,11 +1049,11 @@ def _bandarmology_note(ticker: str = "") -> str:
 def _screener_bandar_note() -> str:
     """Catatan bandarmology untuk hasil screener (tahu kondisi kuota API)."""
     if idx_edge_quota_out():
-        return ("Kuota harian API Broker Summary (1000 req/hari) sudah habis hari ini — "
+        return ("Kuota harian API Broker Summary sudah habis hari ini — "
                 "kriteria BANDAR & kolom bandarmology aktif kembali besok.")
     if IDX_EDGE_API_KEYS:
         return ("Broker Summary & akumulasi bandar aktif dari IDX Edge PRO (kuota "
-                "~1000 req/hari/key; data dicache 24 jam; broker summary hanya "
+                "sesuai paket akun; data dicache 24 jam; broker summary hanya "
                 "diambil untuk saham yang lolos).")
     return ("Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
             "kriteria swing memakai proksi nilai transaksi.")
@@ -1438,61 +1438,109 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
     }
 
 
+def _idx_edge_key_fp(key: str) -> str:
+    """Fingerprint key (jangan simpan key asli di penyimpanan eksternal)."""
+    import hashlib
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
+
+
+# Key yang kuotanya habis (per hari). Disimpan sebagai fingerprint di Upstash
+# agar berlaku lintas instance/cold start, lalu di-skip dalam rotasi.
+IDX_EDGE_DEAD_KEYS: set = set()
+_IDX_DEAD_KEYS_LOADED = False
+
+
+def _persist_dead_keys() -> None:
+    """Simpan daftar key yang kuotanya habis sampai reset WIB (agar dicoba lagi besok)."""
+    if SYNC_ENABLED:
+        ttl = max(60, int(_idx_edge_quota_until() - time.time()))
+        _upstash_set("ci:idx_edge_dead_keys",
+                     json.dumps(sorted(IDX_EDGE_DEAD_KEYS)), ttl=ttl)
+
+
+def _ensure_dead_keys_loaded() -> None:
+    global IDX_EDGE_DEAD_KEYS, _IDX_DEAD_KEYS_LOADED
+    if _IDX_DEAD_KEYS_LOADED:
+        return
+    _IDX_DEAD_KEYS_LOADED = True
+    raw = _upstash_get("ci:idx_edge_dead_keys") if SYNC_ENABLED else None
+    if raw:
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                IDX_EDGE_DEAD_KEYS = {str(x) for x in parsed}
+        except Exception:
+            pass
+
+
+def _idx_edge_live_keys() -> List[str]:
+    """Semua key yang kuotanya masih tersedia."""
+    _ensure_dead_keys_loaded()
+    return [k for k in IDX_EDGE_API_KEYS if _idx_edge_key_fp(k) not in IDX_EDGE_DEAD_KEYS]
+
+
 def _idx_edge_next_key() -> Optional[str]:
-    """Rotasi key API (membagi kuota harian antar key)."""
+    """Rotasi key API (membagi kuota antar key), melewati key yang kuotanya habis."""
     global _IDX_EDGE_KEY_IDX
-    if not IDX_EDGE_API_KEYS:
+    live = _idx_edge_live_keys()
+    if not live:
         return None
-    key = IDX_EDGE_API_KEYS[_IDX_EDGE_KEY_IDX % len(IDX_EDGE_API_KEYS)]
+    key = live[_IDX_EDGE_KEY_IDX % len(live)]
     _IDX_EDGE_KEY_IDX += 1
     return key
 
 
 def idx_edge_get(path: str, params: Dict[str, Any], cache_key: str = "",
                  ttl: int = IDX_EDGE_HIST_TTL) -> Optional[dict]:
-    """GET ke IDX Edge PRO API dengan header X-API-Key, rotasi key, dan cache in-memory.
-
-    Bila API menjawab "kuota harian habis", aktifkan circuit breaker sampai
-    tengah malam WIB agar tidak membuang waktu/request pada panggilan berikutnya.
-    """
+    """GET ke IDX Edge PRO API: rotasi antar key, otomatis melewati key yang
+    kuotanya habis (429), dan hanya mengaktifkan circuit breaker global bila
+    SEMUA key habis."""
     global IDX_EDGE_QUOTA_UNTIL
     if not IDX_EDGE_API_KEYS:
         return None
+    _ensure_dead_keys_loaded()
     if time.time() < IDX_EDGE_QUOTA_UNTIL:
-        return None  # kuota API harian habis -> short-circuit
+        return None  # semua key kuotanya habis -> short-circuit sampai reset WIB
     ck = cache_key or f"{path}:{json.dumps(params, sort_keys=True)}"
     now = time.time()
     hit = IDX_EDGE_CACHE.get(ck)
     if hit and now - hit["ts"] < ttl:
         return hit["data"]
-    key = _idx_edge_next_key()
     qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
     url = f"{IDX_EDGE_API_URL}{path}" + (f"?{qs}" if qs else "")
-    try:
-        req = urllib.request.Request(url, headers={"X-API-Key": key, "User-Agent": "Mozilla/5.0"})
-        with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        # API menjawab 429 (kuota harian habis) -> aktifkan circuit breaker
+    tried_all = True
+    for key in _idx_edge_live_keys():
         try:
-            err = json.loads(e.read().decode("utf-8"))
+            req = urllib.request.Request(url, headers={"X-API-Key": key, "User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=25) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+        except urllib.error.HTTPError as e:
+            # API menjawab 429 (kuota key ini habis) -> skip, coba key lain
+            try:
+                err = json.loads(e.read().decode("utf-8"))
+            except Exception:
+                err = {}
+            if isinstance(err, dict) and isinstance(err.get("detail"), str) \
+                    and "kuota" in err["detail"].lower():
+                IDX_EDGE_DEAD_KEYS.add(_idx_edge_key_fp(key))
+                _persist_dead_keys()
+                continue
+            return None
         except Exception:
-            err = {}
-        if isinstance(err, dict) and isinstance(err.get("detail"), str) \
-                and "kuota" in err["detail"].lower():
-            IDX_EDGE_QUOTA_UNTIL = _idx_edge_quota_until()
-            _quota_persist()
-        return None
-    except Exception:
-        return None
-    if not isinstance(data, dict):
-        return None
-    if isinstance(data.get("detail"), str) and "kuota" in data["detail"].lower():
+            return None
+        if not isinstance(data, dict):
+            continue
+        if isinstance(data.get("detail"), str) and "kuota" in data["detail"].lower():
+            IDX_EDGE_DEAD_KEYS.add(_idx_edge_key_fp(key))
+            _persist_dead_keys()
+            continue
+        IDX_EDGE_CACHE[ck] = {"ts": now, "data": data}
+        return data
+    # Semua key yang dicoba habis kuotanya -> matikan sementara sampai reset WIB
+    if tried_all:
         IDX_EDGE_QUOTA_UNTIL = _idx_edge_quota_until()
         _quota_persist()
-        return None
-    IDX_EDGE_CACHE[ck] = {"ts": now, "data": data}
-    return data
+    return None
 
 
 def fetch_idx_history(ticker: str, limit: int = 200) -> Optional[pd.DataFrame]:

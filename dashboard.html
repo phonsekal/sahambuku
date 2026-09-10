@@ -1307,7 +1307,7 @@ getJSON("/api/health").then(d => {
     const b = document.createElement("div");
     b.id = "quotaBanner";
     b.className = "mb-4 text-xs px-4 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-300";
-    b.textContent = "⚠️ Kuota harian API Broker Summary (1000 req/hari) sudah habis — data bandarmology (ACC/DIS, value share) aktif lagi besok. Tambah limit di stock.arjum.com → Usage Analytics & Limit.";
+    b.textContent = "⚠️ Kuota harian API Broker Summary sudah habis — data bandarmology (ACC/DIS, value share) aktif lagi besok. Tambah limit di stock.arjum.com → Usage Analytics & Limit.";
     document.querySelector("header").insertAdjacentElement("afterend", b);
   }
 }).catch(() => {
