@@ -3329,11 +3329,12 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
         base = {"ticker": strip_suffix(tk), "price": num(price, 2),
                 "qty": h.get("qty"), "avg": h.get("avg")}
         out: List[dict] = []
-        # TP/SL server dihitung relatif harga pasar SEKARANG, bukan harga beli (avg).
-        # Saat harga turun, TP ikut turun -> "TP hampir tercapai" jadi palsu untuk
-        # posisi minus. TP hanya bermakna bila di ATAS harga beli (profit nyata).
+        # TP/SL server dihitung relatif harga pasar SEKARANG, bukan harga beli (avg),
+        # dan TP bisa hanya +1% di atas harga (saat harga menempel resistance). Agar
+        # alert "Dekat TP"/"TP tercapai" tidak menyala untuk posisi minus: TP hanya
+        # bermakna bila posisi SUDAH profit nyata (harga sekarang > harga beli).
         avg = h.get("avg")
-        tp_valid = bool(rm.get("take_profit")) and (not avg or rm["take_profit"] > avg)
+        tp_valid = bool(rm.get("take_profit")) and (not avg or price > avg)
         if rm.get("stop_loss") and price <= rm["stop_loss"]:
             out.append({**base, "type": "SL", "level": num(rm["stop_loss"], 2),
                         "message": f"🛑 {strip_suffix(tk)} menyentuh STOP LOSS ({num(rm['stop_loss'], 2)}) — harga {num(price, 2)}"})

@@ -1128,7 +1128,7 @@ function renderPortoSummary() {
     const c = p.qty * p.avg, v = p.qty * q.market.last_price;
     cost += c; value += v;
     const rm = q.risk_management || {};
-    if (rm.take_profit && q.market.last_price >= rm.take_profit) tpHit++;
+    if (rm.take_profit && q.market.last_price >= rm.take_profit && q.market.last_price > (Number(p.avg) || 0)) tpHit++;
     if (rm.stop_loss && q.market.last_price <= rm.stop_loss) slHit++;
   }
   const pl = value - cost, plPct = cost > 0 ? (pl / cost) * 100 : null;
@@ -1145,11 +1145,13 @@ function holdingStatus(p, q) {
   const price = q.market.last_price, rm = q.risk_management || {};
   const rsi = q.indicators ? q.indicators.rsi14 : null;
   const act = q.signal ? q.signal.action : "";
-  // TP/SL dari server dihitung relatif harga pasar SEKARANG, bukan harga beli.
-  // Saat harga turun, TP ikut turun sehingga "Dekat TP" bisa muncul padahal posisi
-  // minus (palsu). TP hanya bermakna bila di ATAS harga beli (profit nyata).
+  // TP/SL dari server dihitung relatif harga pasar SEKARANG, bukan harga beli,
+  // dan TP bisa hanya +1% di atas harga (saat harga menempel resistance). Agar
+  // "Dekat TP"/"TP tercapai" tidak menyala untuk posisi minus: status TP hanya
+  // muncul bila posisi SUDAH profit nyata (harga sekarang > harga beli). Posisi
+  // minus = belum ada untung yang bisa di-take.
   const avg = Number(p.avg) || 0;
-  const tpValid = rm.take_profit && (!avg || rm.take_profit > avg);
+  const tpValid = rm.take_profit && price > avg;
   if (rm.stop_loss && price <= rm.stop_loss) return { label: "🛑 SL tersentuh — pertimbangkan cut loss", cls: "text-rose-400 font-semibold" };
   if (tpValid && price >= rm.take_profit) return { label: "🎯 TP tercapai — pertimbangkan take profit", cls: "text-emerald-400 font-semibold" };
   if (tpValid && price >= rm.take_profit * 0.98) return { label: "🔥 Dekat TP (≤2%) — siapkan take profit", cls: "text-emerald-300" };
