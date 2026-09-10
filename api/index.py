@@ -2482,13 +2482,14 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "book_confirm": result.get("book_confirm")}
     item["data_date"] = (str(df.index[-1].date()) if hasattr(df.index[-1], "date")
                           else str(df.index[-1]))
-    if include_signal:
+    if include_signal or criteria == "koreksi":
         item["signal"] = quick_signal(df)
 
     # Broker Summary (Bab 3-7): ditampilkan bila lolos kriteria, atau wajib untuk
-    # kriteria "bandar" (ACC + value share Top Buyer >= 60% per buku).
+    # kriteria "bandar" (ACC + value share Top Buyer >= 60% per buku) dan
+    # "koreksi" (butuh AVG bandar & status ACC/DIS untuk level pantauan).
     bandar_used = 0
-    need_bandar = criteria == "bandar" or (include_bandarmology and result["eligible"])
+    need_bandar = criteria in ("bandar", "koreksi") or (include_bandarmology and result["eligible"])
     if need_bandar and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
         bs = fetch_idx_broker_summary(tk)
         if bs:
@@ -2520,6 +2521,30 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         item["criteria_met"] = [label] if label else []
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": sc >= 70, "bandar_used": bandar_used}
+
+    if criteria == "koreksi":
+        # Kandidat BELI KOREKSI: kualitas kuat (skor >= 70) + momentum sedang
+        # koreksi (sinyal SELL). BUKAN ajakan beli sekarang — daftar pantau:
+        # tunggu konfirmasi reversal (MACD cross up / bertahan di support /
+        # breakout AVG bandar) sebelum entry. AVG bandar = support psikologis.
+        sc = (item.get("buy_score") or {}).get("score") or 0
+        sig = str(item.get("signal") or "")
+        b = item.get("bandarmology") or {}
+        last = float(df["Close"].iloc[-1])
+        sr = find_sr_zones(df)
+        sup = [z["price"] for z in sr if z["type"] == "support" and z["price"] < last]
+        bavg = b.get("bandar_avg_price")
+        koreksi_ok = sc >= 70 and sig in ("SELL", "STRONG SELL")
+        item["koreksi_info"] = {
+            "nearest_support": num(max(sup), 2) if sup else None,
+            "support_distance_pct": num((last / max(sup) - 1) * 100, 1) if sup else None,
+            "bandar_avg_price": bavg,
+            "bandar_avg_distance_pct": num((last / bavg - 1) * 100, 1) if bavg else None,
+            "bandar_status": b.get("status"),
+        }
+        item["criteria_met"] = ["BELI KOREKSI"] if koreksi_ok else []
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": koreksi_ok, "bandar_used": bandar_used}
 
     return {"tk": tk, "skipped": False, "item": item,
             "eligible": bool(result["eligible"]), "bandar_used": bandar_used}
@@ -3605,7 +3630,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),

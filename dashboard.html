@@ -94,6 +94,7 @@
         <option value="bsjp">Beli Sore Jual Pagi</option>
         <option value="bandar">Bandar (ACC + Value Share ≥60%)</option>
         <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
+        <option value="koreksi">🛒 Beli Koreksi (Kualitas Kuat + SELL)</option>
       </select>
       <select id="scLimit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="5">5 saham</option>
@@ -918,16 +919,22 @@ function renderScan(d) {
     $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : "Tidak ada saham yang lolos kriteria pada halaman ini."}</div>`;
     return;
   }
-  let h = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><table class="w-full text-sm min-w-[820px]">
+  const isKoreksi = d.criteria === "koreksi";
+  let h = isKoreksi
+    ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
+    : "";
+  h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><table class="w-full text-sm min-w-[820px]">
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
+      ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
       <th class="text-center px-3" title="Konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">✓ Buku</th>
-      <th class="text-center px-3" title="Skor komposit sinyal beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
+      <th class="text-center px-3" title="Skor komposit kualitas beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari">Likuiditas</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
+    const ki = r.koreksi_info || {};
     h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
       <td class="px-4 py-3"><div class="font-bold">${esc(stripJK(r.ticker))}</div><div class="text-[10px] text-slate-500">${esc(r.data_date || "")}</div></td>
       <td class="px-3 text-right tabular font-semibold">${fmt(r.price)}</td>
@@ -935,6 +942,7 @@ function renderScan(d) {
       <td class="px-3 text-right tabular text-slate-400">${fmtIdr(r.estimated_value_idr)}</td>
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
+      ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
       <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
       <td class="px-3 text-center">${buyScoreChip(r.buy_score)}</td>
       <td class="px-3">${liqChip(r.liquidity_grade)}</td>
