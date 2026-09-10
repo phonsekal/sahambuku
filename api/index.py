@@ -742,6 +742,7 @@ BUY_SCORE_WEIGHTS = {
     "Momentum 5 hari sehat (0-12%)": 5,
     "Launch Pad / Drop Base Rally": 10,
     "Bandarmology ACC (bila ada)": 15,
+    "Likuiditas (nilai rata-rata 20 hari)": 10,
 }
 
 
@@ -791,6 +792,10 @@ def _buy_score_series(df: pd.DataFrame) -> pd.Series:
     pts = pts + candle * 10
     pts = pts + near_low * 10
     pts = pts + np.where((ret5 >= 0) & (ret5 <= 12), 5, np.where((ret5 > 12) & (ret5 <= 20), 2, 0))
+    # Likuiditas: saham dengan nilai transaksi rata-rata tinggi = mudah masuk/keluar.
+    val20 = _value_series(df).rolling(20).mean()
+    pts = pts + np.where(val20 >= 10e9, 10, np.where(val20 >= 1e9, 7,
+                                                     np.where(val20 >= 100e6, 4, 0)))
     return pts.clip(upper=100)
 
 
@@ -868,6 +873,10 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
         bd = 15.0
     comps["Bandarmology ACC (bila ada)"] = bd; pts += bd
 
+    val20 = float(_value_series(df).rolling(20).mean().iloc[-1]) if n >= 20 else float(_value_series(df).mean())
+    liq = 10.0 if val20 >= 10e9 else (7.0 if val20 >= 1e9 else (4.0 if val20 >= 100e6 else 0.0))
+    comps["Likuiditas (nilai rata-rata 20 hari)"] = liq; pts += liq
+
     score = min(100.0, pts)
     label = ("SINYAL BELI KUAT" if score >= 70 else
              "BELI (KONFIRMASI)" if score >= 50 else
@@ -879,7 +888,48 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
         "rsi14": num(r, 1),
         "ret5_pct": num(ret5, 2),
         "volume_ratio": num(vr, 2),
+        "liquidity_grade": _liquidity_grade(val20),
         "note": "Skor komposit konfirmasi beli (0-100): >=70 BELI KUAT, 50-69 KONFIRMASI, <50 tunggu.",
+    }
+
+
+def _value_series(df: pd.DataFrame) -> pd.Series:
+    """Nilai transaksi harian (IDR). Prioritas kolom Value (IDX Edge/GitHub),
+    fallback proksi Close x Volume."""
+    if "Value" in df.columns:
+        v = df["Value"].astype(float)
+        if v.notna().sum() >= len(df) * 0.8:
+            return v.fillna(0.0)
+    return df["Close"].astype(float) * df["Volume"].astype(float)
+
+
+def _liquidity_grade(value_20d: float) -> str:
+    """Kelas likuiditas berdasar nilai transaksi rata-rata 20 hari (IDR).
+
+    Sangat likuid >= Rp 10 miliar/hari; Likuid >= 1 miliar; Cukup >= 100 juta;
+    Kurang likuid < 100 juta (berisiko sulit entry/exit tanpa mempengaruhi harga).
+    """
+    if value_20d >= 10e9:
+        return "SANGAT LIKUID"
+    if value_20d >= 1e9:
+        return "LIKUID"
+    if value_20d >= 100e6:
+        return "CUKUP"
+    return "KURANG LIKUID"
+
+
+def _liquidity_metrics(df: pd.DataFrame) -> dict:
+    """Metrik likuiditas: rata-rata nilai & volume 20 hari + kelas likuiditas."""
+    value = _value_series(df)
+    vol = df["Volume"].astype(float)
+    avg_value = float(value.rolling(20).mean().iloc[-1]) if len(df) >= 20 else float(value.mean())
+    avg_vol = float(vol.rolling(20).mean().iloc[-1]) if len(df) >= 20 else float(vol.mean())
+    grade = _liquidity_grade(avg_value)
+    return {
+        "avg_value_20d": avg_value,
+        "avg_volume_20d": avg_vol,
+        "grade": grade,
+        "note": ("Kelas likuiditas dari nilai transaksi rata-rata 20 hari: "),
     }
 
 
@@ -1408,11 +1458,12 @@ def load_idx_tickers(universe: str = "all") -> List[str]:
     return tickers
 
 
-def _download_github_csv(ticker: str) -> Optional[pd.DataFrame]:
+def _download_github_csv(ticker: str, max_rows: Optional[int] = 500) -> Optional[pd.DataFrame]:
     """Fallback data historis IDX dari dataset publik GitHub (2019-2025).
 
     Dipakai saat Yahoo Finance memblokir/rate-limit IP datacenter (mis. Vercel).
     Kolom utama: date, open_price, high, low, close, volume, value, foreign_buy, foreign_sell.
+    max_rows=None mengembalikan seluruh riwayat (~1350 bar, 2019-2025) untuk backtest.
     """
     if ".JK" not in ticker.upper():
         return None
@@ -1433,12 +1484,39 @@ def _download_github_csv(ticker: str) -> Optional[pd.DataFrame]:
         if "Volume" in df.columns:
             df["Volume"] = df["Volume"].fillna(0.0)
         df.index = pd.to_datetime(df.index)
-        df = df.sort_index().tail(500)
+        df = df.sort_index()
+        if max_rows is not None:
+            df = df.tail(max_rows)
         if len(df) < 30:
             return None
         return df
     except Exception:
         return None
+
+
+def _fetch_backtest_history(ticker: str, years: int) -> Optional[pd.DataFrame]:
+    """Riwayat untuk backtest: fetch_data('5y') diperluas bila sumber pendek.
+
+    Saat yfinance diblokir, fallback IDX Edge hanya mengembalikan ~200 bar
+    (~10 bulan) dan dataset GitHub 500 bar — tidak cukup utk backtest 2-5 tahun.
+    Di sini riwayat lama (2019-2025) dari dataset GitHub digabungkan di bawah
+    data terbaru (yfinance/IDX Edge menang pada tanggal yang tumpang tindih).
+    """
+    try:
+        df = fetch_data(ticker, "5y")
+    except Exception:
+        return None
+    if len(df) >= years * 260:
+        return df
+    try:
+        gh = _download_github_csv(ticker, max_rows=None)
+    except Exception:
+        gh = None
+    if gh is None or len(gh) <= len(df):
+        return df
+    combined = pd.concat([gh, df[~df.index.isin(gh.index)]])
+    combined = combined[~combined.index.duplicated(keep="last")].sort_index()
+    return combined if len(combined) > len(df) else df
 
 
 def _download_batch(tickers: List[str], period: str) -> Dict[str, pd.DataFrame]:
@@ -1594,6 +1672,11 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
         book_confirm = {"price_above_sma20": False, "rsi_below_70": False,
                         "volume_above_ma20": False, "ok": False, "rsi14": None, "sma20": None}
 
+    # Likuiditas: rata-rata nilai transaksi 20 hari + kelas (dipakai sebagai
+    # komponen skor beli & kolom screener agar sinyal tidak muncul di saham
+    # yang sulit masuk/keluar).
+    liq = _liquidity_metrics(df)
+
     return {
         "eligible": eligible,
         "criteria_met": met,
@@ -1604,6 +1687,8 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
             "day_return_pct": num(m["day_ret"], 2),
             "estimated_value_idr": num(m["est_value"], 0),
             "volume_ratio_to_ma20": num(m["vol_ratio"], 2),
+            "avg_value_20d": num(liq["avg_value_20d"], 0),
+            "liquidity_grade": liq["grade"],
         },
     }
 
@@ -2003,6 +2088,250 @@ def fetch_live_quote(ticker: str) -> Optional[dict]:
         return None
 
 
+def fetch_ihsg(period: str = "max") -> Optional[pd.DataFrame]:
+    """Indeks Harga Saham Gabungan (^JKSE) harian — untuk filter kondisi pasar.
+
+    Sumber: yfinance (primary) -> Yahoo chart API via curl_cffi (fallback).
+    Dicache 6 jam. Return df berkolom Open/High/Low/Close/Volume.
+    """
+    key = ("^JKSE", period)
+    now = time.time()
+    hit = CACHE.get(key)
+    if hit and now - hit["ts"] < 6 * 3600:
+        return hit["df"]
+    df = None
+    try:
+        df = _call_with_timeout(
+            lambda: yf.download("^JKSE", period=period, interval="1d",
+                                auto_adjust=True, progress=False, threads=False),
+            YFINANCE_TIMEOUT,
+        )
+    except Exception:
+        df = None
+    if df is None or df.empty:
+        chart = _yahoo_chart_cffi("^JKSE", interval="1d", rng="10y")
+        if chart and chart.get("bars"):
+            bars = chart["bars"]
+            df = pd.DataFrame(bars)
+            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True).dt.tz_convert(
+                "Asia/Jakarta").dt.tz_localize(None)
+            df = df.rename(columns={"time": "Date", "open": "Open", "high": "High",
+                                    "low": "Low", "close": "Close", "volume": "Volume"})
+            df = df.set_index("Date").sort_index()
+            df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"])
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+    df = df.dropna(subset=["Close"])
+    if len(df) < 30:
+        return None
+    df.attrs["source"] = "yfinance"
+    CACHE[key] = {"ts": now, "df": df}
+    return df
+
+
+def _ihsg_series():
+    """Deret close & MA200 IHSG untuk backtest (diselaraskan per tanggal).
+    Returns (close_series, ma200_series) atau (None, None)."""
+    df = fetch_ihsg("max")
+    if df is None:
+        return None, None
+    close = df["Close"].astype(float)
+    ma200 = sma(close, 200)
+    return close, ma200
+
+
+def _ihsg_regime() -> dict:
+    """Kondisi pasar saat ini: IHSG di atas/bawah MA200 (filter regime buku)."""
+    df = fetch_ihsg("2y")
+    if df is None:
+        return {"trend": None, "note": "Data IHSG tidak tersedia saat ini."}
+    close = df["Close"].astype(float)
+    ma = float(sma(close, 200).iloc[-1])
+    last = float(close.iloc[-1])
+    trend = "bull" if last > ma else "bear"
+    return {
+        "trend": trend,
+        "close": num(last, 0),
+        "ma200": num(ma, 0),
+        "date": str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1]),
+        "source": df.attrs.get("source", "yfinance"),
+        "note": ("Filter regime: sinyal beli hanya diproses saat IHSG di ATAS MA200 "
+                 "(pasar bullish). Saat IHSG di bawah MA200, peluang sinyal palsu naik."),
+    }
+
+
+def _weekly_trend_series(df: pd.DataFrame) -> pd.Series:
+    """Tren mingguan (multi-timeframe): close mingguan > SMA20 mingguan, dibawa
+    (ffill) ke tiap bar harian. True = tren naik jangka menengah."""
+    close = df["Close"].astype(float)
+    wk = close.resample("W-FRI").last()
+    wk_ma = sma(wk, 20)
+    wk_trend = (wk > wk_ma).fillna(False)
+    # gabungkan kembali ke index harian TANPA lookahead: tiap hari memakai nilai
+    # minggunya sendiri (antara batas minggu sebelumnya dan batas minggu ini).
+    out = pd.Series(False, index=df.index, dtype=bool)
+    prev_ts = None
+    for ts, val in wk_trend.items():
+        if prev_ts is None:
+            out.loc[out.index <= ts] = val
+        else:
+            out.loc[(out.index > prev_ts) & (out.index <= ts)] = val
+        prev_ts = ts
+    return out
+
+
+def _divergence_series(df: pd.DataFrame, period: int = 14, carry: int = 3):
+    """Divergensi RSI (bullish/bearish) sebagai deret boolean per bar, untuk backtest.
+
+    Swing low/high fractal (sama dengan rsi_divergence) dipasangkan: baris kedua
+    menandai terbentuknya divergensi, lalu sinyal dipertahankan 'carry' hari.
+    Returns (bull_series, bear_series) pd.Series bool pada index df.
+    """
+    r = rsi(df["Close"], period).to_numpy(dtype=float)
+    close = df["Close"].to_numpy(dtype=float)
+    low = df["Low"].to_numpy(dtype=float)
+    high = df["High"].to_numpy(dtype=float)
+    n = len(df)
+    sl, sh = [], []
+    for i in range(2, n - 2):
+        if low[i] == low[i - 2:i + 3].min() and low[i] < low[i - 1] and low[i] < low[i + 1]:
+            sl.append((i, float(low[i]), float(r[i])))
+        if high[i] == high[i - 2:i + 3].max() and high[i] > high[i - 1] and high[i] > high[i + 1]:
+            sh.append((i, float(high[i]), float(r[i])))
+    bull = np.zeros(n, dtype=bool)
+    bear = np.zeros(n, dtype=bool)
+    for j in range(1, len(sl)):
+        i1, p1, r1 = sl[j - 1]
+        i2, p2, r2 = sl[j]
+        if p2 < p1 and r2 > r1:
+            bull[max(0, i2 - carry):i2 + 1] = True
+    for j in range(1, len(sh)):
+        i1, p1, r1 = sh[j - 1]
+        i2, p2, r2 = sh[j]
+        if p2 > p1 and r2 < r1:
+            bear[max(0, i2 - carry):i2 + 1] = True
+    return pd.Series(bull, index=df.index), pd.Series(bear, index=df.index)
+
+
+_IDX_PROFILE_CACHE: Dict[str, dict] = {}
+_IDX_SECTOR_CACHE: Dict[str, str] = {}
+_PROFILE_LOADED = False
+_SECTOR_LOADED = False
+_PROFILE_LOCK = threading.Lock()
+
+
+def _load_company_profiles() -> Dict[str, dict]:
+    """Profil emiten IDX dari dataset publik: nama, tanggal listing, papan, saham beredar."""
+    global _PROFILE_LOADED
+    if _PROFILE_LOADED:
+        return _IDX_PROFILE_CACHE
+    with _PROFILE_LOCK:
+        if _PROFILE_LOADED:
+            return _IDX_PROFILE_CACHE
+        try:
+            req = urllib.request.Request(IDX_TICKER_CSV_URL, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=20) as resp:
+                csv_data = resp.read()
+            df_csv = pd.read_csv(io.BytesIO(csv_data))
+            for _, row in df_csv.iterrows():
+                code = str(row.get("code", "")).strip().upper()
+                if not code:
+                    continue
+                _IDX_PROFILE_CACHE[code] = {
+                    "name": str(row.get("name", "")).strip(),
+                    "listing_date": str(row.get("listingDate", ""))[:10],
+                    "board": str(row.get("listingBoard", "")).strip(),
+                    "shares": float(row.get("shares") or 0.0),
+                }
+        except Exception:
+            pass
+        _PROFILE_LOADED = True
+        return _IDX_PROFILE_CACHE
+
+
+def _load_sector_map() -> Dict[str, str]:
+    """Peta kode saham -> sektor (dari 11 file Sectors dataset IDX)."""
+    global _SECTOR_LOADED
+    if _SECTOR_LOADED:
+        return _IDX_SECTOR_CACHE
+    with _PROFILE_LOCK:
+        if _SECTOR_LOADED:
+            return _IDX_SECTOR_CACHE
+        base = "https://raw.githubusercontent.com/wildangunawan/Dataset-Saham-IDX/master/List%20Emiten/Sectors/{name}.csv"
+        sectors = ["Basic Materials", "Consumer Cyclicals", "Consumer Non-Cyclicals", "Energy",
+                   "Financials", "Healthcare", "Industrials", "Infrastructures",
+                   "Properties & Real Estate", "Technology", "Transportation & Logistic"]
+        for s in sectors:
+            try:
+                req = urllib.request.Request(base.format(name=urllib.parse.quote(s)),
+                                             headers={"User-Agent": "Mozilla/5.0"})
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    csv_data = resp.read()
+                df_csv = pd.read_csv(io.BytesIO(csv_data))
+                col = "code" if "code" in df_csv.columns else df_csv.columns[0]
+                for c in df_csv[col].tolist():
+                    _IDX_SECTOR_CACHE[str(c).strip().upper()] = s
+            except Exception:
+                continue
+        _SECTOR_LOADED = True
+        return _IDX_SECTOR_CACHE
+
+
+def fetch_fundamentals(ticker: str, last_price: Optional[float] = None) -> dict:
+    """Informasi fundamental emiten IDX (profil + sektor + kapitalisasi pasar).
+
+    Sumber: dataset publik IDX (profil & sektor, bukan laporan keuangan) +
+    rentang 52 minggu dari Yahoo. PE/EPS/ROE tidak tersedia dari API yang
+    terpasang (IDX Edge PRO membatasi 8 endpoint market-data; yfinance quote
+    diblokir) — dicatat jujur di 'note'.
+    """
+    code = ticker.upper().replace(".JK", "")
+    profiles = _load_company_profiles()
+    sectors = _load_sector_map()
+    prof = profiles.get(code) or {}
+    name = prof.get("name") or ""
+    if not name:
+        # fallback nama dari meta Yahoo (chart API)
+        try:
+            chart = _yahoo_chart_cffi(ticker, interval="1d", rng="1mo")
+            name = ((chart or {}).get("meta") or {}).get("longName") or ""
+        except Exception:
+            name = ""
+    shares = prof.get("shares") or 0.0
+    market_cap = shares * last_price if shares and last_price else None
+    # 52 minggu dari Yahoo chart meta (best-effort)
+    w52 = {"high": None, "low": None}
+    try:
+        chart = _yahoo_chart_cffi(ticker, interval="1d", rng="1y")
+        meta = (chart or {}).get("meta") or {}
+        w52["high"] = meta.get("fiftyTwoWeekHigh")
+        w52["low"] = meta.get("fiftyTwoWeekLow")
+    except Exception:
+        pass
+    pct_from_high = None
+    if w52["high"] and last_price:
+        pct_from_high = (last_price / float(w52["high"]) - 1) * 100
+    return {
+        "code": code,
+        "name": name or None,
+        "sector": sectors.get(code),
+        "listing_date": prof.get("listing_date") or None,
+        "board": prof.get("board") or None,
+        "shares_outstanding": num(shares, 0) if shares else None,
+        "market_cap": num(market_cap, 0) if market_cap else None,
+        "fifty_two_week": {
+            "high": num(float(w52["high"]), 0) if w52["high"] else None,
+            "low": num(float(w52["low"]), 0) if w52["low"] else None,
+            "pct_from_high": num(pct_from_high, 1) if pct_from_high is not None else None,
+        },
+        "note": ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo; bukan "
+                 "laporan keuangan. PE/EPS/ROE belum tersedia dari API terpasang "
+                 "(IDX Edge PRO hanya membuka 8 endpoint market-data)."),
+    }
+
+
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
                  include_bandarmology: bool):
     """Proses 1 ticker (dijalankan paralel via ThreadPoolExecutor)."""
@@ -2065,9 +2394,13 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 
 
 def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
-          include_bandarmology: bool = True, require_confirm: bool = False) -> dict:
+          include_bandarmology: bool = True, require_confirm: bool = False,
+          require_regime: bool = False) -> dict:
     matched: List[dict] = []
     scanned = skipped = bandar_used = 0
+    # Filter kondisi pasar (IHSG vs MA200) — dihitung sekali, berlaku untuk semua saham.
+    regime = _ihsg_regime() if require_regime else None
+    regime_blocked = bool(require_regime and regime and regime.get("trend") == "bear")
     workers = min(8, max(1, len(tickers)))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = [ex.submit(_scan_worker, tk, criteria, period,
@@ -2084,6 +2417,8 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
             scanned += 1
             bandar_used += out.get("bandar_used", 0)
             if out.get("eligible"):
+                if regime_blocked:
+                    continue  # IHSG di bawah MA200: tahan semua sinyal beli
                 if require_confirm and not (out["item"].get("book_confirm") or {}).get("ok"):
                     continue
                 matched.append(out["item"])
@@ -2091,24 +2426,40 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
         "scanned": scanned,
         "skipped": skipped,
         "bandarmology_checked": bandar_used,
+        "market_regime": regime,
+        "regime_blocked": regime_blocked,
         "results": matched,
     }
 
 
 def _backtest_one(ticker: str, criteria: str, years: int,
-                  confirm: bool = True) -> Optional[dict]:
-    """Backtest sederhana 1 ticker: sinyal di harga tutup -> SL 2xATR, TP 2R (RRR 1:2, Bab 8).
-    scalping/bsjp: hold maks 5 hari; swing: 20 hari. Timeout dihitung terpisah.
-    confirm=True = konfirmasi ala buku: harga > SMA20 (bias naik), RSI < 70 (tidak
-    mengejar overbought), volume > VolumeMA20 (ada tenaga beli)."""
+                  confirm: bool = True, regime: bool = True, bb_confirm: bool = True,
+                  div_vol: bool = True, weekly: bool = True, costs: bool = True,
+                  ihsg_align: Optional[pd.DataFrame] = None,
+                  cost_pct: float = 0.003) -> Optional[dict]:
+    """Backtest 1 ticker: sinyal di harga tutup -> SL 2xATR, TP 2R (RRR 1:2, Bab 8).
+    scalping/bsjp: hold maks 5 hari; swing/buy: 20 hari. Timeout keluar di harga
+    tutup hari terakhir hold (dihitung terpisah dari win/loss).
+
+    Filter optimasi (semua opsional, dijelaskan di UI):
+    - confirm    : konfirmasi ala buku (harga > SMA20, RSI < 70, volume > MA20).
+    - regime     : IHSG > MA200 pada hari sinyal (tidak melawan pasar bear).
+    - bb_confirm : harga di bawah band atas Bollinger & MA20 > MA50 (tidak mengejar overbought).
+    - div_vol    : divergensi RSI bullish ATAU RSI < 70, dan volume > rata-rata.
+    - weekly     : tren mingguan naik (close > SMA20 mingguan) — multi-timeframe.
+    - costs      : biaya + slippage 0,3% round-trip (0,15%/sisi) + timeout exit di close.
+    """
     try:
-        df = fetch_data(ticker, "5y")
+        df = _fetch_backtest_history(ticker, years)
     except Exception:
         return None
-    if len(df) < 60:
+    if df is None or len(df) < 60:
         return None
+    # SMA20 mingguan butuh riwayat sebelum jendela years -> hitung di data penuh dulu.
+    weekly_trend = _weekly_trend_series(df)
     cutoff = df.index[-1] - pd.DateOffset(years=years)
     df = df[df.index >= cutoff]
+    weekly_trend = weekly_trend.reindex(df.index, method="ffill")
     if len(df) < 40:
         return None
 
@@ -2116,15 +2467,28 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     high = df["High"].astype(float)
     low = df["Low"].astype(float)
     vol = df["Volume"].astype(float)
-    value = df["Value"].astype(float) if "Value" in df.columns else close * vol
+    value = _value_series(df)
     atr_s = atr(df, 14)
     vma20 = vol.rolling(20).mean()
     sma20 = close.rolling(20).mean()
+    sma50 = close.rolling(50).mean()
     rsi_s = rsi(close, 14)
     value_ma10 = value.rolling(10).mean()
     value_ma20 = value.rolling(20).mean()
+    bb_up, bb_mid, bb_lo = bollinger_bands(close, 20, 2.0)
+    bull_div, _ = _divergence_series(df)
 
     bscore = _buy_score_series(df) if criteria == "buy" else None
+
+    # Filter regime IHSG: sejajarkan close & MA200 IHSG ke index df (ffill).
+    ihsg_ok = None
+    if regime and ihsg_align is not None and len(ihsg_align):
+        try:
+            s = ihsg_align.reindex(df.index, method="ffill")
+            ihsg_ok = (s["c"] > s["m"]).to_numpy(dtype=bool)
+        except Exception:
+            ihsg_ok = None
+
     triggers = []
     n = len(df)
     for i in range(20, n - 1):
@@ -2149,6 +2513,27 @@ def _backtest_one(ticker: str, criteria: str, years: int,
             hit = (float(close.iloc[i]) > float(sma20.iloc[i])
                    and float(rsi_s.iloc[i]) < 70.0
                    and float(vol.iloc[i]) > float(vma20.iloc[i]))
+        if hit and bb_confirm and criteria in ("swing", "buy"):
+            # Konfirmasi Bollinger (hanya utk strategi tren swing/buy): entry saat
+            # harga MASIH DI DALAM band (di bawah band atas = tidak mengejar harga
+            # overbought) & MA20 > MA50. Tidak berlaku utk scalping/BSJP: strategi
+            # momentum justru muncul setelah kenaikan besar (di atas band atas).
+            hit = (not np.isnan(bb_up.iloc[i]) and not np.isnan(bb_lo.iloc[i])
+                   and float(close.iloc[i]) < float(bb_up.iloc[i])
+                   and float(close.iloc[i]) > float(bb_lo.iloc[i])
+                   and not np.isnan(sma20.iloc[i]) and not np.isnan(sma50.iloc[i])
+                   and float(sma20.iloc[i]) > float(sma50.iloc[i]))
+        if hit and div_vol:
+            # Gerbang divergensi RSI bullish (<=3 hari) ATAU RSI tidak overbought
+            # (RSI < 70, tidak mengejar harga jenuh), plus volume di atas rata-rata.
+            # Catatan: skor beli >=70 sudah mensyaratkan RSI zona sehat, jadi gate ini
+            # menahan sinyal yang volumenya mati atau RSI-nya sudah jenuh (>=70).
+            hit = ((bool(bull_div.iloc[i]) or (not np.isnan(rsi_s.iloc[i]) and float(rsi_s.iloc[i]) < 70.0))
+                   and float(vol.iloc[i]) > float(vma20.iloc[i]))
+        if hit and weekly:
+            hit = bool(weekly_trend.iloc[i])
+        if hit and regime and ihsg_ok is not None:
+            hit = bool(ihsg_ok[i])
         if hit:
             triggers.append(i)
     if not triggers:
@@ -2163,22 +2548,33 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         atr_v = a if not np.isnan(a) else entry * 0.02
         risk = max(atr_v * 2, entry * 0.005)
         sl, tp = entry - risk, entry + 2 * risk
+        cost_r = (entry * cost_pct) / risk if costs else 0.0
         outcome = None
+        exit_j = None
         for j in range(i + 1, min(i + 1 + max_hold, n)):
             if float(low.iloc[j]) <= sl:
                 outcome = -1.0
+                exit_j = j
                 break
             if float(high.iloc[j]) >= tp:
                 outcome = 2.0
+                exit_j = j
                 break
         if outcome is None:
+            # Timeout: keluar di harga tutup hari hold terakhir. Tetap dihitung
+            # TERPISAH dari win/loss (seperti sebelumnya) agar win rate tidak
+            # terinflasi oleh exit timeout yang kebetulan kecil positif; kontribusi
+            # R-nya (dikurangi biaya) tetap masuk ke rata-rata R per trade.
+            exit_j = min(i + max_hold, n - 1)
+            exit_r = (float(close.iloc[exit_j]) - entry) / risk
             timeouts += 1
-        elif outcome > 0:
+            r_sum += exit_r - cost_r
+            continue
+        if outcome > 0:
             wins += 1
-            r_sum += outcome
         else:
             losses += 1
-            r_sum += outcome
+        r_sum += outcome - cost_r
     total = wins + losses + timeouts
     decided = wins + losses
     return {
@@ -2352,6 +2748,22 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     if bandarmology:
         bandarmology_note = "Broker Summary, akumulasi bandar & net foreign dari IDX Edge PRO (real-time)."
 
+    # --- Multi-timeframe (tren mingguan) & kondisi pasar (IHSG) ---
+    weekly_series = _weekly_trend_series(df)
+    weekly_up = bool(weekly_series.iloc[-1]) if len(weekly_series) else False
+    wk_close = df["Close"].astype(float).resample("W-FRI").last()
+    wk_ma = sma(wk_close, 20)
+    weekly = {
+        "trend": "naik" if weekly_up else "turun",
+        "up": weekly_up,
+        "close": num(float(wk_close.iloc[-1]), 0) if len(wk_close) else None,
+        "sma20": num(float(wk_ma.iloc[-1]), 0) if len(wk_ma) and not np.isnan(wk_ma.iloc[-1]) else None,
+        "note": ("Multi-timeframe: sinyal harian sebaiknya searah tren mingguan "
+                 "(close > SMA20 mingguan) agar tidak melawan arus jangka menengah."),
+    }
+    regime = _ihsg_regime()
+    liquidity = _liquidity_metrics(df)
+
     return {
         "ticker": ticker.upper(),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -2413,6 +2825,15 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "risk_management": rm,
         "bandarmology": bandarmology,
         "bandarmology_note": bandarmology_note,
+        "liquidity": {
+            "avg_value_20d": num(liquidity["avg_value_20d"], 0),
+            "avg_volume_20d": num(liquidity["avg_volume_20d"], 0),
+            "grade": liquidity["grade"],
+            "note": "Kelas likuiditas dari nilai transaksi rata-rata 20 hari (IDR).",
+        },
+        "weekly": weekly,
+        "market_regime": regime,
+        "fundamentals": fetch_fundamentals(ticker, last_price),
     }
 
 
@@ -2596,12 +3017,18 @@ def backtest(
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
     confirm: bool = Query(True, description="Konfirmasi ala buku: harga>SMA20, RSI<70, volume>MA20"),
+    regime: bool = Query(True, description="Filter IHSG: hanya sinyal saat IHSG di atas MA200"),
+    bb_confirm: bool = Query(True, description="Konfirmasi Bollinger: entry band bawah/tengah saat tren naik"),
+    div_vol: bool = Query(True, description="Gerbang divergensi RSI bullish + volume > rata-rata"),
+    weekly: bool = Query(True, description="Multi-timeframe: tren mingguan naik (close > SMA20 mingguan)"),
+    costs: bool = Query(True, description="Biaya + slippage 0,3% round-trip"),
     tickers_param: str = Query("", alias="tickers",
                                description="Daftar kode kustom dipisah koma (maks 45); menimpa universe"),
 ):
     """Estimasi win rate historis per kriteria screener (eduksi, bukan jaminan masa depan).
     Sinyal -> entry di harga tutup, SL 2xATR, TP 2R (RRR 1:2), hold maks 5/20 hari.
-    confirm=1 menambahkan konfirmasi ala buku (harga>SMA20, RSI<70, volume>rata-rata).
+    Filter optimasi (regime/bb_confirm/div_vol/weekly) mempersempit sinyal ke kondisi
+    yang lebih terkonfirmasi; costs menambahkan biaya+slippage 0,3% round-trip.
     Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini."""
     if tickers_param:
         tickers = [f"{t.strip().upper()}.JK" if "." not in t.strip().upper() else t.strip().upper()
@@ -2609,9 +3036,21 @@ def backtest(
     else:
         tickers = load_idx_tickers(universe)
         tickers = tickers[:100] if universe == "all" else tickers[:limit]
+    # Deret IHSG diambil SEKALI untuk seluruh backtest (ffill per ticker di dalam).
+    ihsg_align = None
+    if regime:
+        try:
+            ic, im = _ihsg_series()
+            if ic is not None and im is not None:
+                s = pd.concat([ic.rename("c"), im.rename("m")], axis=1).dropna()
+                if len(s):
+                    ihsg_align = s
+        except Exception:
+            ihsg_align = None
     results: List[dict] = []
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for r in ex.map(lambda t: _backtest_one(t, criteria, years, confirm), tickers):
+        for r in ex.map(lambda t: _backtest_one(t, criteria, years, confirm, regime, bb_confirm,
+                                                div_vol, weekly, costs, ihsg_align), tickers):
             if r and r.get("trades", 0) > 0:
                 results.append(r)
     tot_trades = sum(r["trades"] for r in results)
@@ -2626,6 +3065,16 @@ def backtest(
         "criteria": criteria,
         "years": years,
         "confirm": bool(confirm),
+        "config": {
+            "regime": bool(regime),
+            "bb_confirm": bool(bb_confirm),
+            "div_vol": bool(div_vol),
+            "weekly": bool(weekly),
+            "costs": bool(costs),
+            "cost_pct": 0.3,
+        },
+        "regime_note": (None if not regime or ihsg_align is None else
+                         "Filter IHSG aktif (data IHSG tersedia, sinyal hanya saat IHSG > MA200)."),
         "tickers_checked": len(tickers),
         "tickers_with_signals": len(results),
         "total_trades": tot_trades,
@@ -2635,12 +3084,15 @@ def backtest(
         "win_rate_pct": num(tot_wins / decided * 100, 1) if decided else None,
         "avg_r": num(avg_r, 2),
         "per_ticker": results[:15],
-        "note": ("Backtest sederhana: entry harga tutup saat sinyal, SL 2xATR, TP 2R "
-                 "(RRR 1:2 sesuai buku), hold maks 5 hari (scalping/BSJP) / 20 hari (swing). "
-                 "Tidak memperhitungkan biaya/slippage/aksi korporasi dan rentan survivorship bias. "
-                 "Kinerja masa lalu BUKAN jaminan masa depan. Kriteria 'bandar' tidak diuji: "
-                 "Broker Summary hanya snapshot hari ini tanpa riwayat. Kriteria 'buy' memakai "
-                 "skor komposit multi-konfirmasi (tanpa bandarmology karena tidak ada riwayat)."),
+        "note": ("Backtest: entry harga tutup saat sinyal, SL 2xATR, TP 2R (RRR 1:2 sesuai buku), "
+                 "hold maks 5 hari (scalping/BSJP) / 20 hari (swing/buy); timeout keluar di close. "
+                 "Filter optimasi aktif: "
+                 + ("IHSG>MA200 " if regime else "") + ("BB band bawah/tengah+tren naik " if bb_confirm else "")
+                 + ("divergensi RSI+volume " if div_vol else "") + ("tren mingguan " if weekly else "")
+                 + ("| biaya+slippage 0,3% round-trip " if costs else "tanpa biaya") + ". "
+                 "Rentan survivorship bias & aksi korporasi. Kinerja masa lalu BUKAN jaminan masa depan. "
+                 "Kriteria 'bandar' tidak diuji: Broker Summary hanya snapshot hari ini tanpa riwayat. "
+                 "Kriteria 'buy' memakai skor komposit multi-konfirmasi (tanpa bandarmology historis)."),
         "disclaimer": DISCLAIMER,
     }
 
@@ -2673,6 +3125,7 @@ class ScreenerRequest(BaseModel):
     include_signal: bool = True
     include_bandarmology: bool = True
     require_confirm: bool = False
+    require_regime: bool = False
 
 
 @app.get("/api/screener/tickers")
@@ -2697,11 +3150,13 @@ def screener(
     include_signal: bool = Query(True),
     include_bandarmology: bool = Query(True),
     require_confirm: bool = Query(False),
+    require_regime: bool = Query(False, description="Hanya saham saat IHSG di atas MA200 (filter kondisi pasar)"),
 ):
     """Scan saham dengan kriteria screener Coachinvestasi.
 
     require_confirm=True hanya menampilkan saham yang lolos konfirmasi buku
-    (harga > SMA20, RSI < 70, volume > VolumeMA20).
+    (harga > SMA20, RSI < 70, volume > VolumeMA20). require_regime=True hanya
+    memproses sinyal saat IHSG di atas MA200 (tidak mengejar pasar bear).
     Gunakan offset/limit berulang-ulang untuk memindai SELURUH kode saham
     (total_tickers & next_offset disediakan untuk paginasi).
     """
@@ -2711,16 +3166,19 @@ def screener(
         raise HTTPException(404, "Offset melebihi jumlah ticker.")
 
     scan = _scan(window, criteria, period, include_signal, include_bandarmology,
-                 require_confirm)
+                 require_confirm, require_regime)
     return {
         "criteria": criteria,
         "require_confirm": require_confirm,
+        "require_regime": require_regime,
         "universe": universe,
         "period": period,
         "requested": len(window),
         "scanned": scan["scanned"],
         "skipped": scan["skipped"],
         "bandarmology_checked": scan["bandarmology_checked"],
+        "market_regime": scan.get("market_regime"),
+        "regime_blocked": scan.get("regime_blocked"),
         "total_tickers": len(all_tickers),
         "next_offset": offset + limit if offset + limit < len(all_tickers) else None,
         "results": scan["results"],
@@ -2787,15 +3245,18 @@ def screener_post(payload: ScreenerRequest):
     tickers = [t.upper() if "." in t else f"{t.upper()}.JK" for t in payload.tickers][:100]
     scan = _scan(tickers, payload.criteria, payload.period,
                  payload.include_signal, payload.include_bandarmology,
-                 payload.require_confirm)
+                 payload.require_confirm, payload.require_regime)
     return {
         "criteria": payload.criteria,
         "require_confirm": payload.require_confirm,
+        "require_regime": payload.require_regime,
         "period": payload.period,
         "requested": len(tickers),
         "scanned": scan["scanned"],
         "skipped": scan["skipped"],
         "bandarmology_checked": scan["bandarmology_checked"],
+        "market_regime": scan.get("market_regime"),
+        "regime_blocked": scan.get("regime_blocked"),
         "results": scan["results"],
         "bandarmology_note": _screener_bandar_note(),
         "disclaimer": DISCLAIMER,
