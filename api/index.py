@@ -2040,13 +2040,13 @@ def portfolio_alerts(payload: AlertsRequest):
 def cron_alerts(request: Request, secret: str = Query("")):
     """Cron (mis. Vercel Cron tiap 15 menit): cek semua portofolio tersinkron dan
     kirim notifikasi Telegram bila TP/SL tersentuh (sekali per tipe per hari)."""
-    # Otorisasi: Vercel Cron otomatis mengirim "Authorization: Bearer <CRON_SECRET>"
-    # (bila env CRON_SECRET ada) + header x-vercel-cron. Scheduler eksternal boleh
-    # memakai ?secret=CRON_SECRET.
+    # Otorisasi: bila CRON_SECRET di-set, hanya terima
+    # (a) Authorization: Bearer <CRON_SECRET> — dikirim otomatis oleh Vercel Cron, atau
+    # (b) ?secret=<CRON_SECRET> — untuk scheduler eksternal / pemicu manual.
+    # Header x-vercel-cron TIDAK dipercaya karena bisa dipalsukan.
     auth = request.headers.get("authorization", "")
     bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
-    is_cron = request.headers.get("x-vercel-cron") is not None
-    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok and not is_cron:
+    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
         raise HTTPException(403, "Forbidden")
     if not SYNC_ENABLED:
         return {"skipped": True, "reason": "Penyimpanan cloud belum dikonfigurasi."}
