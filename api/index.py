@@ -1008,8 +1008,11 @@ def _upstash_get(key: str) -> Optional[str]:
         return None
     try:
         req = urllib.request.Request(
-            f"{UPSTASH_REST_URL}/get/{urllib.parse.quote(key, safe='')}",
-            headers={"Authorization": f"Bearer {UPSTASH_REST_TOKEN}"})
+            UPSTASH_REST_URL,
+            data=json.dumps(["GET", key]).encode("utf-8"),
+            headers={"Authorization": f"Bearer {UPSTASH_REST_TOKEN}",
+                     "Content-Type": "application/json"},
+            method="POST")
         with urllib.request.urlopen(req, timeout=8) as resp:
             j = json.loads(resp.read().decode("utf-8"))
         val = (j or {}).get("result")
@@ -1019,24 +1022,41 @@ def _upstash_get(key: str) -> Optional[str]:
 
 
 def _upstash_set(key: str, value: str, ttl: int = 0) -> bool:
-    """SET string di Upstash Redis REST (ttl dalam detik; 0 = tanpa kedaluwarsa)."""
+    """SET string di Upstash Redis REST pakai format command array
+    (POST ke base URL dengan body ["SET", key, value, ...]); ttl 0 = tanpa kedaluwarsa."""
     if not SYNC_ENABLED:
         return False
     try:
-        body: dict = {"value": value}
+        cmd = ["SET", key, value]
         if ttl > 0:
-            body["ex"] = ttl
+            cmd += ["EX", str(int(ttl))]
         req = urllib.request.Request(
-            f"{UPSTASH_REST_URL}/set/{urllib.parse.quote(key, safe='')}",
-            data=json.dumps(body).encode("utf-8"),
+            UPSTASH_REST_URL,
+            data=json.dumps(cmd).encode("utf-8"),
             headers={"Authorization": f"Bearer {UPSTASH_REST_TOKEN}",
                      "Content-Type": "application/json"},
             method="POST")
         with urllib.request.urlopen(req, timeout=8) as resp:
-            resp.read()
-        return True
+            j = json.loads(resp.read().decode("utf-8"))
+        return (j or {}).get("result") == "OK"
     except Exception:
         return False
+
+
+def _unwrap_json(raw: Optional[str], default):
+    """Parse JSON string; buka pembungkus {"value": "..."} bila ada (kompatibilitas)."""
+    if not raw:
+        return default
+    try:
+        d = json.loads(raw)
+    except Exception:
+        return default
+    if isinstance(d, dict) and isinstance(d.get("value"), str):
+        try:
+            d = json.loads(d["value"])
+        except Exception:
+            return default
+    return d
 
 
 def sync_load(key: str) -> dict:
@@ -1044,12 +1064,11 @@ def sync_load(key: str) -> dict:
     raw = _upstash_get(f"ci:{key}")
     if not raw:
         return {"portfolio": None, "watchlist": None, "exists": False}
-    try:
-        d = json.loads(raw)
-        return {"portfolio": d.get("portfolio"), "watchlist": d.get("watchlist"),
-                "exists": True}
-    except Exception:
-        return {"portfolio": None, "watchlist": None, "exists": False}
+    d = _unwrap_json(raw, None)
+    if not isinstance(d, dict):
+        return {"portfolio": None, "watchlist": None, "exists": True}
+    return {"portfolio": d.get("portfolio"), "watchlist": d.get("watchlist"),
+            "exists": True}
 
 
 def sync_save(key: str, portfolio: Optional[list] = None,
@@ -1064,13 +1083,8 @@ def sync_save(key: str, portfolio: Optional[list] = None,
         data["watchlist"] = watchlist
     ok = _upstash_set(f"ci:{key}", json.dumps(data, ensure_ascii=False))
     if ok:
-        keys = []
-        raw = _upstash_get("ci:keys")
-        if raw:
-            try:
-                keys = json.loads(raw)
-            except Exception:
-                keys = []
+        parsed = _unwrap_json(_upstash_get("ci:keys"), [])
+        keys = [k for k in parsed if isinstance(k, str)] if isinstance(parsed, list) else []
         if key not in keys:
             keys.append(key)
             _upstash_set("ci:keys", json.dumps(keys))
@@ -2032,11 +2046,8 @@ def cron_alerts(request: Request, secret: str = Query("")):
     if not SYNC_ENABLED:
         return {"skipped": True, "reason": "Penyimpanan cloud belum dikonfigurasi."}
 
-    raw = _upstash_get("ci:keys") or "[]"
-    try:
-        keys = json.loads(raw)
-    except Exception:
-        keys = []
+    parsed_keys = _unwrap_json(_upstash_get("ci:keys"), [])
+    keys = [k for k in parsed_keys if isinstance(k, str)] if isinstance(parsed_keys, list) else []
 
     sent = 0
     checked = 0
