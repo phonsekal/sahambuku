@@ -7,6 +7,12 @@
       "memory": 1024
     }
   },
+  "crons": [
+    {
+      "path": "/api/cron/alerts",
+      "schedule": "*/15 * * * *"
+    }
+  ],
   "routes": [
     {
       "src": "/(.*)",

@@ -49,6 +49,7 @@
     <button data-tab="screener" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition text-slate-400">🔍 Screener</button>
     <button data-tab="portfolio" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition text-slate-400">💼 Portofolio</button>
     <button data-tab="watch" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition text-slate-400">👁 Watchlist &amp; Banding</button>
+    <button data-tab="edu" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition text-slate-400">📖 Strategi &amp; Indikator</button>
   </div>
 
   <!-- ======= TAB ANALISIS ======= -->
@@ -107,6 +108,19 @@
   <!-- ======= TAB PORTOFOLIO ======= -->
   <section id="tab-portfolio" class="hidden">
     <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
+      <div class="flex flex-wrap items-center gap-2 mb-2">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Kode Sinkronisasi</span>
+        <code id="syncKeyBox" class="text-xs px-2.5 py-1 rounded-lg bg-slate-800 border border-slate-700 font-mono text-sky-300">…</code>
+        <button id="btnCopySync" class="text-[11px] px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-sky-300 hover:border-sky-500/50 transition">Salin</button>
+        <button id="btnSetSync" class="text-[11px] px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-sky-300 hover:border-sky-500/50 transition">Ganti kode</button>
+        <span id="syncStatus" class="text-[11px] px-2.5 py-1 rounded-full border border-slate-700 bg-slate-800/60 text-slate-400">memeriksa…</span>
+        <button id="btnNotify" class="text-[11px] px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-emerald-300 hover:border-emerald-500/50 transition">🔔 Aktifkan Notifikasi</button>
+      </div>
+      <div class="text-[11px] text-slate-500 mb-3">Buka dashboard di perangkat lain → klik <b class="text-slate-300">Ganti kode</b> → tempel kode yang sama. Portofolio &amp; watchlist akan tersinkron otomatis.</div>
+      <div id="alertBox" class="mb-3"></div>
+    </div>
+
+    <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
       <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">Tambah / Ubah Posisi</h2>
       <div class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
         <div><label class="text-[10px] uppercase text-slate-500">Kode</label>
@@ -157,6 +171,135 @@
       <div class="text-[11px] text-slate-500 mt-2">Data disimpan di browser (localStorage). Bandarmology memakai kuota Broker Summary IDX Edge (~1000 req/hari/key, cache 12 jam).</div>
     </div>
     <div id="watchResult"></div>
+  </section>
+
+  <!-- ======= TAB STRATEGI & INDIKATOR ======= -->
+  <section id="tab-edu" class="hidden">
+    <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
+      <h2 class="text-base font-extrabold mb-1">📖 Panduan Strategi &amp; Indikator <span class="text-slate-500 font-semibold text-sm">— ringkasan e-book Coach Investasi 2025/2026</span></h2>
+      <p class="text-xs text-slate-500">Semua yang dijelaskan di sini dipakai langsung oleh mesin analisis dashboard ini. Bacaan ini edukasi, bukan saran beli/jual.</p>
+    </div>
+
+    <h3 class="text-sm font-extrabold text-sky-400 uppercase tracking-wider mb-3 mt-6">A. Indikator</h3>
+    <div class="grid md:grid-cols-2 gap-4 mb-8">
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-sky-300 mb-2">Moving Average (SMA &amp; EMA)</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Rata-rata harga selama N periode. SMA = rata-rata sederhana, EMA = memberi bobot lebih besar pada harga terbaru (lebih responsif). Buku memakai <b>MA20/MA50 untuk swing</b> dan <b>MA5/MA10 untuk day trade</b>, plus <b>MA200</b> sebagai penanda tren jangka panjang.</p>
+        <ul class="text-xs text-slate-400 mt-2 space-y-1 list-disc list-inside">
+          <li>Harga di atas MA = bias naik; di bawah MA = bias turun.</li>
+          <li><b class="text-emerald-400">Golden Cross</b>: MA20 memotong MA50 ke atas → sinyal beli.</li>
+          <li><b class="text-rose-400">Death Cross</b>: MA20 memotong MA50 ke bawah → sinyal jual.</li>
+          <li>MA juga berfungsi sebagai support/resistance dinamis.</li>
+        </ul>
+        <p class="text-[11px] text-slate-500 mt-2">Di dashboard: garis MA20/50/200 bisa di-overlay di grafik (centang “MA”), dan nilai MA ditampilkan di panel Indikator.</p>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-sky-300 mb-2">RSI — Relative Strength Index (14)</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Osilator 0–100 yang mengukur kecepatan momentum harga. <b>&gt;70 overbought</b> (rawan koreksi), <b>&lt;30 oversold</b> (potensi pantulan).</p>
+        <ul class="text-xs text-slate-400 mt-2 space-y-1 list-disc list-inside">
+          <li>Strategi buku: <b>beli saat RSI kembali menembus ke atas 30</b>, <b>jual saat RSI turun menembus 70</b>.</li>
+          <li><b>Divergensi RSI</b> lebih kuat daripada level: harga membuat <i>higher high</i> tapi RSI <i>lower high</i> = bearish divergence (siapkan take profit). Sebaliknya = bullish divergence.</li>
+        </ul>
+        <p class="text-[11px] text-slate-500 mt-2">Di dashboard: panel RSI di bawah grafik (centang “RSI”), plus deteksi divergensi otomatis di tab Analisis.</p>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-sky-300 mb-2">MACD</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Garis MACD = EMA12 − EMA26; garis sinyal = EMA9; histogram = selisih keduanya. Mengukur perubahan momentum, bukan arah harga saja.</p>
+        <ul class="text-xs text-slate-400 mt-2 space-y-1 list-disc list-inside">
+          <li>MACD di atas garis sinyal + histogram positif = momentum naik.</li>
+          <li>Persilangan MACD ke atas garis sinyal = sinyal beli; ke bawah = sinyal jual.</li>
+          <li>Paling baik dipakai sebagai konfirmasi tren, bukan sinyal tunggal.</li>
+        </ul>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-sky-300 mb-2">ATR, Volume &amp; Fibonacci</h4>
+        <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+          <li><b>ATR (14)</b> — rata-rata rentang harian. Dipakai untuk menaruh stop loss pada jarak yang wajar (mis. support − 0,3 × ATR), bukan angka asal.</li>
+          <li><b>Volume</b> — alat konfirmasi. Breakout tanpa volume cenderung palsu. <i>Volume spike di hari turun</i> = waspada distribusi. Candle dengan volume terbesar menandai level S&amp;R penting.</li>
+          <li><b>Fibonacci retracement</b> — 23,6% / 38,2% / 50% / 61,8% / 78,6%. Area <b>50–61,8%</b> favorit untuk entry saat koreksi dalam uptrend; target ekstensi <b>1,272</b> (ideal untuk saham ID).</li>
+        </ul>
+      </div>
+    </div>
+
+    <h3 class="text-sm font-extrabold text-violet-400 uppercase tracking-wider mb-3">B. Strategi</h3>
+    <div class="grid md:grid-cols-2 gap-4 mb-8">
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-violet-300 mb-2">Support &amp; Resistance (Bab 1)</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">S&amp;R adalah <b>area/zona</b>, bukan garis tunggal. Terbentuk dari swing high/low dan area dengan volume besar.</p>
+        <ul class="text-xs text-slate-400 mt-2 space-y-1 list-disc list-inside">
+          <li><b>Role reversal</b>: resistance yang ditembus berubah menjadi support (dan sebaliknya).</li>
+          <li>Strategi: cari entry di dekat support, target di resistance berikutnya.</li>
+          <li>Semakin banyak sentuhan, semakin kuat zona itu.</li>
+        </ul>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-violet-300 mb-2">Dow Theory (Bab 3)</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Tren naik = rangkaian <b>Higher High &amp; Higher Low</b>; tren turun = <b>Lower High &amp; Lower Low</b>. Trendline baru dianggap valid setelah <b>≥ 2–3 sentuhan</b>.</p>
+        <p class="text-[11px] text-slate-500 mt-2">Di dashboard: arah tren, pola Dow, dan deret swing high/low ditampilkan otomatis di tab Analisis.</p>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-violet-300 mb-2">Pola Candlestick (Bab 4)</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Doji, Hammer, Shooting Star, Engulfing, Harami, Morning/Evening Star, Three White Soldiers.</p>
+        <ul class="text-xs text-slate-400 mt-2 space-y-1 list-disc list-inside">
+          <li>Paling kuat bila muncul <b>di area S&amp;R</b> dan dikonfirmasi volume.</li>
+          <li>Bullish reversal di support = peluang beli; bearish reversal di resistance = peluang jual/take profit.</li>
+        </ul>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-violet-300 mb-2">Chart Pattern (Bab 7)</h4>
+        <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+          <li><b>Reversal</b>: Double Top/Bottom, Head &amp; Shoulders.</li>
+          <li><b>Kontinuitas</b>: Triangle, Flag, Pennant, Rectangle.</li>
+          <li>Wajib <b>konfirmasi volume saat breakout</b>; target gerak biasanya sebesar tinggi pola.</li>
+        </ul>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-violet-300 mb-2">Volume → S&amp;R (Bab 12)</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Candle dengan <b>volume tertinggi</b> menandai level S&amp;R paling penting — di situlah bandar &amp; ritel besar bertransaksi. Jadikan level ini acuan entry/exit.</p>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-violet-300 mb-2">Risk Management (Bab 8)</h4>
+        <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+          <li>Tentukan dulu <b>maksimum kerugian per trade</b> (mis. Rp5.000.000).</li>
+          <li>Taruh <b>stop loss di luar area S&amp;R</b>, bukan di dalamnya.</li>
+          <li><b>RRR minimal 1:2</b> — kalau kurang dari 2, trade sebaiknya dilewati.</li>
+          <li>Ukuran posisi = <b>maks kerugian ÷ % jarak SL</b>. Contoh buku: Rp5.000.000 ÷ 20% = posisi Rp25.000.000.</li>
+        </ul>
+        <p class="text-[11px] text-slate-500 mt-2">Di dashboard: TP/SL tiap saham dihitung otomatis dan dipakai untuk notifikasi portofolio.</p>
+      </div>
+    </div>
+
+    <h3 class="text-sm font-extrabold text-amber-400 uppercase tracking-wider mb-3">C. Pola Khusus &amp; Bandarmology</h3>
+    <div class="grid md:grid-cols-2 gap-4 mb-8">
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-amber-300 mb-2">The Launch Pad</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Setelah uptrend, harga <b>konsolidasi menyempit</b> membentuk base (energi terkunci). Ketika <b>breakout dengan volume besar</b>, harga cenderung bergerak cepat. Selalu cek <i>money flow</i> — apakah bandar sedang menampung.</p>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-amber-300 mb-2">Drop Base Rally</h4>
+        <p class="text-sm text-slate-300 leading-relaxed">Harga turun <b>tanpa membuat lower low</b>, lalu membentuk base di area support, dan berbalik naik (rally) dengan volume. Sinyal bahwa penjualan sudah terserap.</p>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-amber-300 mb-2">4 Fase Bandarmology (Bab 1–2)</h4>
+        <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+          <li><b class="text-emerald-400">Akumulasi</b> — bandar menampung diam-diam (harga sideways, volume naik perlahan).</li>
+          <li><b class="text-sky-400">Markup</b> — harga naik cepat setelah barang terkumpul.</li>
+          <li><b class="text-amber-400">Distribusi</b> — bandar mulai melepas ke ritel.</li>
+          <li><b class="text-rose-400">Markdown</b> — harga turun setelah distribusi selesai.</li>
+        </ul>
+      </div>
+      <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
+        <h4 class="font-bold text-amber-300 mb-2">Broker Summary &amp; Value Share (Bab 3–7)</h4>
+        <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+          <li>Cari <b>ACC (akumulasi)</b> vs <b>DIS (distribusi)</b>; broker bandar kuat umumnya <b>AK, BK, ZP, YU, BB, CC</b>, sedangkan ritel <b>XL, XC, YP, PD</b>.</li>
+          <li><b>AVG bandar</b> = harga rata-rata tertimbang bandar → berfungsi sebagai support psikologis.</li>
+          <li><b>Skenario idaman</b>: big accumulation (broker kuat menampung) disertai ritel yang justru menjual.</li>
+          <li>Saham cenderung naik bila <b>Top Buyer menguasai ≥ ~60%</b> dari net value hari itu.</li>
+          <li><b>Bid/Offer</b>: bid tebal = support, offer tebal = resistance; waspadai <i>fake bid/offer</i> (lot besar tapi frekuensi transaksi rendah).</li>
+        </ul>
+        <p class="text-[11px] text-slate-500 mt-2">Di dashboard: status ACC/DIS, AVG bandar, share Top Buyer, dan net foreign diambil dari IDX Edge PRO (tab Analisis &amp; Banding).</p>
+      </div>
+    </div>
   </section>
 
   <!-- ======= FOOTER ======= -->
@@ -227,6 +370,45 @@ const freshChip = (isLive, date, source, asOf) =>
    TAB ANALISIS
 ================================================================= */
 let lastResolved = "", lastPeriod = "1y", chartInterval = "daily", chartInstance = null;
+let rsiInstance = null, lastChartData = null, ovMA = true, ovRSI = true;
+
+function toggleOverlay() {
+  if ($("#ovMA")) ovMA = $("#ovMA").checked;
+  if ($("#ovRSI")) ovRSI = $("#ovRSI").checked;
+  const holder = document.getElementById("chartHolder");
+  if (holder && lastChartData) drawChart(holder, lastChartData);
+}
+
+function smaData(bars, period, intraday) {
+  const out = []; let sum = 0;
+  for (let i = 0; i < bars.length; i++) {
+    sum += bars[i].close;
+    if (i >= period) sum -= bars[i - period].close;
+    if (i >= period - 1) out.push({ time: intraday ? bars[i].time : bars[i].date, value: +(sum / period).toFixed(2) });
+  }
+  return out;
+}
+
+function rsiData(bars, period, intraday) {
+  const cl = bars.map(b => b.close);
+  if (cl.length < period + 1) return [];
+  const a = 1 / period;
+  let avgG = 0, avgL = 0, sumG = 0, sumL = 0;
+  const out = [];
+  for (let i = 1; i < cl.length; i++) {
+    const d = cl[i] - cl[i - 1], g = Math.max(d, 0), l = Math.max(-d, 0);
+    if (i <= period) {
+      sumG += g; sumL += l;
+      if (i < period) continue;
+      avgG = sumG / period; avgL = sumL / period;
+    } else {
+      avgG = a * g + (1 - a) * avgG; avgL = a * l + (1 - a) * avgL;
+    }
+    const rs = avgL === 0 ? Infinity : avgG / avgL;
+    out.push({ time: intraday ? bars[i].time : bars[i].date, value: +(100 - 100 / (1 + rs)).toFixed(2) });
+  }
+  return out;
+}
 
 async function analyze() {
   const btn = $("#btnAnalyze"), period = $("#period").value;
@@ -271,25 +453,66 @@ function drawChart(holder, c) {
     holder.innerHTML = `<div class="text-xs text-slate-500">Data grafik belum tersedia.</div>`;
     return;
   }
+  lastChartData = c;
   if (chartInstance) { try { chartInstance.remove(); } catch (e) {} chartInstance = null; }
+  if (rsiInstance) { try { rsiInstance.remove(); } catch (e) {} rsiInstance = null; }
   holder.innerHTML = "";
   const intraday = c.interval === "intraday";
-  const el = document.createElement("div");
-  el.style.height = "300px";
-  holder.appendChild(el);
-  const lc = window.LightweightCharts.createChart(el, {
+  const tk = b => intraday ? b.time : b.date;
+  const priceEl = document.createElement("div");
+  priceEl.style.height = "300px";
+  holder.appendChild(priceEl);
+  const baseOpts = {
     autoSize: true,
     layout: { background: { type: "solid", color: "#0f172a" }, textColor: "#94a3b8", fontSize: 11 },
     grid: { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
     rightPriceScale: { borderColor: "#1e293b" },
     timeScale: { borderColor: "#1e293b", timeVisible: intraday, secondsVisible: false },
     crosshair: { mode: 0 },
-  });
+  };
+  const lc = window.LightweightCharts.createChart(priceEl, baseOpts);
   const candle = lc.addCandlestickSeries({ upColor: "#22c55e", downColor: "#ef4444", borderVisible: false, wickUpColor: "#22c55e", wickDownColor: "#ef4444" });
-  candle.setData(c.bars.map(b => ({ time: intraday ? b.time : b.date, open: b.open, high: b.high, low: b.low, close: b.close })));
+  candle.setData(c.bars.map(b => ({ time: tk(b), open: b.open, high: b.high, low: b.low, close: b.close })));
   const vol = lc.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
   lc.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
-  vol.setData(c.bars.map(b => ({ time: intraday ? b.time : b.date, value: b.volume, color: b.close >= b.open ? "rgba(34,197,94,.35)" : "rgba(239,68,68,.35)" })));
+  vol.setData(c.bars.map(b => ({ time: tk(b), value: b.volume, color: b.close >= b.open ? "rgba(34,197,94,.35)" : "rgba(239,68,68,.35)" })));
+
+  // Overlay Moving Average (MA20/50/200) — hanya bila bar cukup
+  if (ovMA) {
+    const MAC = { 20: "#38bdf8", 50: "#fbbf24", 200: "#f472b6" };
+    [20, 50, 200].forEach(p => {
+      const data = smaData(c.bars, p, intraday);
+      if (data.length < 2) return;
+      lc.addLineSeries({ color: MAC[p], lineWidth: p === 200 ? 2 : 1.5, priceLineVisible: false,
+                         lastValueVisible: false, crosshairMarkerVisible: false,
+                         title: "MA" + p }).setData(data);
+    });
+  }
+
+  // Panel RSI(14) di bawah grafik (time-scale disinkronkan)
+  const rsi = rsiData(c.bars, 14, intraday);
+  if (ovRSI && rsi.length > 2) {
+    const rsiEl = document.createElement("div");
+    rsiEl.style.height = "120px";
+    rsiEl.style.marginTop = "6px";
+    holder.appendChild(rsiEl);
+    const rc = window.LightweightCharts.createChart(rsiEl, {
+      ...baseOpts,
+      timeScale: { borderColor: "#1e293b", timeVisible: intraday, secondsVisible: false },
+      rightPriceScale: { borderColor: "#1e293b", scaleMargins: { top: 0.15, bottom: 0.15 } },
+    });
+    const line = rc.addLineSeries({ color: "#a78bfa", lineWidth: 1.5, priceLineVisible: false,
+                                    lastValueVisible: true, title: "RSI" });
+    line.setData(rsi);
+    line.createPriceLine({ price: 70, color: "rgba(244,63,94,.55)", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "70" });
+    line.createPriceLine({ price: 30, color: "rgba(16,185,129,.55)", lineWidth: 1, lineStyle: 2, axisLabelVisible: true, title: "30" });
+    rc.timeScale().fitContent();
+    let lock = false;
+    lc.timeScale().subscribeVisibleLogicalRangeChange(r => { if (lock || !r) return; lock = true; try { rc.timeScale().setVisibleLogicalRange(r); } catch (e) {} lock = false; });
+    rc.timeScale().subscribeVisibleLogicalRangeChange(r => { if (lock || !r) return; lock = true; try { lc.timeScale().setVisibleLogicalRange(r); } catch (e) {} lock = false; });
+    rsiInstance = rc;
+  }
+
   lc.timeScale().fitContent();
   chartInstance = lc;
 }
@@ -318,8 +541,18 @@ function renderAnalyze(d) {
 
   h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-4 mb-4 shadow-xl shadow-black/20">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
-      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Grafik Harga (Candlestick)</h2>
-      <div class="flex gap-1.5">
+      <div>
+        <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">Grafik Harga (Candlestick)</h2>
+        <div class="flex flex-wrap gap-3 mt-1 text-[10px] text-slate-500">
+          <span><span class="inline-block w-2.5 h-0.5 align-middle bg-sky-400"></span> MA20</span>
+          <span><span class="inline-block w-2.5 h-0.5 align-middle bg-amber-400"></span> MA50</span>
+          <span><span class="inline-block w-2.5 h-0.5 align-middle bg-pink-400"></span> MA200</span>
+          <span><span class="inline-block w-2.5 h-0.5 align-middle bg-violet-400"></span> RSI(14) · 30/70</span>
+        </div>
+      </div>
+      <div class="flex items-center gap-3">
+        <label class="flex items-center gap-1 text-[11px] text-slate-400"><input type="checkbox" id="ovMA" ${ovMA ? "checked" : ""} onchange="toggleOverlay()" class="w-3 h-3 accent-sky-500"> MA</label>
+        <label class="flex items-center gap-1 text-[11px] text-slate-400"><input type="checkbox" id="ovRSI" ${ovRSI ? "checked" : ""} onchange="toggleOverlay()" class="w-3 h-3 accent-violet-500"> RSI</label>
         <button onclick="setChartInterval('daily')" id="tgDaily" class="text-[11px] px-3 py-1.5 rounded-lg font-bold border transition ${chartInterval === 'daily' ? 'bg-sky-500 text-slate-950 border-sky-400' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">📅 Harian</button>
         <button onclick="setChartInterval('intraday')" id="tgIntra" class="text-[11px] px-3 py-1.5 rounded-lg font-bold border transition ${chartInterval === 'intraday' ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">⚡ Intraday</button>
       </div>
@@ -607,6 +840,7 @@ function saveHolding(e) {
   save("ci_portfolio", porto);
   resetPortoForm();
   renderPortfolio();
+  syncPush();
   refreshPortoQuotes();
 }
 
@@ -635,6 +869,7 @@ function deleteHolding(id) {
   save("ci_portfolio", porto);
   if ($("#pfTicker").dataset.editId === id) resetPortoForm();
   renderPortfolio();
+  syncPush();
   refreshPortoQuotes();
 }
 
@@ -654,6 +889,7 @@ async function refreshPortoQuotes() {
   } finally {
     btn.disabled = false; btn.textContent = "🔄 Muat Harga & Sinyal";
     renderPortfolio();
+    checkAlerts(false);
   }
 }
 
@@ -670,6 +906,7 @@ function renderWlChips() {
   }
   $("#wlChips").innerHTML = watch.map(t =>
     `<span class="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-slate-700 bg-slate-800/60 text-sm font-bold">${esc(t)}
+      <button onclick="toPorto('${esc(t)}')" title="Tambahkan ke portofolio" class="text-slate-500 hover:text-emerald-400 text-[10px] font-bold leading-none">→PF</button>
       <button onclick="removeWatch('${esc(t)}')" class="text-slate-500 hover:text-rose-400 text-xs font-bold leading-none">✕</button>
     </span>`).join("");
 }
@@ -681,6 +918,7 @@ function addWatch() {
   for (const it of items) if (!watch.includes(it) && /^[A-Z0-9]{1,5}$/.test(it)) watch.push(it);
   watch = [...new Set(watch)].slice(0, 15);
   save("ci_watchlist", watch);
+  syncPush();
   $("#wlInput").value = "";
   renderWlChips();
   compare();
@@ -689,6 +927,7 @@ function addWatch() {
 function removeWatch(t) {
   watch = watch.filter(x => x !== t);
   save("ci_watchlist", watch);
+  syncPush();
   renderWlChips();
   compare();
 }
@@ -772,6 +1011,120 @@ async function compare() {
 }
 
 /* =================================================================
+   SINKRONISASI ANTAR PERANGKAT + NOTIFIKASI TP/SL
+================================================================= */
+let syncEnabled = false, notifyEnabled = false;
+const shownAlerts = new Set(load("ci_shown_alerts", []));
+
+function getSyncKey() {
+  let k = localStorage.getItem("ci_sync_key");
+  if (!k) {
+    k = "ci" + (window.crypto && crypto.randomUUID
+      ? crypto.randomUUID().replace(/-/g, "").slice(0, 14)
+      : Math.random().toString(36).slice(2, 10) + Date.now().toString(36));
+    localStorage.setItem("ci_sync_key", k);
+  }
+  return k;
+}
+
+function setSyncStatus(txt, ok) {
+  const el = $("#syncStatus");
+  if (!el) return;
+  el.textContent = txt;
+  el.className = "text-[11px] px-2.5 py-1 rounded-full border " + (ok
+    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+    : "border-amber-500/40 bg-amber-500/10 text-amber-400");
+}
+
+async function syncPull() {
+  const box = $("#syncKeyBox");
+  if (box) box.textContent = getSyncKey();
+  try { syncEnabled = !!(await getJSON("/api/health")).sync_enabled; } catch (e) { syncEnabled = false; }
+  if (!syncEnabled) { setSyncStatus("lokal saja (penyimpanan cloud belum aktif)", false); return; }
+  try {
+    const d = await getJSON(`/api/sync?key=${encodeURIComponent(getSyncKey())}`);
+    if (d.exists) {
+      if (Array.isArray(d.portfolio) && d.portfolio.length) { porto = d.portfolio; save("ci_portfolio", porto); }
+      if (Array.isArray(d.watchlist) && d.watchlist.length) { watch = d.watchlist; save("ci_watchlist", watch); }
+      setSyncStatus("Tersinkron ✓ (data dari cloud)", true);
+      renderWlChips(); renderPortfolio();
+    } else {
+      setSyncStatus("Tersinkron ✓", true);
+      syncPush();
+    }
+  } catch (e) { setSyncStatus("gagal memuat dari cloud", false); }
+}
+
+async function syncPush() {
+  if (!syncEnabled) return;
+  try {
+    await fetch(`/api/sync?key=${encodeURIComponent(getSyncKey())}`, {
+      method: "PUT", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ portfolio: porto, watchlist: watch }),
+    });
+    setSyncStatus("Tersinkron ✓", true);
+  } catch (e) { setSyncStatus("gagal menyimpan ke cloud", false); }
+}
+
+function toast(msg, kind) {
+  let box = document.getElementById("toasts");
+  if (!box) {
+    box = document.createElement("div");
+    box.id = "toasts";
+    box.className = "fixed bottom-4 right-4 z-50 space-y-2 max-w-sm";
+    document.body.appendChild(box);
+  }
+  const el = document.createElement("div");
+  el.className = "text-sm px-4 py-3 rounded-xl border shadow-xl backdrop-blur " + (kind === "sl"
+    ? "bg-rose-500/15 border-rose-500/50 text-rose-200"
+    : kind === "tp" ? "bg-emerald-500/15 border-emerald-500/50 text-emerald-200"
+    : "bg-slate-800/90 border-slate-600 text-slate-200");
+  el.textContent = msg;
+  box.appendChild(el);
+  setTimeout(() => { el.style.transition = "opacity .4s"; el.style.opacity = "0"; setTimeout(() => el.remove(), 500); }, 12000);
+}
+
+function renderAlertBox(alerts) {
+  const el = $("#alertBox");
+  if (!el) return;
+  if (!alerts.length) {
+    el.innerHTML = `<div class="text-xs text-emerald-400">✓ Tidak ada alert — semua posisi masih di antara TP dan SL.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Alerts saat ini</div>` +
+    alerts.map(a => `<div class="text-sm px-3 py-2 rounded-xl border mb-1.5 ${a.type === "SL"
+      ? "bg-rose-500/10 border-rose-500/40 text-rose-300"
+      : (a.type === "TP" || a.type === "TP_NEAR") ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-300"
+      : "bg-amber-500/10 border-amber-500/40 text-amber-300"}">${esc(a.message)}</div>`).join("");
+}
+
+async function checkAlerts(manual) {
+  if (!porto.length) { renderAlertBox([]); return; }
+  try {
+    const body = syncEnabled ? { key: getSyncKey() } : { portfolio: porto };
+    const r = await fetch("/api/portfolio/alerts", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    const alerts = d.alerts || [];
+    renderAlertBox(alerts);
+    for (const a of alerts) {
+      const id = `${a.ticker}|${a.type}|${a.level || a.rsi || ""}`;
+      if (shownAlerts.has(id)) continue;
+      shownAlerts.add(id);
+      toast(a.message, a.type === "SL" ? "sl" : (a.type === "TP" || a.type === "TP_NEAR") ? "tp" : "info");
+      if (notifyEnabled && "Notification" in window && Notification.permission === "granted") {
+        try { new Notification("CoachInvestasi — " + a.ticker, { body: a.message }); } catch (e) {}
+      }
+    }
+    save("ci_shown_alerts", [...shownAlerts].slice(-200));
+  } catch (e) {
+    if (manual) toast("Gagal memeriksa alert: " + e.message, "info");
+  }
+}
+
+/* =================================================================
    INIT
 ================================================================= */
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
@@ -783,9 +1136,13 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
     x.classList.toggle("text-slate-400", !on);
     x.classList.toggle("font-semibold", !on);
   });
-  ["analyze", "screener", "portfolio", "watch"].forEach(k =>
+  ["analyze", "screener", "portfolio", "watch", "edu"].forEach(k =>
     $("#tab-" + k).classList.toggle("hidden", t.dataset.tab !== k));
   if (t.dataset.tab === "watch" && !$("#watchResult").innerHTML.trim()) compare();
+  if (t.dataset.tab === "portfolio") {
+    if (porto.length && !Object.keys(portoQuotes).length) refreshPortoQuotes();
+    else checkAlerts(false);
+  }
 }));
 
 $("#btnAnalyze").addEventListener("click", analyze);
@@ -808,9 +1165,46 @@ getJSON("/api/health").then(d => {
   el.className = "text-xs px-3 py-1.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-400";
 });
 
+notifyEnabled = localStorage.getItem("ci_notify") === "1" && ("Notification" in window) && Notification.permission === "granted";
+
+$("#btnCopySync").addEventListener("click", async () => {
+  const k = getSyncKey();
+  try { await navigator.clipboard.writeText(k); toast("Kode sinkronisasi disalin ✓", "info"); }
+  catch (e) { toast("Kode sinkronisasi: " + k, "info"); }
+});
+$("#btnSetSync").addEventListener("click", async () => {
+  const v = prompt("Tempel kode sinkronisasi dari perangkat lain (kosongkan untuk membuat kode baru):", getSyncKey());
+  if (v === null) return;
+  const k = v.trim();
+  if (!k) localStorage.removeItem("ci_sync_key"); else localStorage.setItem("ci_sync_key", k);
+  $("#syncKeyBox").textContent = getSyncKey();
+  await syncPull();
+  toast("Kode sinkronisasi diperbarui.", "info");
+});
+$("#btnNotify").addEventListener("click", async () => {
+  if (!("Notification" in window)) { toast("Browser ini tidak mendukung notifikasi.", "info"); return; }
+  const p = await Notification.requestPermission();
+  notifyEnabled = p === "granted";
+  localStorage.setItem("ci_notify", notifyEnabled ? "1" : "0");
+  if (notifyEnabled) {
+    try { new Notification("Notifikasi aktif ✓", { body: "Anda akan diberi tahu saat TP/SL tersentuh." }); } catch (e) {}
+  }
+  toast(notifyEnabled ? "Notifikasi browser aktif ✓" : "Izin notifikasi ditolak.", "info");
+});
+
+function toPorto(t) {
+  document.querySelector("[data-tab=portfolio]").click();
+  $("#pfTicker").value = t;
+  $("#pfQty").focus();
+  toast(t + " siap ditambahkan ke portofolio.", "info");
+}
+
 renderWlChips();
 renderPortfolio();
+renderAlertBox([]);
 analyze();
+syncPull().then(() => { if (porto.length) checkAlerts(false); });
+setInterval(() => { if (porto.length && document.visibilityState === "visible") checkAlerts(false); }, 5 * 60 * 1000);
 </script>
 </body>
 </html>

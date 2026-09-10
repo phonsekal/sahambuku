@@ -38,7 +38,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 import pandas as pd
 import yfinance as yf
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel
@@ -66,6 +66,12 @@ CACHE_TTL_SECONDS = 5 * 60
 # ---------------------------------------------------------------------------
 # 1. BANTUAN UMUM
 # ---------------------------------------------------------------------------
+
+
+def strip_suffix(ticker: str) -> str:
+    """Hapus suffix bursa (.JK) untuk tampilan."""
+    t = str(ticker or "").upper()
+    return t[:-3] if t.endswith(".JK") else t
 
 
 def num(value: Any, nd: int = 4) -> Optional[float]:
@@ -983,6 +989,109 @@ IDX_EDGE_CACHE: Dict[str, dict] = {}
 IDX_EDGE_HIST_TTL = 6 * 3600        # data OHLCV dicache 6 jam
 IDX_EDGE_BROKER_TTL = 12 * 3600     # broker summary/akumulasi dicache 12 jam (data harian)
 
+# ---------------------------------------------------------------------------
+# 5c. SINKRONISASI ANTAR PERANGKAT (Upstash Redis REST — tanpa SDK)
+# ---------------------------------------------------------------------------
+UPSTASH_REST_URL = os.environ.get("UPSTASH_REDIS_REST_URL", "").strip().rstrip("/")
+UPSTASH_REST_TOKEN = os.environ.get("UPSTASH_REDIS_REST_TOKEN", "").strip()
+SYNC_ENABLED = bool(UPSTASH_REST_URL and UPSTASH_REST_TOKEN)
+
+# Notifikasi TP/SL via Telegram (opsional; set TELEGRAM_BOT_TOKEN & TELEGRAM_CHAT_ID)
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+CRON_SECRET = os.environ.get("CRON_SECRET", "").strip()
+
+
+def _upstash_get(key: str) -> Optional[str]:
+    """GET nilai string dari Upstash Redis REST. None bila belum ada/gagal."""
+    if not SYNC_ENABLED:
+        return None
+    try:
+        req = urllib.request.Request(
+            f"{UPSTASH_REST_URL}/get/{urllib.parse.quote(key, safe='')}",
+            headers={"Authorization": f"Bearer {UPSTASH_REST_TOKEN}"})
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            j = json.loads(resp.read().decode("utf-8"))
+        val = (j or {}).get("result")
+        return val if isinstance(val, str) else None
+    except Exception:
+        return None
+
+
+def _upstash_set(key: str, value: str, ttl: int = 0) -> bool:
+    """SET string di Upstash Redis REST (ttl dalam detik; 0 = tanpa kedaluwarsa)."""
+    if not SYNC_ENABLED:
+        return False
+    try:
+        body: dict = {"value": value}
+        if ttl > 0:
+            body["ex"] = ttl
+        req = urllib.request.Request(
+            f"{UPSTASH_REST_URL}/set/{urllib.parse.quote(key, safe='')}",
+            data=json.dumps(body).encode("utf-8"),
+            headers={"Authorization": f"Bearer {UPSTASH_REST_TOKEN}",
+                     "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            resp.read()
+        return True
+    except Exception:
+        return False
+
+
+def sync_load(key: str) -> dict:
+    """Muat data tersinkron untuk sebuah sync key."""
+    raw = _upstash_get(f"ci:{key}")
+    if not raw:
+        return {"portfolio": None, "watchlist": None, "exists": False}
+    try:
+        d = json.loads(raw)
+        return {"portfolio": d.get("portfolio"), "watchlist": d.get("watchlist"),
+                "exists": True}
+    except Exception:
+        return {"portfolio": None, "watchlist": None, "exists": False}
+
+
+def sync_save(key: str, portfolio: Optional[list] = None,
+              watchlist: Optional[list] = None) -> bool:
+    """Simpan data tersinkron + daftarkan key (untuk cron alert)."""
+    if not SYNC_ENABLED:
+        return False
+    data: dict = {}
+    if portfolio is not None:
+        data["portfolio"] = portfolio
+    if watchlist is not None:
+        data["watchlist"] = watchlist
+    ok = _upstash_set(f"ci:{key}", json.dumps(data, ensure_ascii=False))
+    if ok:
+        keys = []
+        raw = _upstash_get("ci:keys")
+        if raw:
+            try:
+                keys = json.loads(raw)
+            except Exception:
+                keys = []
+        if key not in keys:
+            keys.append(key)
+            _upstash_set("ci:keys", json.dumps(keys))
+    return ok
+
+
+def _telegram_send(text: str) -> bool:
+    """Kirim pesan Telegram (opsional)."""
+    if not (TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID):
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        body = json.dumps({"chat_id": TELEGRAM_CHAT_ID, "text": text,
+                           "disable_web_page_preview": True}).encode("utf-8")
+        req = urllib.request.Request(url, data=body,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status == 200
+    except Exception:
+        return False
+
 TICKER_CACHE: Dict[str, dict] = {}
 TICKER_CACHE_TTL_SECONDS = 24 * 3600
 
@@ -1614,6 +1723,10 @@ def root():
             "GET  /api/health",
             "GET  /api/analyze/{ticker}?period=1y",
             "GET  /api/quotes?tickers=BBCA,TLKM&with_bandar=0",
+            "GET  /api/sync?key=KODE_SINKRON",
+            "PUT  /api/sync?key=KODE_SINKRON",
+            "POST /api/portfolio/alerts",
+            "GET  /api/cron/alerts",
             "POST /api/bandarmology/analyze",
             "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
@@ -1638,6 +1751,8 @@ def dashboard():
 @app.get("/api/health")
 def health():
     return {
+        "sync_enabled": SYNC_ENABLED,
+        "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "status": "ok",
         "service": "CoachInvestasi Strategy API",
         "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -1818,6 +1933,132 @@ def quotes(
                  "Broker Summary IDX Edge."),
         "disclaimer": DISCLAIMER,
     }
+
+
+class SyncPayload(BaseModel):
+    portfolio: Optional[List[dict]] = None
+    watchlist: Optional[List[str]] = None
+
+
+class AlertsRequest(BaseModel):
+    key: Optional[str] = None
+    portfolio: Optional[List[dict]] = None
+
+
+@app.get("/api/sync")
+def sync_get(key: str = Query(..., min_length=6, max_length=128)):
+    """Muat portofolio & watchlist tersinkron (antar perangkat)."""
+    return {"sync_enabled": SYNC_ENABLED, **sync_load(key)}
+
+
+@app.put("/api/sync")
+def sync_put(key: str = Query(..., min_length=6, max_length=128), payload: SyncPayload = None):
+    """Simpan portofolio & watchlist ke penyimpanan cloud."""
+    if payload is None:
+        raise HTTPException(422, "Body JSON wajib diisi.")
+    if not SYNC_ENABLED:
+        return {"ok": False, "sync_enabled": False,
+                "note": "Penyimpanan cloud belum dikonfigurasi (UPSTASH_REDIS_REST_URL/TOKEN)."}
+    ok = sync_save(key, payload.portfolio, payload.watchlist)
+    if not ok:
+        raise HTTPException(502, "Gagal menyimpan ke penyimpanan cloud. Coba lagi.")
+    return {"ok": True, "sync_enabled": True}
+
+
+def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
+    """Hitung alert TP/SL/overbought/sinyal jual untuk daftar posisi (paralel)."""
+    if not portfolio:
+        return []
+
+    def one(h: dict) -> List[dict]:
+        tk = str(h.get("ticker", "")).upper()
+        if not tk:
+            return []
+        try:
+            d = _analyze_core(tk, "3mo", 5_000_000, light=True)
+        except Exception:
+            return []
+        price = d["market"]["last_price"]
+        rm = d.get("risk_management") or {}
+        rsi = (d.get("indicators") or {}).get("rsi14")
+        sig = (d.get("signal") or {}).get("action", "")
+        base = {"ticker": strip_suffix(tk), "price": num(price, 2),
+                "qty": h.get("qty"), "avg": h.get("avg")}
+        out: List[dict] = []
+        if rm.get("stop_loss") and price <= rm["stop_loss"]:
+            out.append({**base, "type": "SL", "level": num(rm["stop_loss"], 2),
+                        "message": f"🛑 {strip_suffix(tk)} menyentuh STOP LOSS ({num(rm['stop_loss'], 2)}) — harga {num(price, 2)}"})
+        if rm.get("take_profit") and price >= rm["take_profit"]:
+            out.append({**base, "type": "TP", "level": num(rm["take_profit"], 2),
+                        "message": f"🎯 {strip_suffix(tk)} mencapai TAKE PROFIT ({num(rm['take_profit'], 2)}) — harga {num(price, 2)}"})
+        if rm.get("take_profit") and rm["stop_loss"] < price < rm["take_profit"] and price >= rm["take_profit"] * 0.98:
+            out.append({**base, "type": "TP_NEAR", "level": num(rm["take_profit"], 2),
+                        "message": f"🔥 {strip_suffix(tk)} hampir TP (≤2% dari {num(rm['take_profit'], 2)})"})
+        if rsi is not None and rsi > 70:
+            out.append({**base, "type": "OB", "rsi": num(rsi, 1),
+                        "message": f"⚠️ {strip_suffix(tk)} overbought (RSI {num(rsi, 1)}) — waspada koreksi"})
+        if sig in ("SELL", "STRONG SELL"):
+            out.append({**base, "type": "SELL", "signal": sig,
+                        "message": f"⬇️ {strip_suffix(tk)} sinyal {sig} — pertimbangkan take profit / cut loss"})
+        return out
+
+    alerts: List[dict] = []
+    with ThreadPoolExecutor(max_workers=min(6, len(portfolio))) as ex:
+        for res in ex.map(one, portfolio):
+            if res:
+                alerts.extend(res)
+    return alerts
+
+
+@app.post("/api/portfolio/alerts")
+def portfolio_alerts(payload: AlertsRequest):
+    """Cek posisi terhadap TP/SL & sinyal jual (dipakai dashboard untuk notifikasi)."""
+    items = payload.portfolio
+    if items is None and payload.key:
+        items = (sync_load(payload.key) or {}).get("portfolio")
+    if not items:
+        return {"checked": 0, "alerts": [], "note": "Tidak ada posisi untuk diperiksa."}
+    alerts = _portfolio_alerts(items)
+    return {"checked": len(items), "alerts": alerts, "disclaimer": DISCLAIMER}
+
+
+@app.get("/api/cron/alerts")
+def cron_alerts(request: Request, secret: str = Query("")):
+    """Cron (mis. Vercel Cron tiap 15 menit): cek semua portofolio tersinkron dan
+    kirim notifikasi Telegram bila TP/SL tersentuh (sekali per tipe per hari)."""
+    is_cron = request.headers.get("x-vercel-cron") is not None
+    if CRON_SECRET and secret != CRON_SECRET and not is_cron:
+        raise HTTPException(403, "Forbidden")
+    if not SYNC_ENABLED:
+        return {"skipped": True, "reason": "Penyimpanan cloud belum dikonfigurasi."}
+
+    raw = _upstash_get("ci:keys") or "[]"
+    try:
+        keys = json.loads(raw)
+    except Exception:
+        keys = []
+
+    sent = 0
+    checked = 0
+    today = time.strftime("%Y-%m-%d")
+    for key in keys[:50]:
+        data = sync_load(key)
+        portfolio = data.get("portfolio") or []
+        if not portfolio:
+            continue
+        checked += 1
+        for a in _portfolio_alerts(portfolio):
+            dedupe = f"ci:notif:{key}:{a.get('ticker')}:{a.get('type')}:{today}"
+            if _upstash_get(dedupe):
+                continue
+            if _telegram_send(a.get("message", "Alerta") + "\n\n(CoachInvestasi Dashboard)"):
+                _upstash_set(dedupe, "1", ttl=86400)
+                sent += 1
+            else:
+                break
+    return {"checked_portfolios": checked, "telegram_sent": sent,
+            "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
 
 class BrokerRow(BaseModel):
