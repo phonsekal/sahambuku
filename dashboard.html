@@ -256,8 +256,9 @@
         </ul>
       </div>
       <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5">
-        <h4 class="font-bold text-sky-300 mb-2">ATR, Volume &amp; Fibonacci</h4>
+        <h4 class="font-bold text-sky-300 mb-2">ATR, Volume, Fibonacci &amp; Bollinger</h4>
         <ul class="text-xs text-slate-400 space-y-1.5 list-disc list-inside">
+          <li><b>Bollinger Bands (20, 2)</b> — pita volatilitas di sekitar SMA20 (±2 deviasi standar). Harga menyentuh <b>band atas = jenuh beli</b> (waspada koreksi), <b>band bawah = jenuh jual</b> (potensi pantulan). <b>Squeeze</b> (band menyempit) = volatilitas rendah, sering mendahului breakout. Konfirmasi entry: dekat band bawah saat tren naik; take profit mendekati band atas. <i>Di dashboard: overlay BB di grafik (centang “BB”) + nilai band, %B, dan deteksi squeeze di panel Indikator.</i></li>
           <li><b>ATR (14)</b> — rata-rata rentang harian. Dipakai untuk menaruh stop loss pada jarak yang wajar (mis. support − 0,3 × ATR), bukan angka asal.</li>
           <li><b>Volume</b> — alat konfirmasi. Breakout tanpa volume cenderung palsu. <i>Volume spike di hari turun</i> = waspada distribusi. Candle dengan volume terbesar menandai level S&amp;R penting.</li>
           <li><b>Fibonacci retracement</b> — 23,6% / 38,2% / 50% / 61,8% / 78,6%. Area <b>50–61,8%</b> favorit untuk entry saat koreksi dalam uptrend; target ekstensi <b>1,272</b> (ideal untuk saham ID).</li>
@@ -434,11 +435,12 @@ const freshChip = (isLive, date, source, asOf) =>
    TAB ANALISIS
 ================================================================= */
 let lastResolved = "", lastPeriod = "1y", chartInterval = "daily", chartInstance = null;
-let rsiInstance = null, lastChartData = null, ovMA = true, ovRSI = true;
+let rsiInstance = null, lastChartData = null, ovMA = true, ovRSI = true, ovBB = true;
 
 function toggleOverlay() {
   if ($("#ovMA")) ovMA = $("#ovMA").checked;
   if ($("#ovRSI")) ovRSI = $("#ovRSI").checked;
+  if ($("#ovBB")) ovBB = $("#ovBB").checked;
   const holder = document.getElementById("chartHolder");
   if (holder && lastChartData) drawChart(holder, lastChartData);
 }
@@ -470,6 +472,27 @@ function rsiData(bars, period, intraday) {
     }
     const rs = avgL === 0 ? Infinity : avgG / avgL;
     out.push({ time: intraday ? bars[i].time : bars[i].date, value: +(100 - 100 / (1 + rs)).toFixed(2) });
+  }
+  return out;
+}
+
+function bbData(bars, period, mult, intraday) {
+  const cl = bars.map(b => b.close);
+  const out = [];
+  for (let i = 0; i < cl.length; i++) {
+    if (i < period - 1) continue;
+    let sum = 0;
+    for (let j = i - period + 1; j <= i; j++) sum += cl[j];
+    const mid = sum / period;
+    let v = 0;
+    for (let j = i - period + 1; j <= i; j++) v += (cl[j] - mid) * (cl[j] - mid);
+    const sd = Math.sqrt(v / period);
+    out.push({
+      time: intraday ? bars[i].time : bars[i].date,
+      upper: +(mid + mult * sd).toFixed(2),
+      middle: +mid.toFixed(2),
+      lower: +(mid - mult * sd).toFixed(2),
+    });
   }
   return out;
 }
@@ -553,6 +576,24 @@ function drawChart(holder, c) {
     });
   }
 
+  // Overlay Bollinger Bands (20, 2) — upper/lower dashed + middle (SMA20)
+  if (ovBB) {
+    const bb = bbData(c.bars, 20, 2, intraday);
+    if (bb.length > 2) {
+      lc.addLineSeries({ color: "rgba(52,211,153,.75)", lineWidth: 1, lineStyle: 2, priceLineVisible: false,
+                         lastValueVisible: false, crosshairMarkerVisible: false, title: "BB Atas" })
+        .setData(bb.map(x => ({ time: x.time, value: x.upper })));
+      if (!ovMA) {
+        lc.addLineSeries({ color: "rgba(52,211,153,.45)", lineWidth: 1, priceLineVisible: false,
+                           lastValueVisible: false, crosshairMarkerVisible: false, title: "BB Tengah" })
+          .setData(bb.map(x => ({ time: x.time, value: x.middle })));
+      }
+      lc.addLineSeries({ color: "rgba(52,211,153,.75)", lineWidth: 1, lineStyle: 2, priceLineVisible: false,
+                         lastValueVisible: false, crosshairMarkerVisible: false, title: "BB Bawah" })
+        .setData(bb.map(x => ({ time: x.time, value: x.lower })));
+    }
+  }
+
   // Panel RSI(14) di bawah grafik (time-scale disinkronkan)
   const rsi = rsiData(c.bars, 14, intraday);
   if (ovRSI && rsi.length > 2) {
@@ -611,11 +652,13 @@ function renderAnalyze(d) {
           <span><span class="inline-block w-2.5 h-0.5 align-middle bg-sky-400"></span> MA20</span>
           <span><span class="inline-block w-2.5 h-0.5 align-middle bg-amber-400"></span> MA50</span>
           <span><span class="inline-block w-2.5 h-0.5 align-middle bg-pink-400"></span> MA200</span>
+          <span><span class="inline-block w-2.5 h-0.5 align-middle bg-emerald-400/80"></span> BB(20,2) · atas/bawah</span>
           <span><span class="inline-block w-2.5 h-0.5 align-middle bg-violet-400"></span> RSI(14) · 30/70</span>
         </div>
       </div>
       <div class="flex items-center gap-3">
         <label class="flex items-center gap-1 text-[11px] text-slate-400"><input type="checkbox" id="ovMA" ${ovMA ? "checked" : ""} onchange="toggleOverlay()" class="w-3 h-3 accent-sky-500"> MA</label>
+        <label class="flex items-center gap-1 text-[11px] text-slate-400"><input type="checkbox" id="ovBB" ${ovBB ? "checked" : ""} onchange="toggleOverlay()" class="w-3 h-3 accent-emerald-500"> BB</label>
         <label class="flex items-center gap-1 text-[11px] text-slate-400"><input type="checkbox" id="ovRSI" ${ovRSI ? "checked" : ""} onchange="toggleOverlay()" class="w-3 h-3 accent-violet-500"> RSI</label>
         <button onclick="setChartInterval('daily')" id="tgDaily" class="text-[11px] px-3 py-1.5 rounded-lg font-bold border transition ${chartInterval === 'daily' ? 'bg-sky-500 text-slate-950 border-sky-400' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">📅 Harian</button>
         <button onclick="setChartInterval('intraday')" id="tgIntra" class="text-[11px] px-3 py-1.5 rounded-lg font-bold border transition ${chartInterval === 'intraday' ? 'bg-emerald-500 text-slate-950 border-emerald-400' : 'border-slate-700 text-slate-400 hover:text-slate-200'}">⚡ Intraday</button>
@@ -653,6 +696,8 @@ function renderAnalyze(d) {
       ${kv("RSI (14)", fmt(I.rsi14), I.rsi14 >= 70 ? "text-rose-400" : I.rsi14 <= 30 ? "text-emerald-400" : "")}
       ${kv("SMA 20", fmt(I.sma20))} ${kv("SMA 50", fmt(I.sma50))} ${kv("SMA 200", fmt(I.sma200))}
       ${kv("EMA 20", fmt(I.ema20))} ${kv("ATR (14)", fmt(I.atr14))}
+      ${kv("BB Atas (20,2)", fmt(I.bollinger.upper))} ${kv("BB Bawah", fmt(I.bollinger.lower))}
+      ${kv("%B", fmt(I.bollinger.pct_b), I.bollinger.squeeze ? "text-amber-400" : "")}${I.bollinger.squeeze ? `<div class="col-span-2 sm:col-span-3 lg:col-span-5 text-[11px] text-amber-400/90">🔧 Bollinger <b>Squeeze</b> — volatilitas sedang terkompresi, potensi breakout. Posisi: ${esc(I.bollinger.position)}.</div>` : `<div class="col-span-2 sm:col-span-3 lg:col-span-5 text-[11px] text-slate-500">Posisi: ${esc(I.bollinger.position)} · ${esc(I.bollinger.note)}</div>`}
       ${kv("MACD", fmt(I.macd.line, 3))} ${kv("Sinyal MACD", fmt(I.macd.signal, 3))}
       ${kv("Histogram", fmt(I.macd.histogram, 3), I.macd.histogram >= 0 ? "text-emerald-400" : "text-rose-400")}
       ${kv("Volume vs MA20", fmt(I.volume.ratio_to_ma20) + "×", I.volume.spike ? "text-emerald-400" : "")}

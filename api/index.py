@@ -130,6 +130,18 @@ def atr(df: pd.DataFrame, period: int = 14) -> pd.Series:
     return tr.ewm(alpha=1.0 / period, adjust=False).mean()
 
 
+def bollinger_bands(series: pd.Series, period: int = 20, mult: float = 2.0):
+    """Bollinger Bands (20, 2): middle = SMA(period), band = SMA +/- mult*std.
+
+    Konvensi John Bollinger: deviasi standar dihitung dari populasi (ddof=0).
+    """
+    mid = series.rolling(window=period, min_periods=period).mean()
+    sd = series.rolling(window=period, min_periods=period).std(ddof=0)
+    upper = mid + mult * sd
+    lower = mid - mult * sd
+    return upper, mid, lower
+
+
 def find_swings(df: pd.DataFrame, k: int = 2):
     """Swing High & Swing Low (fractal: puncak/lembah lokal dengan k bar kiri-kanan)."""
     highs = df["High"].to_numpy(dtype=float)
@@ -2271,6 +2283,14 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     r14 = rsi(close, 14).iloc[-1]
     macd_line, sig_line, hist = macd(close)
     atr14 = atr(df, 14).iloc[-1]
+    bb_up, bb_mid, bb_lo = bollinger_bands(close, 20, 2.0)
+    bb_up_v, bb_mid_v, bb_lo_v = float(bb_up.iloc[-1]), float(bb_mid.iloc[-1]), float(bb_lo.iloc[-1])
+    bb_range = (bb_up_v - bb_lo_v) if bb_up_v > bb_lo_v else 0.0
+    pct_b = ((last_price - bb_lo_v) / bb_range) if bb_range > 0 else 0.5
+    # Bandwidth & squeeze: band sempit = volatilitas rendah, sinyal potensi breakout.
+    bb_bw = bb_range / bb_mid_v if bb_mid_v and bb_mid_v > 0 else 0.0
+    bb_bw_hist = ((bb_up - bb_lo) / bb_mid.replace(0, float("nan"))).dropna()
+    bb_squeeze = bool(len(bb_bw_hist) >= 30 and bb_bw <= float(bb_bw_hist.tail(30).quantile(0.2)))
 
     trend = detect_trend(df)
     sr_zones = find_sr_zones(df)
@@ -2361,6 +2381,20 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
                 "histogram": num(hist.iloc[-1], 4),
             },
             "atr14": num(atr14, 2),
+            "bollinger": {
+                "upper": num(bb_up_v, 2),
+                "middle": num(bb_mid_v, 2),
+                "lower": num(bb_lo_v, 2),
+                "pct_b": num(pct_b, 2),
+                "bandwidth": num(bb_bw, 4),
+                "squeeze": bb_squeeze,
+                "position": ("di atas band atas (overbought)" if last_price > bb_up_v else
+                             "di band atas" if pct_b >= 0.8 else
+                             "tengah band" if 0.2 < pct_b < 0.8 else
+                             "di band bawah" if pct_b > 0 else
+                             "di bawah band bawah (oversold)"),
+                "note": "BB(20,2): harga di atas band atas = jenuh beli; di bawah band bawah = jenuh jual; squeeze (bandwidth rendah) = potensi breakout.",
+            },
             "volume": vol,
         },
         "trend": trend,
