@@ -987,7 +987,76 @@ _IDX_EDGE_KEY_IDX = 0
 
 IDX_EDGE_CACHE: Dict[str, dict] = {}
 IDX_EDGE_HIST_TTL = 6 * 3600        # data OHLCV dicache 6 jam
-IDX_EDGE_BROKER_TTL = 12 * 3600     # broker summary/akumulasi dicache 12 jam (data harian)
+IDX_EDGE_BROKER_TTL = 24 * 3600     # broker summary/akumulasi dicache 24 jam (data harian ~17:00 WIB)
+
+# Circuit breaker kuota harian IDX Edge (1000 req/hari/key): begitu API menjawab
+# "kuota habis", semua panggilan berikutnya di-short-circuit sampai reset (WIB).
+IDX_EDGE_QUOTA_UNTIL = 0.0
+
+
+def _idx_edge_quota_until() -> float:
+    """Epoch waktu reset kuota harian (tengah malam WIB / UTC+7)."""
+    try:
+        import datetime
+        now = datetime.datetime.utcnow() + datetime.timedelta(hours=7)
+        nxt = (now + datetime.timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
+        return (nxt - datetime.timedelta(hours=7)).timestamp()
+    except Exception:
+        return time.time() + 6 * 3600
+
+
+_IDX_QUOTA_CACHE_TS = 0.0
+_IDX_QUOTA_CACHE_VAL = False
+
+
+def _quota_persist() -> None:
+    """Simpan status kuota habis sampai tengah malam WIB (berlaku lintas instance)."""
+    if SYNC_ENABLED:
+        ttl = max(60, int(_idx_edge_quota_until() - time.time()))
+        _upstash_set("ci:idx_quota_out", "1", ttl=ttl)
+
+
+def idx_edge_quota_out() -> bool:
+    """True jika kuota harian API IDX Edge sedang habis (sampai tengah malam WIB).
+
+    Cek memori dulu; bila belum tahu, tanya Upstash (state persisten lintas
+    instance/cold start) maksimal 1x per menit.
+    """
+    global IDX_EDGE_QUOTA_UNTIL, _IDX_QUOTA_CACHE_TS, _IDX_QUOTA_CACHE_VAL
+    if time.time() < IDX_EDGE_QUOTA_UNTIL:
+        return True
+    if time.time() - _IDX_QUOTA_CACHE_TS > 60:
+        _IDX_QUOTA_CACHE_TS = time.time()
+        _IDX_QUOTA_CACHE_VAL = bool(_upstash_get("ci:idx_quota_out"))
+        if _IDX_QUOTA_CACHE_VAL:
+            IDX_EDGE_QUOTA_UNTIL = _idx_edge_quota_until()
+    return _IDX_QUOTA_CACHE_VAL
+
+
+def _bandarmology_note(ticker: str = "") -> str:
+    """Catatan jujur kenapa data bandarmology tidak tampil (bukan instruksi membingungkan)."""
+    if idx_edge_quota_out():
+        return ("Kuota harian API Broker Summary (1000 req/hari) sudah habis hari ini — "
+                "bandarmology otomatis kembali besok. Bisa tambah limit di "
+                "stock.arjum.com → Usage Analytics & Limit.")
+    if not IDX_EDGE_API_KEYS:
+        return BANDARMOLOGY_NOTE
+    t = strip_suffix(ticker) if ticker else ""
+    return (f"Data Broker Summary IDX belum tersedia untuk {t} saat ini — bisa karena "
+            "data baru dirilis ~17:00 WIB atau saham kurang likuid.")
+
+
+def _screener_bandar_note() -> str:
+    """Catatan bandarmology untuk hasil screener (tahu kondisi kuota API)."""
+    if idx_edge_quota_out():
+        return ("Kuota harian API Broker Summary (1000 req/hari) sudah habis hari ini — "
+                "kriteria BANDAR & kolom bandarmology aktif kembali besok.")
+    if IDX_EDGE_API_KEYS:
+        return ("Broker Summary & akumulasi bandar aktif dari IDX Edge PRO (kuota "
+                "~1000 req/hari/key; data dicache 24 jam; broker summary hanya "
+                "diambil untuk saham yang lolos).")
+    return ("Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
+            "kriteria swing memakai proksi nilai transaksi.")
 
 # ---------------------------------------------------------------------------
 # 5c. SINKRONISASI ANTAR PERANGKAT (Upstash Redis REST — tanpa SDK)
@@ -1381,9 +1450,16 @@ def _idx_edge_next_key() -> Optional[str]:
 
 def idx_edge_get(path: str, params: Dict[str, Any], cache_key: str = "",
                  ttl: int = IDX_EDGE_HIST_TTL) -> Optional[dict]:
-    """GET ke IDX Edge PRO API dengan header X-API-Key, rotasi key, dan cache in-memory."""
+    """GET ke IDX Edge PRO API dengan header X-API-Key, rotasi key, dan cache in-memory.
+
+    Bila API menjawab "kuota harian habis", aktifkan circuit breaker sampai
+    tengah malam WIB agar tidak membuang waktu/request pada panggilan berikutnya.
+    """
+    global IDX_EDGE_QUOTA_UNTIL
     if not IDX_EDGE_API_KEYS:
         return None
+    if time.time() < IDX_EDGE_QUOTA_UNTIL:
+        return None  # kuota API harian habis -> short-circuit
     ck = cache_key or f"{path}:{json.dumps(params, sort_keys=True)}"
     now = time.time()
     hit = IDX_EDGE_CACHE.get(ck)
@@ -1396,9 +1472,24 @@ def idx_edge_get(path: str, params: Dict[str, Any], cache_key: str = "",
         req = urllib.request.Request(url, headers={"X-API-Key": key, "User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=25) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        # API menjawab 429 (kuota harian habis) -> aktifkan circuit breaker
+        try:
+            err = json.loads(e.read().decode("utf-8"))
+        except Exception:
+            err = {}
+        if isinstance(err, dict) and isinstance(err.get("detail"), str) \
+                and "kuota" in err["detail"].lower():
+            IDX_EDGE_QUOTA_UNTIL = _idx_edge_quota_until()
+            _quota_persist()
+        return None
     except Exception:
         return None
     if not isinstance(data, dict):
+        return None
+    if isinstance(data.get("detail"), str) and "kuota" in data["detail"].lower():
+        IDX_EDGE_QUOTA_UNTIL = _idx_edge_quota_until()
+        _quota_persist()
         return None
     IDX_EDGE_CACHE[ck] = {"ts": now, "data": data}
     return data
@@ -1926,6 +2017,8 @@ def health():
     return {
         "sync_enabled": SYNC_ENABLED,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+        "idx_edge_quota_out": idx_edge_quota_out(),
+        "idx_edge_keys": len(IDX_EDGE_API_KEYS),
         "status": "ok",
         "service": "dedesaputra_invst Strategy API",
         "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -1974,11 +2067,11 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
 
     # --- Bandarmology (IDX Edge PRO, jika key di-set; dilewati saat light) ---
     bandarmology = None
-    bandarmology_note = BANDARMOLOGY_NOTE
     # Normalisasi varian bursa IDX (.JK) untuk input pendek tanpa titik (mis. BBCA).
     bandar_tk = ticker.upper()
     if ".JK" not in bandar_tk and "." not in bandar_tk and bandar_tk.isalnum() and len(bandar_tk) <= 5:
         bandar_tk += ".JK"
+    bandarmology_note = _bandarmology_note(bandar_tk) if IDX_EDGE_API_KEYS else BANDARMOLOGY_NOTE
     if not light and IDX_EDGE_API_KEYS and ".JK" in bandar_tk:
         bandarmology = {"source": "IDX Edge PRO"}
         bs = fetch_idx_broker_summary(bandar_tk)
@@ -2371,13 +2464,7 @@ def screener(
         "total_tickers": len(all_tickers),
         "next_offset": offset + limit if offset + limit < len(all_tickers) else None,
         "results": scan["results"],
-        "bandarmology_note": (
-            "Broker Summary & akumulasi bandar aktif dari IDX Edge PRO (kuota ~1000 req/hari/key; "
-            "data dicache 6-12 jam; broker summary hanya diambil untuk saham yang lolos)."
-            if IDX_EDGE_API_KEYS else
-            "Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
-            "kriteria swing memakai proksi nilai transaksi."
-        ),
+        "bandarmology_note": _screener_bandar_note(),
         "disclaimer": DISCLAIMER,
     }
 
@@ -2450,10 +2537,6 @@ def screener_post(payload: ScreenerRequest):
         "skipped": scan["skipped"],
         "bandarmology_checked": scan["bandarmology_checked"],
         "results": scan["results"],
-        "bandarmology_note": (
-            "Broker Summary & akumulasi bandar aktif dari IDX Edge PRO." if IDX_EDGE_API_KEYS else
-            "Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
-            "kriteria swing memakai proksi nilai transaksi."
-        ),
+        "bandarmology_note": _screener_bandar_note(),
         "disclaimer": DISCLAIMER,
     }

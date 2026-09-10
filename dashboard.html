@@ -1298,8 +1298,18 @@ $("#btnCompare").addEventListener("click", compare);
 
 getJSON("/api/health").then(d => {
   const el = $("#apiStatus");
-  el.textContent = "API: " + d.status;
-  el.className = "text-xs px-3 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400";
+  const q = !!d.idx_edge_quota_out;
+  el.textContent = q ? "⚠ Kuota broker habis" : "API: " + d.status;
+  el.className = "text-xs px-3 py-1.5 rounded-full border " + (q
+    ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+    : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400");
+  if (q && !document.getElementById("quotaBanner")) {
+    const b = document.createElement("div");
+    b.id = "quotaBanner";
+    b.className = "mb-4 text-xs px-4 py-2.5 rounded-xl border border-amber-500/40 bg-amber-500/10 text-amber-300";
+    b.textContent = "⚠️ Kuota harian API Broker Summary (1000 req/hari) sudah habis — data bandarmology (ACC/DIS, value share) aktif lagi besok. Tambah limit di stock.arjum.com → Usage Analytics & Limit.";
+    document.querySelector("header").insertAdjacentElement("afterend", b);
+  }
 }).catch(() => {
   const el = $("#apiStatus");
   el.textContent = "API: offline";
