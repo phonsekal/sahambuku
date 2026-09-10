@@ -40,8 +40,13 @@
         <p class="text-xs text-slate-500">Technical Analysis + Bandarmology · 2025/2026</p>
       </div>
     </div>
-    <div id="apiStatus" class="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-400">cek API…</div>
+    <div class="flex items-center gap-2">
+      <div id="apiStatus" class="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-400">cek API…</div>
+    </div>
   </header>
+
+  <!-- Strip kondisi pasar (IHSG vs MA200) — indikator global di semua halaman -->
+  <div id="marketStrip" class="hidden mb-6 flex flex-wrap items-center gap-2.5 text-xs"></div>
 
   <!-- ======= TABS ======= -->
   <div class="flex gap-1.5 mb-6 bg-slate-900/60 border border-slate-800 rounded-2xl p-1.5 w-fit flex-wrap">
@@ -148,6 +153,9 @@
         </label>
         <button id="btnBacktest" class="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-violet-500/25 transition disabled:opacity-50 disabled:cursor-wait">
           📊 Uji Win Rate
+        </button>
+        <button id="btnMatrix" onclick="runBacktestMatrix()" class="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold rounded-xl px-5 py-2.5 text-xs shadow-lg shadow-emerald-500/25 transition disabled:opacity-50 disabled:cursor-wait" title="Jalankan 32 kombinasi filter sekaligus dan bandingkan win rate-nya — temukan konfigurasi terbaik (butuh waktu lebih lama)">
+          🔬 Matriks 32 Kombinasi
         </button>
       </div>
       <div id="backtestResult" class="mt-3"></div>
@@ -409,6 +417,12 @@ function buyScoreChip(bs) {
     : sc >= 30 ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
     : "border-rose-500/40 bg-rose-500/10 text-rose-400";
   return `<span title="${esc(bs.label || "")} — skor komposit sinyal beli 0-100" class="inline-block text-[11px] px-2 py-0.5 rounded-full border font-bold cursor-help ${cls}">${fmt(sc, 0)}</span>`;
+}
+function wkChip(w) {
+  if (!w || w.up == null) return '<span class="text-slate-600">—</span>';
+  return w.up
+    ? `<span title="Tren mingguan naik: close ${fmt(w.close, 0)} > SMA20 ${fmt(w.sma20, 0)}" class="inline-block text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 cursor-help font-bold">▲ Naik</span>`
+    : `<span title="Tren mingguan turun: close ${fmt(w.close, 0)} < SMA20 ${fmt(w.sma20, 0)}" class="inline-block text-[10px] px-2 py-0.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-400 cursor-help font-bold">▼ Turun</span>`;
 }
 function liqChip(grade) {
   if (!grade) return '<span class="text-slate-600">—</span>';
@@ -977,6 +991,55 @@ async function runBacktest() {
   }
 }
 
+async function runBacktestMatrix() {
+  const btn = $("#btnMatrix");
+  btn.disabled = true; btn.textContent = "Menghitung 32 kombinasi…";
+  const u = $("#btUniverse").value;
+  const q = new URLSearchParams({ criteria: $("#btCriteria").value, years: $("#btYears").value, limit: 100 });
+  if (u === "custom") q.set("tickers", $("#btTickers").value);
+  else q.set("universe", u);
+  const label = u === "custom" ? "saham kustom" : (u === "all" ? "100 saham" : "45 saham LQ45");
+  const target = $("#backtestResult");
+  target.innerHTML = spinner(`Menghitung 32 kombinasi filter pada ${label}… (1–3 menit, sekali unduh data lalu dihitung ulang)`);
+  try {
+    const d = await getJSON(`/api/backtest/matrix?${q}`);
+    const fLabel = c => [
+      ["confirm", "Buku"], ["regime", "IHSG"], ["bb", "BB"], ["div", "Div+Vol"], ["weekly", "Minggu"],
+    ].filter(([k]) => c[k]).map(([, n]) => n).join("·") || "Tanpa filter";
+    const best = d.best_key;
+    let h = `<div class="text-xs text-slate-400 mb-2">32 kombinasi diuji sekaligus (konfirmasi buku × IHSG&gt;MA200 × Bollinger × Divergensi+Vol × Tren mingguan), biaya 0,3% termasuk. <b class="text-emerald-400">Terbaik = avg R tertinggi dengan ≥5 trade</b>. ${esc(d.note || "")}</div>`;
+    h += `<div class="overflow-x-auto"><table class="w-full text-sm min-w-[640px]">
+      <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60">
+        <th class="text-left py-2">Konfigurasi</th><th class="text-right">Trade</th><th class="text-right">Win</th><th class="text-right">Loss</th><th class="text-right">Timeout</th><th class="text-right">Win Rate</th><th class="text-right">Avg R</th><th class="text-center"></th>
+      </tr></thead><tbody>`;
+    for (const r of d.combos) {
+      const isBest = r.key === best;
+      const wrCls = (r.win_rate_pct || 0) >= 33 ? "text-emerald-400" : "text-amber-400";
+      const arCls = (r.avg_r || 0) > 0 ? "text-emerald-400" : (r.avg_r || 0) < 0 ? "text-rose-400" : "";
+      h += `<tr class="border-b border-slate-800/60 ${isBest ? "bg-emerald-500/5" : ""}">
+        <td class="py-2">${isBest ? "🏆 " : ""}<span class="text-[11px] font-semibold">${esc(fLabel(r.labels))}</span>${isBest ? `<span class="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10">TERBAIK</span>` : ""}</td>
+        <td class="text-right tabular">${r.trades}</td><td class="text-right tabular text-emerald-400">${r.wins}</td><td class="text-right tabular text-rose-400">${r.losses}</td><td class="text-right tabular text-slate-500">${r.timeouts}</td>
+        <td class="text-right tabular ${wrCls}">${pct(r.win_rate_pct)}</td><td class="text-right tabular font-bold ${arCls}">${fmt(r.avg_r)}R</td>
+        <td class="text-right"><button onclick="applyMatrixConfig('${r.key}')" class="text-[10px] px-2 py-1 rounded-lg border border-slate-600 text-slate-300 hover:border-sky-400 hover:text-sky-300 transition">Terapkan</button></td>
+      </tr>`;
+    }
+    h += `</tbody></table></div>`;
+    target.innerHTML = h;
+  } catch (e) {
+    target.innerHTML = errorBox(e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "🔬 Matriks 32 Kombinasi";
+  }
+}
+
+function applyMatrixConfig(key) {
+  const parts = key.split("-").map(x => x === "1");
+  const set = (id, on) => { const el = $(id); if (el) el.checked = on; };
+  set("#btConfirm", parts[0]); set("#btRegime", parts[1]); set("#btBB", parts[2]);
+  set("#btDivVol", parts[3]); set("#btWeekly", parts[4]);
+  toast("Konfigurasi filter diterapkan ke form Uji Win Rate — klik 📊 Uji Win Rate untuk menjalankan.", "info");
+}
+
 async function scanMore(offset) {
   const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
     limit: $("#scLimit").value, offset: offset, include_bandarmology: $("#scBandar").checked,
@@ -1056,6 +1119,7 @@ function renderPortfolio() {
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Lot</th><th class="text-right px-3">Lembar</th><th class="text-right px-3">Harga Beli</th>
       <th class="text-right px-3">Harga Skrg</th><th class="text-right px-3">P/L Rp</th><th class="text-right px-3">P/L %</th>
       <th class="text-left px-3">Sinyal</th><th class="text-right px-3">TP</th><th class="text-right px-3">SL</th>
+      <th class="text-left px-3" title="Tren mingguan (multi-timeframe): close > SMA mingguan = naik">Mingguan</th>
       <th class="text-left px-3">Status / Aksi</th><th class="px-3"></th>
     </tr></thead><tbody>`;
   for (const p of porto) {
@@ -1078,6 +1142,7 @@ function renderPortfolio() {
       <td class="px-3">${q && q.signal ? sigBadge(q.signal.action, true) : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-3 text-right tabular text-emerald-400">${rm.take_profit ? fmt(rm.take_profit) : "—"}</td>
       <td class="px-3 text-right tabular text-rose-400">${rm.stop_loss ? fmt(rm.stop_loss) : "—"}</td>
+      <td class="px-3">${wkChip(q && q.weekly)}</td>
       <td class="px-3 text-xs ${st.cls}">${st.label}</td>
       <td class="px-3 text-right whitespace-nowrap">
         <button onclick="editHolding('${p.id}')" class="text-sky-400 hover:text-sky-300 text-xs font-semibold mr-2">Ubah</button>
@@ -1230,6 +1295,7 @@ async function compare() {
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">RSI</th><th class="text-left px-3">Sinyal</th><th class="text-right px-3">Vol/MA20</th>
+      <th class="text-left px-3" title="Tren mingguan (multi-timeframe)">Mingguan</th>
       <th class="text-left px-3">Bandar</th><th class="text-right px-3">Share TB</th>
     </tr></thead><tbody>`;
   const rows = watch.map(t => {
@@ -1243,6 +1309,7 @@ async function compare() {
       <td class="px-3 text-right tabular ${I.rsi14 >= 70 ? "text-rose-400" : I.rsi14 <= 30 ? "text-emerald-400" : ""}">${fmt(I.rsi14)}</td>
       <td class="px-3">${sigBadge(d.signal.action, true)}</td>
       <td class="px-3 text-right tabular">${fmt(I.volume.ratio_to_ma20)}×</td>
+      <td class="px-3">${wkChip(d.weekly)}</td>
       <td class="px-3 text-xs">${b.status
         ? `<span class="${b.status.includes("ACC") ? "text-emerald-400" : b.status.includes("DIS") ? "text-rose-400" : "text-slate-400"}">${esc(b.status.split(" ")[0])}</span>`
         : '<span class="text-slate-600">—</span>'}</td>
@@ -1434,6 +1501,7 @@ $("#btnAnalyze").addEventListener("click", analyze);
 $("#ticker").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
 $("#btnScan").addEventListener("click", scan);
 $("#btnBacktest").addEventListener("click", runBacktest);
+$("#btnMatrix").addEventListener("click", runBacktestMatrix);
 $("#btnBtPorto").addEventListener("click", fillPortoTickers);
 $("#btnSaveHolding").addEventListener("click", saveHolding);
 $("#btnCancelEdit").addEventListener("click", resetPortoForm);
@@ -1442,13 +1510,30 @@ $("#btnAddWatch").addEventListener("click", addWatch);
 $("#wlInput").addEventListener("keydown", e => { if (e.key === "Enter") addWatch(); });
 $("#btnCompare").addEventListener("click", compare);
 
+function renderMarketStrip(d) {
+  const strip = document.getElementById("marketStrip");
+  if (!strip) return;
+  const rg = d && d.market_regime;
+  if (!rg || !rg.trend) { strip.classList.add("hidden"); return; }
+  strip.classList.remove("hidden");
+  const bull = rg.trend === "bull";
+  const chip = `<span class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border font-bold ${bull ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-rose-500/40 bg-rose-500/10 text-rose-400"}"><span class="glow-dot w-1.5 h-1.5 rounded-full ${bull ? "bg-emerald-400" : "bg-rose-400"}"></span>IHSG ${bull ? "BULLISH" : "BEARISH"} · ${fmt(rg.close, 0)} ${bull ? ">" : "<"} MA200 ${fmt(rg.ma200, 0)}</span>`;
+  const tip = bull
+    ? `<span class="text-slate-400">Pasar bullish — sinyal beli diproses. Tanggal data: ${esc(rg.date || "")}</span>`
+    : `<span class="text-slate-400">⚠ Pasar <b class="text-rose-400">bearish</b> — filter "IHSG bullish" akan menahan sinyal beli (tidak melawan pasar).</span>`;
+  strip.innerHTML = chip + tip + `<button onclick="refreshMarketStrip()" class="text-slate-500 hover:text-sky-300 transition" title="Muat ulang kondisi pasar">↻</button>`;
+}
+async function refreshMarketStrip() {
+  try { renderMarketStrip(await getJSON("/api/health")); } catch (e) {}
+}
 getJSON("/api/health").then(d => {
   const el = $("#apiStatus");
   const q = !!d.idx_edge_quota_out;
-  el.textContent = q ? "⚠ Kuota broker habis" : "API: " + d.status;
+  el.textContent = q ? "⚠ Kuota broker habis" : "API: " + d.status + (d.fmp_configured ? " + FMP" : "");
   el.className = "text-xs px-3 py-1.5 rounded-full border " + (q
     ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
     : "border-emerald-500/40 bg-emerald-500/10 text-emerald-400");
+  renderMarketStrip(d);
   if (q && !document.getElementById("quotaBanner")) {
     const b = document.createElement("div");
     b.id = "quotaBanner";

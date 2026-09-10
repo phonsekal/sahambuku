@@ -2215,6 +2215,69 @@ def _divergence_series(df: pd.DataFrame, period: int = 14, carry: int = 3):
     return pd.Series(bull, index=df.index), pd.Series(bear, index=df.index)
 
 
+FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
+FMP_CACHE: Dict[str, dict] = {}
+FMP_TTL = 24 * 3600  # fundamental berubah per kuartal -> cache 1 hari cukup
+
+
+def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Optional[dict]:
+    """GET ke Financial Modeling Prep (FMP). None bila key belum di-set / gagal.
+
+    FMP memakai format simbol IDX 'BBCA.JK' dan menyediakan rasio, laporan
+    laba-rugi, dan quote (PE, EPS, ROE, revenue, PBV, dividen)."""
+    if not FMP_API_KEY:
+        return None
+    now = time.time()
+    hit = FMP_CACHE.get(path)
+    if hit and now - hit["ts"] < FMP_TTL:
+        return hit["data"]
+    url = f"https://financialmodelingprep.com/api/v3/{path}?apikey={FMP_API_KEY}"
+    if params:
+        url += "&" + "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+    except Exception:
+        return None
+    if isinstance(data, dict) and isinstance(data.get("Error Message"), str):
+        return None
+    FMP_CACHE[path] = {"ts": now, "data": data}
+    return data
+
+
+def _fetch_fmp_fundamentals(code: str) -> Optional[dict]:
+    """PE/EPS/ROE/revenue/PBV/dividen dari FMP (diaktifkan dengan FMP_API_KEY)."""
+    if not FMP_API_KEY or not code:
+        return None
+    sym = f"{code}.JK"
+    out: Dict[str, Any] = {}
+    quote = _fmp_get(f"quote/{sym}")
+    if isinstance(quote, list) and quote:
+        q = quote[0]
+        for k in ("pe", "forwardPE", "eps", "marketCap", "dividendYield", "priceToBook", "sharesOutstanding"):
+            if q.get(k) is not None:
+                out[k] = q.get(k)
+        if q.get("name"):
+            out["name"] = str(q["name"])
+    ratios = _fmp_get(f"ratios/{sym}", {"limit": 1})
+    if isinstance(ratios, list) and ratios:
+        r = ratios[0]
+        for k in ("peRatio", "priceToBookRatio", "returnOnEquity", "returnOnAssets",
+                  "dividendYield", "debtToEquity", "currentRatio"):
+            if r.get(k) is not None:
+                out.setdefault(k, r.get(k))
+    inc = _fmp_get(f"income-statement/{sym}", {"limit": 1})
+    if isinstance(inc, list) and inc:
+        i = inc[0]
+        for k in ("revenue", "netIncome", "eps", "grossProfit", "operatingIncome"):
+            if i.get(k) is not None:
+                out.setdefault(k, i.get(k))
+        if i.get("date"):
+            out["period_end"] = str(i["date"])[:10]
+    return out or None
+
+
 _IDX_PROFILE_CACHE: Dict[str, dict] = {}
 _IDX_SECTOR_CACHE: Dict[str, str] = {}
 _PROFILE_LOADED = False
@@ -2313,7 +2376,17 @@ def fetch_fundamentals(ticker: str, last_price: Optional[float] = None) -> dict:
     pct_from_high = None
     if w52["high"] and last_price:
         pct_from_high = (last_price / float(w52["high"]) - 1) * 100
-    return {
+
+    # --- Rasio keuangan dari FMP (aktif saat FMP_API_KEY di-set) ---
+    fmp = _fetch_fmp_fundamentals(code) or {}
+    if fmp.get("name"):
+        name = fmp["name"]
+    if fmp.get("marketCap"):
+        market_cap = float(fmp["marketCap"])
+    if fmp.get("sharesOutstanding"):
+        shares = float(fmp["sharesOutstanding"])
+    has_fmp = bool(fmp)
+    out = {
         "code": code,
         "name": name or None,
         "sector": sectors.get(code),
@@ -2326,10 +2399,29 @@ def fetch_fundamentals(ticker: str, last_price: Optional[float] = None) -> dict:
             "low": num(float(w52["low"]), 0) if w52["low"] else None,
             "pct_from_high": num(pct_from_high, 1) if pct_from_high is not None else None,
         },
-        "note": ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo; bukan "
-                 "laporan keuangan. PE/EPS/ROE belum tersedia dari API terpasang "
-                 "(IDX Edge PRO hanya membuka 8 endpoint market-data)."),
     }
+    if has_fmp:
+        out.update({
+            "pe": num(fmp["pe"], 2) if fmp.get("pe") is not None else None,
+            "forward_pe": num(fmp["forwardPE"], 2) if fmp.get("forwardPE") is not None else None,
+            "price_to_book": num(fmp.get("priceToBook", fmp.get("priceToBookRatio")), 2)
+                             if fmp.get("priceToBook", fmp.get("priceToBookRatio")) is not None else None,
+            "roe_pct": num(fmp.get("returnOnEquity", 0) * 100, 1) if fmp.get("returnOnEquity") is not None else None,
+            "eps": num(fmp["eps"], 2) if fmp.get("eps") is not None else None,
+            "revenue": num(fmp["revenue"], 0) if fmp.get("revenue") is not None else None,
+            "net_income": num(fmp["netIncome"], 0) if fmp.get("netIncome") is not None else None,
+            "dividend_yield_pct": num(fmp.get("dividendYield", 0) * 100, 2)
+                                  if fmp.get("dividendYield") is not None else None,
+            "period_end": fmp.get("period_end"),
+        })
+        out["note"] = ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo; rasio "
+                        "keuangan (PE, EPS, ROE, revenue, PBV, dividen) dari Financial Modeling "
+                        "Prep (FMP), periode laporan terakhir " + str(fmp.get("period_end") or "—") + ".")
+    else:
+        out["note"] = ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo; bukan "
+                       "laporan keuangan. PE/EPS/ROE belum tersedia — pasang FMP_API_KEY "
+                       "(financialmodelingprep.com, gratis) agar rasio keuangan muncul.")
+    return out
 
 
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
@@ -2589,6 +2681,156 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     }
 
 
+def _backtest_matrix(tickers: List[str], criteria: str, years: int,
+                     ihsg_align: Optional[pd.DataFrame] = None) -> dict:
+    """Matriks semua kombinasi filter (confirm x regime x bb x div x weekly = 32).
+
+    Data tiap ticker diambil SEKALI lalu 32 kombinasi dievaluasi dari deret yang
+    sama (efisien & konsisten). Biaya 0,3% round-trip selalu diterapkan agar
+    avg_r realistis. Menyoroti konfigurasi terbaik (avg R tertinggi dengan
+    minimal 5 trade)."""
+    import itertools
+    keys = ("confirm", "regime", "bb", "div", "weekly")
+    combos = list(itertools.product((True, False), repeat=5))
+    agg = {c: {"trades": 0, "wins": 0, "losses": 0, "timeouts": 0, "r": 0.0} for c in combos}
+    checked = 0
+    for tk in tickers:
+        try:
+            df = _fetch_backtest_history(tk, years)
+        except Exception:
+            continue
+        if df is None or len(df) < 60:
+            continue
+        cutoff = df.index[-1] - pd.DateOffset(years=years)
+        sub = df[df.index >= cutoff]
+        if len(sub) < 40:
+            continue
+        checked += 1
+
+        close = sub["Close"].astype(float); high = sub["High"].astype(float)
+        low = sub["Low"].astype(float); vol = sub["Volume"].astype(float)
+        value = _value_series(sub)
+        atr_s = atr(sub, 14)
+        vma20 = vol.rolling(20).mean(); sma20 = close.rolling(20).mean()
+        sma50 = close.rolling(50).mean(); rsi_s = rsi(close, 14)
+        value_ma10 = value.rolling(10).mean(); value_ma20 = value.rolling(20).mean()
+        bb_up, _, bb_lo = bollinger_bands(close, 20, 2.0)
+        bull_div, _ = _divergence_series(sub)
+        bscore = _buy_score_series(sub) if criteria == "buy" else None
+        weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
+        ihsg_ok = None
+        if ihsg_align is not None and len(ihsg_align):
+            try:
+                s = ihsg_align.reindex(sub.index, method="ffill")
+                ihsg_ok = (s["c"] > s["m"]).to_numpy(dtype=bool)
+            except Exception:
+                ihsg_ok = None
+
+        n = len(sub)
+        max_hold = 5 if criteria in ("scalping", "bsjp") else 20
+        for combo in combos:
+            confirm, use_reg, use_bb, use_div, use_wk = combo
+            triggers = []
+            for i in range(20, n - 1):
+                last, prev = float(close.iloc[i]), float(close.iloc[i - 1])
+                day_ret = (last / prev - 1) * 100 if prev > 0 else 0.0
+                v = float(value.iloc[i])
+                vr = float(vol.iloc[i]) / float(vma20.iloc[i]) if vma20.iloc[i] > 0 else 0.0
+                if criteria == "scalping":
+                    hit = v >= 1e9 and day_ret >= 10.0 and last > 50
+                elif criteria == "bsjp":
+                    hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
+                elif criteria == "buy":
+                    hit = float(bscore.iloc[i]) >= 70.0
+                else:
+                    hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
+                           and float(value_ma20.iloc[i]) >= 10e9
+                           and float(value.iloc[i - 1]) <= float(value.iloc[i])
+                           and float(value_ma10.iloc[i]) > float(value_ma20.iloc[i]))
+                if hit and confirm and criteria != "buy":
+                    hit = (float(close.iloc[i]) > float(sma20.iloc[i])
+                           and float(rsi_s.iloc[i]) < 70.0
+                           and float(vol.iloc[i]) > float(vma20.iloc[i]))
+                if hit and use_bb and criteria in ("swing", "buy"):
+                    hit = (not np.isnan(bb_up.iloc[i]) and not np.isnan(bb_lo.iloc[i])
+                           and float(close.iloc[i]) < float(bb_up.iloc[i])
+                           and float(close.iloc[i]) > float(bb_lo.iloc[i])
+                           and float(sma20.iloc[i]) > float(sma50.iloc[i]))
+                if hit and use_div:
+                    hit = ((bool(bull_div.iloc[i]) or (not np.isnan(rsi_s.iloc[i]) and float(rsi_s.iloc[i]) < 70.0))
+                           and float(vol.iloc[i]) > float(vma20.iloc[i]))
+                if hit and use_wk:
+                    hit = bool(weekly_trend.iloc[i])
+                if hit and use_reg and ihsg_ok is not None:
+                    hit = bool(ihsg_ok[i])
+                if hit:
+                    triggers.append(i)
+            if not triggers:
+                continue
+            a = agg[combo]
+            for i in triggers:
+                entry = float(close.iloc[i])
+                atr_v = float(atr_s.iloc[i])
+                if np.isnan(atr_v):
+                    atr_v = entry * 0.02
+                risk = max(atr_v * 2, entry * 0.005)
+                sl, tp = entry - risk, entry + 2 * risk
+                cost_r = (entry * 0.003) / risk
+                outcome = None
+                for j in range(i + 1, min(i + 1 + max_hold, n)):
+                    if float(low.iloc[j]) <= sl:
+                        outcome = -1.0
+                        break
+                    if float(high.iloc[j]) >= tp:
+                        outcome = 2.0
+                        break
+                if outcome is None:
+                    exit_r = (float(close.iloc[min(i + max_hold, n - 1)]) - entry) / risk
+                    a["timeouts"] += 1
+                    a["r"] += exit_r - cost_r
+                else:
+                    if outcome > 0:
+                        a["wins"] += 1
+                    else:
+                        a["losses"] += 1
+                    a["r"] += outcome - cost_r
+                a["trades"] += 1
+
+    results = []
+    for combo, a in agg.items():
+        decided = a["wins"] + a["losses"]
+        results.append({
+            "key": "-".join("1" if c else "0" for c in combo),
+            "labels": dict(zip(keys, combo)),
+            "trades": a["trades"],
+            "wins": a["wins"],
+            "losses": a["losses"],
+            "timeouts": a["timeouts"],
+            "win_rate_pct": num(a["wins"] / decided * 100, 1) if decided else None,
+            "avg_r": num(a["r"] / a["trades"], 2) if a["trades"] else None,
+        })
+    # Konfigurasi terbaik: avg R tertinggi dengan minimal 5 trade (jika ada),
+    # selain itu yang trade-nya terbanyak. Sisanya urut avg_r menurun.
+    candidates = [r for r in results if r["trades"] >= 5]
+    best_key = None
+    if candidates:
+        best = max(candidates, key=lambda r: (r["avg_r"] or -99))
+        best_key = best["key"]
+    results.sort(key=lambda r: (r["avg_r"] or -99), reverse=True)
+    return {
+        "criteria": criteria,
+        "years": years,
+        "tickers_checked": checked,
+        "best_key": best_key,
+        "combos": results,
+        "note": ("Matriks 32 kombinasi filter (konfirmasi buku x IHSG>MA200 x Bollinger x "
+                 "divergensi+volume x tren mingguan). Biaya+slippage 0,3% round-trip selalu "
+                 "termasuk. Win rate dihitung dari trade yang dituntaskan (SL/TP); timeout "
+                 "keluar di harga tutup dan dihitung di avg R. Kombinasi terbaik = avg R "
+                 "tertinggi dengan minimal 5 trade. Kinerja masa lalu BUKAN jaminan masa depan."),
+    }
+
+
 # ---------------------------------------------------------------------------
 # 7. FASTAPI APP
 # ---------------------------------------------------------------------------
@@ -2648,6 +2890,8 @@ def health():
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "idx_edge_quota_out": idx_edge_quota_out(),
         "idx_edge_keys": len(IDX_EDGE_API_KEYS),
+        "fmp_configured": bool(FMP_API_KEY),
+        "market_regime": _ihsg_regime(),
         "status": "ok",
         "service": "dedesaputra_invst Strategy API",
         "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -3095,6 +3339,36 @@ def backtest(
                  "Kriteria 'buy' memakai skor komposit multi-konfirmasi (tanpa bandarmology historis)."),
         "disclaimer": DISCLAIMER,
     }
+
+
+@app.get("/api/backtest/matrix")
+def backtest_matrix(
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy)$"),
+    universe: str = Query("liquid", pattern="^(all|liquid)$"),
+    years: int = Query(2, ge=1, le=5),
+    limit: int = Query(20, ge=1, le=100),
+    tickers_param: str = Query("", alias="tickers",
+                               description="Daftar kode kustom dipisah koma (maks 30); menimpa universe"),
+):
+    """Matriks win rate semua 32 kombinasi filter sekaligus (lihat _backtest_matrix)."""
+    if tickers_param:
+        tickers = [f"{t.strip().upper()}.JK" if "." not in t.strip().upper() else t.strip().upper()
+                   for t in tickers_param.split(",") if t.strip()][:30]
+    else:
+        tickers = load_idx_tickers(universe)
+        tickers = tickers[:100] if universe == "all" else tickers[:limit]
+    ihsg_align = None
+    try:
+        ic, im = _ihsg_series()
+        if ic is not None and im is not None:
+            s = pd.concat([ic.rename("c"), im.rename("m")], axis=1).dropna()
+            if len(s):
+                ihsg_align = s
+    except Exception:
+        ihsg_align = None
+    out = _backtest_matrix(tickers, criteria, years, ihsg_align)
+    out["disclaimer"] = DISCLAIMER
+    return out
 
 
 class BrokerRow(BaseModel):
