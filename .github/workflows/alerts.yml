@@ -1,0 +1,31 @@
+name: Cek Alert Portofolio (TP/SL)
+
+# Alternatif gratis dari Vercel Cron (plan Hobby hanya boleh harian).
+# Menjalankan pemeriksaan TP/SL/overbought/sinyal jual setiap 15 menit
+# selama jam bursa IDX, lalu mengirim notifikasi Telegram bila ada alert.
+on:
+  schedule:
+    # 02:00-08:45 UTC = 09:00-15:45 WIB, Senin-Jumat (jam bursa IDX)
+    - cron: "*/15 2-8 * * 1-5"
+  workflow_dispatch: {}
+
+jobs:
+  cek-alert:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Panggil endpoint /api/cron/alerts
+        run: |
+          set -euo pipefail
+          echo "Memeriksa alert portofolio pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 120 -o resp.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/alerts")
+          echo "HTTP $code"
+          cat resp.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint alert membalas HTTP $code"
+            exit 1
+          fi
+          echo "Selesai."
