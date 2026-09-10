@@ -28,6 +28,7 @@ import io
 import json
 import math
 import os
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -875,7 +876,8 @@ def analyze_broker_summary(payload: dict) -> dict:
 
 def fetch_data(ticker: str, period: str) -> pd.DataFrame:
     """Unduh OHLCV dengan fallback berantai:
-    1) yfinance (real-time) -> 2) dataset GitHub IDX (jika Yahoo memblokir IP server).
+    1) yfinance (real-time, dibatasi timeout) -> 2) IDX Edge PRO -> 3) dataset GitHub IDX.
+    Kode tanpa titik (mis. TLKM) otomatis dicoba dengan suffix .JK bila gagal.
     Sumber akhir dicatat di df.attrs['source'].
     """
     key = (ticker.upper(), period)
@@ -884,38 +886,54 @@ def fetch_data(ticker: str, period: str) -> pd.DataFrame:
     if hit and now - hit["ts"] < CACHE_TTL_SECONDS:
         return hit["df"]
 
-    yf_err = None
-    try:
-        df = yf.download(ticker, period=period, interval="1d",
-                         auto_adjust=True, progress=False, threads=False)
-    except Exception as exc:
-        df = None
-        yf_err = str(exc)
+    def _attempt(tk: str):
+        """Coba satu varian ticker; kembalikan (df, source, yf_err)."""
+        yf_err = None
+        try:
+            df = _call_with_timeout(
+                lambda: yf.download(tk, period=period, interval="1d",
+                                    auto_adjust=True, progress=False, threads=False),
+                YFINANCE_TIMEOUT,
+            )
+            if df is None:
+                yf_err = "yfinance timeout / tidak ada data"
+        except Exception as exc:
+            df = None
+            yf_err = str(exc)
 
-    source = "yfinance"
+        source = "yfinance"
+        if df is None or df.empty:
+            if IDX_EDGE_API_KEYS:
+                df = fetch_idx_history(tk)
+                if df is not None:
+                    source = "idx-edge-pro" + (" (yfinance gagal)" if yf_err else "")
+            if df is None or df.empty:
+                fallback = _download_github_csv(tk)
+                if fallback is not None:
+                    df = fallback
+                    source = "github-dataset" + (" (yfinance gagal)" if yf_err else "")
+        return df, source, yf_err
+
+    # Kode pendek tanpa titik (mis. BBCA/TLKM): prioritas varian .JK bursa IDX,
+    # lalu kode asli (mis. AAPL). Menghindari salah instrumen dengan nama sama di bursa lain.
+    if "." not in ticker.upper() and ticker.upper().isalnum() and len(ticker) <= 5:
+        df, source, yf_err = _attempt(ticker.upper() + ".JK")
+        if df is None or df.empty:
+            df, source, yf_err = _attempt(ticker)
+    else:
+        df, source, yf_err = _attempt(ticker)
+
     if df is None or df.empty:
-        # 2) IDX Edge PRO (real-time IDX; aktif jika key di-set)
-        if IDX_EDGE_API_KEYS:
-            df = fetch_idx_history(ticker)
-            if df is not None:
-                source = "idx-edge-pro" + (" (yfinance gagal)" if yf_err else "")
-        # 3) dataset publik GitHub (gratis; data s/d 2025)
-        if df is None or df.empty:
-            fallback = _download_github_csv(ticker)
-            if fallback is not None:
-                df = fallback
-                source = "github-dataset" + (" (yfinance gagal)" if yf_err else "")
-        if df is None or df.empty:
-            if yf_err and ("rate" in yf_err.lower() or "too many" in yf_err.lower()):
-                raise HTTPException(
-                    429,
-                    detail=f"yfinance sedang rate-limited untuk {ticker} dan fallback data tidak tersedia. "
-                           "Coba lagi beberapa saat kemudian.",
-                )
-            raise HTTPException(404, detail=(
-                f"Data tidak ditemukan untuk ticker '{ticker}'. Periksa kode saham "
-                "(mis. BBCA.JK, TLKM.JK, AAPL, TSLA)."
-            ))
+        if yf_err and ("rate" in yf_err.lower() or "too many" in yf_err.lower()):
+            raise HTTPException(
+                429,
+                detail=f"yfinance sedang rate-limited untuk {ticker} dan fallback data tidak tersedia. "
+                       "Coba lagi beberapa saat kemudian.",
+            )
+        raise HTTPException(404, detail=(
+            f"Data tidak ditemukan untuk ticker '{ticker}'. Periksa kode saham "
+            "(mis. BBCA.JK, TLKM.JK, AAPL, TSLA)."
+        ))
 
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
@@ -1039,8 +1057,11 @@ def _download_batch(tickers: List[str], period: str) -> Dict[str, pd.DataFrame]:
     if not tickers:
         return {}
     try:
-        raw = yf.download(tickers, period=period, interval="1d", auto_adjust=True,
-                          group_by="ticker", progress=False, threads=False)
+        raw = _call_with_timeout(
+            lambda: yf.download(tickers, period=period, interval="1d", auto_adjust=True,
+                                group_by="ticker", progress=False, threads=False),
+            YFINANCE_TIMEOUT,
+        )
     except Exception:
         return {}
     if raw is None or raw.empty:
@@ -1366,6 +1387,59 @@ def _get_ticker_data(tk: str, period: str):
     return None, None
 
 
+def _call_with_timeout(fn, timeout: float, *args, **kwargs):
+    """Jalankan fn dengan batas waktu; kembalikan None bila lewat batas.
+
+    Thread-nya dibuat daemon sehingga tidak menahan proses walau menggantung.
+    """
+    box: dict = {}
+
+    def runner():
+        try:
+            box["v"] = fn(*args, **kwargs)
+        except Exception as e:
+            box["e"] = e
+
+    th = threading.Thread(target=runner, daemon=True)
+    th.start()
+    th.join(timeout)
+    if th.is_alive():
+        return None
+    if "e" in box:
+        raise box["e"]
+    return box.get("v")
+
+
+YFINANCE_TIMEOUT = 25
+LIVE_QUOTE_TIMEOUT = 3
+
+
+def _fetch_live_quote_inner(ticker: str) -> Optional[dict]:
+    """Kutipan harga real-time dari Yahoo (fast_info). None bila gagal/rate-limited."""
+    try:
+        fi = yf.Ticker(ticker).fast_info
+        px = float(fi.get("last_price") or 0)
+        prev = float(fi.get("previous_close") or 0)
+        if px <= 0:
+            return None
+        return {
+            "last_price": px,
+            "previous_close": prev,
+            "change_pct": (px / prev - 1) * 100 if prev > 0 else None,
+            "source": "yahoo-live",
+        }
+    except Exception:
+        return None
+
+
+def fetch_live_quote(ticker: str) -> Optional[dict]:
+    """Best-effort harga real-time dengan timeout singkat (agar tak memperlambat API)."""
+    try:
+        return _call_with_timeout(_fetch_live_quote_inner, LIVE_QUOTE_TIMEOUT, ticker)
+    except Exception:
+        return None
+
+
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
                  include_bandarmology: bool):
     """Proses 1 ticker (dijalankan paralel via ThreadPoolExecutor)."""
@@ -1381,6 +1455,8 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 
     result = run_screener(df, criteria, bandar_series)
     item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"]}
+    item["data_date"] = (str(df.index[-1].date()) if hasattr(df.index[-1], "date")
+                          else str(df.index[-1]))
     if include_signal:
         item["signal"] = quick_signal(df)
 
@@ -1457,6 +1533,7 @@ def root():
             "GET  /api/health",
             "GET  /api/analyze/{ticker}?period=1y",
             "POST /api/bandarmology/analyze",
+            "GET  /api/chart/{ticker}?period=1y&limit=120",
             "GET  /api/screener/tickers?universe=all|liquid",
             "GET  /api/screener?criteria=all|swing|scalping|bsjp&universe=liquid|all&limit=20&offset=0",
             "POST /api/screener",
@@ -1496,6 +1573,13 @@ def analyze(
     last_price = float(close.iloc[-1])
     prev_price = float(close.iloc[-2])
     change_pct = (last_price / prev_price - 1) * 100 if prev_price > 0 else None
+
+    # Kutipan harga live (best-effort; Yahoo kadang diblokir/rate-limited di server).
+    quote = fetch_live_quote(ticker)
+    is_live = bool(quote and quote.get("last_price"))
+    if is_live:
+        last_price = quote["last_price"]
+        change_pct = quote.get("change_pct")
 
     # --- indikator ---
     s20, s50, s200 = sma(close, 20).iloc[-1], sma(close, 50).iloc[-1], sma(close, 200).iloc[-1]
@@ -1568,6 +1652,8 @@ def analyze(
             "change_pct": num(change_pct, 2),
             "date": str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1]),
             "source": df.attrs.get("source", "yfinance"),
+            "is_live": is_live,
+            "quote_source": quote.get("source") if is_live else None,
             "note": GITHUB_DATASET_NOTE if "github" in str(df.attrs.get("source", "")) else None,
         },
         "indicators": {
@@ -1682,6 +1768,31 @@ def screener(
             "Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
             "kriteria swing memakai proksi nilai transaksi."
         ),
+        "disclaimer": DISCLAIMER,
+    }
+
+
+@app.get("/api/chart/{ticker}")
+def chart(
+    ticker: str,
+    period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
+    limit: int = Query(120, ge=20, le=500),
+):
+    """Data OHLCV untuk grafik candlestick (pakai sumber data yang sama dengan analyze)."""
+    df = fetch_data(ticker, period)
+    n = min(limit, len(df))
+    sub = df.tail(n)
+    bars = [{
+        "date": str(idx.date()) if hasattr(idx, "date") else str(idx),
+        "open": num(r["Open"], 2), "high": num(r["High"], 2),
+        "low": num(r["Low"], 2), "close": num(r["Close"], 2),
+        "volume": num(r["Volume"], 0),
+    } for idx, r in sub.iterrows()]
+    return {
+        "ticker": ticker.upper(),
+        "source": df.attrs.get("source", "yfinance"),
+        "data_date": str(sub.index[-1].date()) if hasattr(sub.index[-1], "date") else str(sub.index[-1]),
+        "bars": bars,
         "disclaimer": DISCLAIMER,
     }
 

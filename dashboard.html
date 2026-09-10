@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CoachInvestasi Dashboard — Analisis Saham</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230ea5e9'/><path d='M20 70 L42 48 L58 60 L80 32' stroke='%230b1220' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <script src="https://cdn.tailwindcss.com"></script>
+<script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
 <script>
   tailwind.config = {
     theme: {
@@ -16,50 +18,53 @@
 </script>
 <style>
   ::-webkit-scrollbar { width: 8px; height: 8px; }
-  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-track { background: #0b1220; }
   ::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; }
   .tabular { font-variant-numeric: tabular-nums; }
+  .glow-dot { position: relative; }
+  .glow-dot::after { content: ""; position: absolute; inset: -4px; border-radius: 9999px; background: currentColor; opacity: .25; animation: pulse 1.6s ease-in-out infinite; }
+  @keyframes pulse { 0%,100% { transform: scale(1); opacity: .25; } 50% { transform: scale(1.5); opacity: .1; } }
 </style>
 </head>
-<body class="bg-slate-950 text-slate-200 min-h-screen antialiased">
+<body class="min-h-screen text-slate-200 antialiased"
+      style="background: radial-gradient(1000px 400px at 50% -10%, rgba(56,189,248,.08), transparent), #0b1220;">
 
 <div class="max-w-6xl mx-auto px-4 py-6 pb-16">
 
   <!-- ======= HEADER ======= -->
-  <header class="flex items-center justify-between flex-wrap gap-3 mb-6">
+  <header class="flex items-center justify-between flex-wrap gap-3 mb-7">
     <div class="flex items-center gap-3">
-      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center font-black text-slate-950 text-lg shadow-lg shadow-sky-500/20">CI</div>
+      <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-sky-400 via-blue-500 to-indigo-600 flex items-center justify-center font-black text-slate-950 text-lg shadow-lg shadow-sky-500/30">CI</div>
       <div>
-        <h1 class="text-xl font-extrabold tracking-tight">Coach<span class="text-sky-400">Investasi</span> <span class="text-slate-400 font-semibold text-base">Dashboard</span></h1>
-        <p class="text-xs text-slate-500">Technical Analysis + Bandarmology — 2025/2026</p>
+        <h1 class="text-2xl font-extrabold tracking-tight">Coach<span class="bg-gradient-to-r from-sky-400 to-blue-400 bg-clip-text text-transparent">Investasi</span> <span class="text-slate-500 font-bold text-lg">Dashboard</span></h1>
+        <p class="text-xs text-slate-500">Technical Analysis + Bandarmology · 2025/2026</p>
       </div>
     </div>
-    <span id="apiStatus" class="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-400">cek API…</span>
+    <div id="apiStatus" class="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-400">cek API…</div>
   </header>
 
   <!-- ======= TABS ======= -->
-  <div class="flex gap-2 mb-5">
-    <button data-tab="analyze" class="tab tab-active px-4 py-2 rounded-xl text-sm font-semibold transition">
-      📊 Analisis Saham
-    </button>
-    <button data-tab="screener" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition">
-      🔍 Screener
-    </button>
+  <div class="flex gap-2 mb-6 bg-slate-900/60 border border-slate-800 rounded-2xl p-1.5 w-fit">
+    <button data-tab="analyze" class="tab tab-active px-4 py-2 rounded-xl text-sm font-bold transition">📊 Analisis Saham</button>
+    <button data-tab="screener" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition">🔍 Screener</button>
   </div>
 
   <!-- ======= TAB ANALISIS ======= -->
   <section id="tab-analyze">
     <div class="flex flex-wrap gap-3 items-center mb-5">
-      <input id="ticker" value="BBCA.JK" placeholder="Kode saham, mis. BBCA.JK / TLKM / AAPL"
-        class="w-56 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-500">
-      <select id="period" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <div class="relative">
+        <input id="ticker" value="BBCA" placeholder="Kode saham, mis. BBCA / TLKM / AAPL"
+          class="w-60 bg-slate-900/80 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-500 shadow-inner">
+        <span class="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-sm">🔎</span>
+      </div>
+      <select id="period" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="3mo">3 Bulan</option>
         <option value="6mo">6 Bulan</option>
         <option value="1y" selected>1 Tahun</option>
         <option value="2y">2 Tahun</option>
         <option value="5y">5 Tahun</option>
       </select>
-      <button id="btnAnalyze" class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl px-5 py-2.5 text-sm transition disabled:opacity-50 disabled:cursor-wait">
+      <button id="btnAnalyze" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-sky-500/25 transition disabled:opacity-50 disabled:cursor-wait">
         Analisis
       </button>
       <span id="analyzeHint" class="text-xs text-slate-500"></span>
@@ -70,17 +75,17 @@
   <!-- ======= TAB SCREENER ======= -->
   <section id="tab-screener" class="hidden">
     <div class="flex flex-wrap gap-3 items-center mb-4">
-      <select id="scUniverse" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <select id="scUniverse" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="liquid" selected>Liquid (LQ45)</option>
         <option value="all">Semua (951 saham)</option>
       </select>
-      <select id="scCriteria" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <select id="scCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="all" selected>Semua kriteria</option>
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
       </select>
-      <select id="scLimit" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <select id="scLimit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="5">5 saham</option>
         <option value="10" selected>10 saham</option>
         <option value="20">20 saham</option>
@@ -89,7 +94,7 @@
       <label class="flex items-center gap-2 text-xs text-slate-400">
         <input type="checkbox" id="scBandar" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> + Bandarmology
       </label>
-      <button id="btnScan" class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl px-5 py-2.5 text-sm transition disabled:opacity-50 disabled:cursor-wait">
+      <button id="btnScan" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-sky-500/25 transition disabled:opacity-50 disabled:cursor-wait">
         Scan
       </button>
     </div>
@@ -98,7 +103,7 @@
   </section>
 
   <!-- ======= FOOTER ======= -->
-  <footer class="mt-10 text-center text-[11px] text-slate-600 leading-relaxed">
+  <footer class="mt-12 text-center text-[11px] text-slate-600 leading-relaxed">
     Hasil ini murni edukasi berdasarkan e-book "Technical Analysis &amp; Bandarmology Coach Investasi 2025-2026".<br>
     BUKAN saran beli/jual. Selalu lakukan riset mandiri (DYOR).
   </footer>
@@ -106,6 +111,7 @@
 
 <script>
 const $ = s => document.querySelector(s);
+const stripJK = s => String(s || "").replace(/\.JK$/i, "");
 
 /* ---------- helper ---------- */
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -115,7 +121,6 @@ const pct = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : Nu
 const arrow = v => v > 0 ? "▲" : v < 0 ? "▼" : "•";
 const cls = v => v > 0 ? "text-emerald-400" : v < 0 ? "text-rose-400" : "text-slate-400";
 
-/** fetch JSON dengan penanganan error yang benar (respons non-JSON -> pesan jelas) */
 async function getJSON(url) {
   const r = await fetch(url);
   const ct = r.headers.get("content-type") || "";
@@ -139,7 +144,7 @@ function sigBadge(a) {
   return `<span class="inline-block px-3 py-1.5 rounded-lg text-sm font-extrabold border ${map[a] || "bg-slate-800 text-slate-300 border-slate-600"}">${esc(a)}</span>`;
 }
 const card = (title, inner) =>
-  `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+  `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 shadow-xl shadow-black/20 transition hover:border-slate-700">
      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">${title}</h2>${inner}
    </div>`;
 const kv = (k, v, extra = "") =>
@@ -147,17 +152,35 @@ const kv = (k, v, extra = "") =>
      <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">${esc(k)}</div>
      <div class="text-lg font-bold tabular ${extra}">${v}</div>
    </div>`;
-const spinner = txt => `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-sm text-slate-400"><span class="inline-block w-4 h-4 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>${txt}</div>`;
+const spinner = txt => `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-400"><span class="inline-block w-4 h-4 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>${txt}</div>`;
 const errorBox = msg => `<div class="bg-rose-500/10 border border-rose-500/50 rounded-2xl p-5 text-sm text-rose-300">⚠ ${esc(msg)}</div>`;
+const freshChip = (isLive, date, source) =>
+  isLive
+    ? `<span class="inline-flex items-center gap-1.5 text-[11px] px-2.5 py-1 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-semibold"><span class="glow-dot w-1.5 h-1.5 rounded-full bg-emerald-400"></span>LIVE</span>`
+    : `<span class="text-[11px] px-2.5 py-1 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-400 font-semibold" title="Update setelah sesi berakhir (~17:00 WIB)">Data s/d ${esc(date)}</span>`;
 
 /* ---------- ANALISIS ---------- */
 async function analyze() {
-  const btn = $("#btnAnalyze"), ticker = $("#ticker").value.trim().toUpperCase(), period = $("#period").value;
-  if (!ticker) return;
+  const btn = $("#btnAnalyze"), period = $("#period").value;
+  let t = $("#ticker").value.trim().toUpperCase();
+  if (!t) return;
   btn.disabled = true; btn.textContent = "Memuat…";
-  $("#analyzeResult").innerHTML = spinner(`Menganalisis <b class="text-slate-200">${esc(ticker)}</b>… (yfinance / IDX Edge / dataset)`);
+  $("#analyzeResult").innerHTML = spinner(`Menganalisis <b class="text-slate-200">${esc(stripJK(t))}</b>…`);
+
+  const tryFetch = tk => getJSON(`/api/analyze/${encodeURIComponent(tk)}?period=${period}`);
+  const chartFetch = tk => getJSON(`/api/chart/${encodeURIComponent(tk)}?period=${period}&limit=150`).catch(() => null);
+
   try {
-    renderAnalyze(await getJSON(`/api/analyze/${encodeURIComponent(ticker)}?period=${period}`));
+    // Kode tanpa titik: coba varian .JK dulu (bursa IDX), lalu kode asli (mis. AAPL)
+    let d, resolved = t;
+    if (!t.includes(".") && /^[A-Z0-9]{1,5}$/.test(t)) {
+      try { resolved = t + ".JK"; d = await tryFetch(resolved); }
+      catch (e) { resolved = t; d = await tryFetch(t); }
+    } else {
+      d = await tryFetch(t);
+    }
+    const chart = await chartFetch(resolved);
+    renderAnalyze(d, chart);
   } catch (e) {
     $("#analyzeResult").innerHTML = errorBox(e.message);
   } finally {
@@ -165,14 +188,19 @@ async function analyze() {
   }
 }
 
-function renderAnalyze(d) {
+function renderAnalyze(d, chart) {
   const m = d.market, s = d.signal, b = d.bandarmology || {};
+  const tk = stripJK(d.ticker);
   let h = "";
 
   // header harga + sinyal
-  h += `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-4 flex flex-wrap items-center justify-between gap-4">
+  h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-6 mb-4 shadow-xl shadow-black/20 flex flex-wrap items-center justify-between gap-4">
     <div>
-      <div class="text-xs text-slate-500 mb-1">${esc(m.date)} ${m.source ? `<span class="text-violet-400">· ${esc(m.source)}</span>` : ""}</div>
+      <div class="flex items-center gap-2 mb-1.5">
+        <span class="text-lg font-extrabold tracking-tight">${esc(tk)}</span>
+        ${freshChip(m.is_live, m.date, m.source)}
+        <span class="text-xs text-violet-400 font-medium">${esc(m.source)}</span>
+      </div>
       <div class="text-4xl font-extrabold tabular ${cls(m.change_pct)}">${fmt(m.last_price)}
         <span class="text-base font-semibold">${arrow(m.change_pct)} ${pct(m.change_pct)}</span></div>
       ${m.note ? `<div class="text-xs text-amber-400/80 mt-2">⚠ ${esc(m.note)}</div>` : ""}
@@ -182,6 +210,14 @@ function renderAnalyze(d) {
       <div class="text-xs text-slate-500 mt-2">skor <b class="text-slate-300">${fmt(s.score)}</b> · kekuatan ${esc(s.strength)}</div>
     </div>
   </div>`;
+
+  // grafik
+  if (chart && chart.bars && chart.bars.length > 1) {
+    h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-4 mb-4 shadow-xl shadow-black/20">
+      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">Grafik Harga (Candlestick) · ${esc(chart.data_date || "")}</h2>
+      <div id="priceChart" style="height:300px"></div>
+    </div>`;
+  }
 
   // alasan
   h += card("Alasan Sinyal",
@@ -263,7 +299,7 @@ function renderAnalyze(d) {
 
   // bandarmology
   if (b.status) {
-    h += `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 mb-4">
+    h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
       <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">Bandarmology (IDX Edge PRO)</h2>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
         ${kv("Status", esc(b.status), b.status.includes("ACC") ? "text-emerald-400" : b.status.includes("DIS") ? "text-rose-400" : "")}
@@ -288,6 +324,27 @@ function renderAnalyze(d) {
   }
 
   $("#analyzeResult").innerHTML = h;
+  drawChart(chart);
+}
+
+function drawChart(chart) {
+  const el = document.getElementById("priceChart");
+  if (!el || !window.LightweightCharts || !chart || !chart.bars || chart.bars.length < 2) return;
+  const lc = window.LightweightCharts.createChart(el, {
+    layout: { background: { type: "solid", color: "#0f172a" }, textColor: "#94a3b8", fontSize: 11 },
+    grid: { vertLines: { color: "#1e293b" }, horzLines: { color: "#1e293b" } },
+    rightPriceScale: { borderColor: "#1e293b" },
+    timeScale: { borderColor: "#1e293b", timeVisible: false },
+    crosshair: { mode: 0 },
+    width: el.clientWidth || 600, height: 300,
+  });
+  const candle = lc.addCandlestickSeries({ upColor: "#22c55e", downColor: "#ef4444", borderVisible: false, wickUpColor: "#22c55e", wickDownColor: "#ef4444" });
+  candle.setData(chart.bars.map(b => ({ time: b.date, open: b.open, high: b.high, low: b.low, close: b.close })));
+  const vol = lc.addHistogramSeries({ priceScaleId: "vol", priceFormat: { type: "volume" }, lastValueVisible: false, priceLineVisible: false });
+  lc.priceScale("vol").applyOptions({ scaleMargins: { top: 0.82, bottom: 0 } });
+  vol.setData(chart.bars.map(b => ({ time: b.date, value: b.volume, color: b.close >= b.open ? "rgba(34,197,94,.35)" : "rgba(239,68,68,.35)" })));
+  lc.timeScale().fitContent();
+  window.addEventListener("resize", () => { lc.applyOptions({ width: el.clientWidth }); });
 }
 
 /* ---------- SCREENER ---------- */
@@ -315,19 +372,19 @@ function renderScan(d) {
     `<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
 
   if (!d.results.length) {
-    $("#screenerResult").innerHTML = `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">Tidak ada saham yang lolos kriteria pada halaman ini.</div>`;
+    $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">Tidak ada saham yang lolos kriteria pada halaman ini.</div>`;
     return;
   }
-  let h = `<div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-x-auto"><table class="w-full text-sm min-w-[760px]">
+  let h = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><table class="w-full text-sm min-w-[780px]">
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
-      <th class="text-left px-4 py-3">Ticker</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
+      <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
     h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
-      <td class="px-4 py-3 font-bold">${esc(r.ticker)}</td>
-      <td class="px-3 text-right tabular">${fmt(r.price)}</td>
+      <td class="px-4 py-3"><div class="font-bold">${esc(stripJK(r.ticker))}</div><div class="text-[10px] text-slate-500">${esc(r.data_date || "")}</div></td>
+      <td class="px-3 text-right tabular font-semibold">${fmt(r.price)}</td>
       <td class="px-3 text-right tabular ${cls(r.day_return_pct)}">${pct(r.day_return_pct)}</td>
       <td class="px-3 text-right tabular text-slate-400">${fmtIdr(r.estimated_value_idr)}</td>
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
@@ -358,11 +415,11 @@ async function scanMore(offset) {
 /* ---------- init ---------- */
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
   document.querySelectorAll(".tab").forEach(x => {
-    x.classList.toggle("tab-active", x === t);
     x.classList.toggle("bg-sky-500", x === t);
     x.classList.toggle("text-slate-950", x === t);
     x.classList.toggle("font-bold", x === t);
     x.classList.toggle("text-slate-400", x !== t);
+    x.classList.toggle("font-semibold", x !== t);
   });
   $("#tab-analyze").classList.toggle("hidden", t.dataset.tab !== "analyze");
   $("#tab-screener").classList.toggle("hidden", t.dataset.tab !== "screener");
