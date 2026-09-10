@@ -122,7 +122,8 @@
       <p class="text-[11px] text-slate-500 mb-3">Mengukur berapa persen sinyal historis mencapai TP sebelum kena SL — entry harga tutup, SL 2×ATR, TP 2R (RRR 1:2 sesuai buku). Edukasi, bukan jaminan masa depan.</p>
       <div class="flex flex-wrap gap-3 items-center mb-2">
         <select id="btCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
-          <option value="swing" selected>Swing</option>
+          <option value="all" selected>Semua Kriteria (4×32)</option>
+          <option value="swing">Swing</option>
           <option value="scalping">Scalping</option>
           <option value="bsjp">Beli Sore Jual Pagi</option>
           <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
@@ -154,8 +155,8 @@
         <button id="btnBacktest" class="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-violet-500/25 transition disabled:opacity-50 disabled:cursor-wait">
           📊 Uji Win Rate
         </button>
-        <button id="btnMatrix" onclick="runBacktestMatrix()" class="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold rounded-xl px-5 py-2.5 text-xs shadow-lg shadow-emerald-500/25 transition disabled:opacity-50 disabled:cursor-wait" title="Jalankan 32 kombinasi filter sekaligus dan bandingkan win rate-nya — temukan konfigurasi terbaik (butuh waktu lebih lama)">
-          🔬 Matriks 32 Kombinasi
+        <button id="btnMatrix" onclick="runBacktestMatrix()" class="bg-gradient-to-r from-emerald-500 to-teal-600 hover:from-emerald-400 hover:to-teal-500 text-white font-bold rounded-xl px-5 py-2.5 text-xs shadow-lg shadow-emerald-500/25 transition disabled:opacity-50 disabled:cursor-wait" title="Jalankan semua kombinasi filter (32 per kriteria, 128 jika semua kriteria) sekaligus dan bandingkan win rate-nya — konfigurasi terbaik otomatis diterapkan">
+          🔬 Matriks Kombinasi
         </button>
       </div>
       <div id="backtestResult" class="mt-3"></div>
@@ -987,57 +988,96 @@ async function runBacktest() {
   } catch (e) {
     $("#backtestResult").innerHTML = errorBox(e.message);
   } finally {
-    btn.disabled = false; btn.textContent = "📊 Uji Win Rate (LQ45)";
+    btn.disabled = false; btn.textContent = "📊 Uji Win Rate";
   }
 }
 
 async function runBacktestMatrix() {
   const btn = $("#btnMatrix");
-  btn.disabled = true; btn.textContent = "Menghitung 32 kombinasi…";
+  const crit = $("#btCriteria").value;
+  btn.disabled = true; btn.textContent = "Menghitung matriks…";
   const u = $("#btUniverse").value;
-  const q = new URLSearchParams({ criteria: $("#btCriteria").value, years: $("#btYears").value, limit: 100 });
+  const q = new URLSearchParams({ criteria: crit, years: $("#btYears").value, limit: 100 });
   if (u === "custom") q.set("tickers", $("#btTickers").value);
   else q.set("universe", u);
   const label = u === "custom" ? "saham kustom" : (u === "all" ? "100 saham" : "45 saham LQ45");
   const target = $("#backtestResult");
-  target.innerHTML = spinner(`Menghitung 32 kombinasi filter pada ${label}… (1–3 menit, sekali unduh data lalu dihitung ulang)`);
+  const combos = crit === "all" ? 128 : 32;
+  target.innerHTML = spinner(`Menghitung ${combos} kombinasi (${crit === "all" ? "4 kriteria × " : ""}32 filter) pada ${label} secara paralel… (±1–2 menit)`);
   try {
     const d = await getJSON(`/api/backtest/matrix?${q}`);
     const fLabel = c => [
       ["confirm", "Buku"], ["regime", "IHSG"], ["bb", "BB"], ["div", "Div+Vol"], ["weekly", "Minggu"],
     ].filter(([k]) => c[k]).map(([, n]) => n).join("·") || "Tanpa filter";
-    const best = d.best_key;
-    let h = `<div class="text-xs text-slate-400 mb-2">32 kombinasi diuji sekaligus (konfirmasi buku × IHSG&gt;MA200 × Bollinger × Divergensi+Vol × Tren mingguan), biaya 0,3% termasuk. <b class="text-emerald-400">Terbaik = avg R tertinggi dengan ≥5 trade</b>. ${esc(d.note || "")}</div>`;
-    h += `<div class="overflow-x-auto"><table class="w-full text-sm min-w-[640px]">
-      <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60">
-        <th class="text-left py-2">Konfigurasi</th><th class="text-right">Trade</th><th class="text-right">Win</th><th class="text-right">Loss</th><th class="text-right">Timeout</th><th class="text-right">Win Rate</th><th class="text-right">Avg R</th><th class="text-center"></th>
-      </tr></thead><tbody>`;
-    for (const r of d.combos) {
-      const isBest = r.key === best;
+    const critLabel = { swing: "Swing", scalping: "Scalping", bsjp: "Beli Sore Jual Pagi", buy: "Sinyal Beli Kuat", all: "Semua Kriteria" }[crit];
+
+    const bestOf = sec => sec && sec.best_key ? sec.combos.find(r => r.key === sec.best_key) : null;
+    const rowHtml = (r, best) => {
+      const isBest = best && r.key === best.key;
       const wrCls = (r.win_rate_pct || 0) >= 33 ? "text-emerald-400" : "text-amber-400";
       const arCls = (r.avg_r || 0) > 0 ? "text-emerald-400" : (r.avg_r || 0) < 0 ? "text-rose-400" : "";
-      h += `<tr class="border-b border-slate-800/60 ${isBest ? "bg-emerald-500/5" : ""}">
+      return `<tr class="border-b border-slate-800/60 ${isBest ? "bg-emerald-500/5" : ""}">
         <td class="py-2">${isBest ? "🏆 " : ""}<span class="text-[11px] font-semibold">${esc(fLabel(r.labels))}</span>${isBest ? `<span class="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10">TERBAIK</span>` : ""}</td>
         <td class="text-right tabular">${r.trades}</td><td class="text-right tabular text-emerald-400">${r.wins}</td><td class="text-right tabular text-rose-400">${r.losses}</td><td class="text-right tabular text-slate-500">${r.timeouts}</td>
         <td class="text-right tabular ${wrCls}">${pct(r.win_rate_pct)}</td><td class="text-right tabular font-bold ${arCls}">${fmt(r.avg_r)}R</td>
         <td class="text-right"><button onclick="applyMatrixConfig('${r.key}')" class="text-[10px] px-2 py-1 rounded-lg border border-slate-600 text-slate-300 hover:border-sky-400 hover:text-sky-300 transition">Terapkan</button></td>
       </tr>`;
+    };
+    const tableHtml = (sec, bestKey) => {
+      const best = bestKey ? sec.combos.find(r => r.key === bestKey) : null;
+      return `<div class="overflow-x-auto"><table class="w-full text-sm min-w-[640px]">
+        <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60">
+          <th class="text-left py-2">Konfigurasi</th><th class="text-right">Trade</th><th class="text-right">Win</th><th class="text-right">Loss</th><th class="text-right">Timeout</th><th class="text-right">Win Rate</th><th class="text-right">Avg R</th><th class="text-center"></th>
+        </tr></thead><tbody>${sec.combos.map(r => rowHtml(r, best)).join("")}</tbody></table></div>`;
+    };
+
+    let h = `<div class="text-xs text-slate-400 mb-2">${combos} kombinasi diuji sekaligus (konfirmasi buku × IHSG&gt;MA200 × Bollinger × Divergensi+Vol × Tren mingguan), biaya 0,3% termasuk. <b class="text-emerald-400">Terbaik = avg R tertinggi dengan ≥5 trade yang dituntaskan</b>. ${esc(d.note || "")}</div>`;
+
+    let autoKey = null, autoCrit = null, autoLabel = "";
+    if (crit === "all" && d.per_criteria) {
+      const secs = Object.entries(d.per_criteria);
+      const bestOverall = d.best_overall && d.best_overall.key;
+      autoCrit = d.best_overall && d.best_overall.criteria ? d.best_overall.criteria : null;
+      for (const [cname, sec] of secs) {
+        const bk = sec.best_key;
+        const isChamp = bestOverall && d.best_overall.criteria === cname && d.best_overall.key === bk;
+        h += `<div class="mt-4 first:mt-0"><h3 class="text-[11px] font-bold uppercase tracking-wider ${isChamp ? "text-emerald-400" : "text-slate-400"} mb-2">${isChamp ? "🏆 " : ""}${esc(cname)} — ${sec.tickers_checked ?? "?"} saham dicek</h3>${tableHtml(sec, bk)}</div>`;
+      }
+      if (d.best_overall && d.best_overall.key) {
+        autoKey = d.best_overall.key;
+        autoLabel = `${critLabel} → ${fLabel(d.best_overall.labels || {})} (${pct(d.best_overall.win_rate_pct)} WR, ${fmt(d.best_overall.avg_r)}R)`;
+      }
+    } else {
+      const bk = d.best_key;
+      const best = bk ? d.combos.find(r => r.key === bk) : null;
+      h += `<div class="mt-2"><h3 class="text-[11px] font-bold uppercase tracking-wider text-slate-400 mb-2">${esc(critLabel)} — ${d.tickers_checked ?? "?"} saham dicek</h3>${tableHtml(d, bk)}</div>`;
+      autoKey = bk; autoLabel = `${critLabel} → ${best ? fLabel(best.labels) : "?"} (${pct(best && best.win_rate_pct)} WR, ${fmt(best && best.avg_r)}R)`;
     }
-    h += `</tbody></table></div>`;
     target.innerHTML = h;
+
+    // Auto-pakai konfigurasi terbaik: set kriteria + filter, lalu langsung uji
+    if (autoKey) {
+      if (autoCrit) $("#btCriteria").value = autoCrit;
+      applyMatrixConfig(autoKey, true);
+      toast(`🏆 Auto-terapkan konfigurasi terbaik: ${autoLabel} — menjalankan uji win rate…`, "success");
+      setTimeout(runBacktest, 400);
+    }
   } catch (e) {
-    target.innerHTML = errorBox(e.message);
+    const msg = /504|FUNCTION_INVOCATION_TIMEOUT|timeout/i.test(e.message)
+      ? `Matriks terlalu lama (>60 dtk) untuk ${label} pada server Vercel. Coba kurangi: pilih universe "Liquid (LQ45)" atau Kustom dengan ≤10 saham, dan tahun 1–2. ${e.message}`
+      : e.message;
+    target.innerHTML = errorBox(msg);
   } finally {
-    btn.disabled = false; btn.textContent = "🔬 Matriks 32 Kombinasi";
+    btn.disabled = false; btn.textContent = "🔬 Matriks Kombinasi";
   }
 }
 
-function applyMatrixConfig(key) {
+function applyMatrixConfig(key, silent) {
   const parts = key.split("-").map(x => x === "1");
   const set = (id, on) => { const el = $(id); if (el) el.checked = on; };
   set("#btConfirm", parts[0]); set("#btRegime", parts[1]); set("#btBB", parts[2]);
   set("#btDivVol", parts[3]); set("#btWeekly", parts[4]);
-  toast("Konfigurasi filter diterapkan ke form Uji Win Rate — klik 📊 Uji Win Rate untuk menjalankan.", "info");
+  if (!silent) toast("Konfigurasi filter diterapkan ke form Uji Win Rate — klik 📊 Uji Win Rate untuk menjalankan.", "info");
 }
 
 async function scanMore(offset) {

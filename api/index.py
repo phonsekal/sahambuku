@@ -1489,8 +1489,21 @@ def _download_github_csv(ticker: str, max_rows: Optional[int] = 500) -> Optional
             df = df.tail(max_rows)
         if len(df) < 30:
             return None
+        # Cache riwayat penuh (dipakai berulang oleh backtest & matriks).
+        try:
+            key = ("gh-full", code)
+            CACHE[key] = {"ts": time.time(), "df": df}
+        except Exception:
+            pass
         return df
     except Exception:
+        # Coba pakai cache bila ada (jaringan gagal di tengah matriks)
+        try:
+            hit = CACHE.get(("gh-full", code))
+            if hit and time.time() - hit["ts"] < 6 * 3600:
+                return hit["df"]
+        except Exception:
+            pass
         return None
 
 
@@ -2681,127 +2694,130 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     }
 
 
-def _backtest_matrix(tickers: List[str], criteria: str, years: int,
-                     ihsg_align: Optional[pd.DataFrame] = None) -> dict:
-    """Matriks semua kombinasi filter (confirm x regime x bb x div x weekly = 32).
+MATRIX_KEYS = ("confirm", "regime", "bb", "div", "weekly")
 
-    Data tiap ticker diambil SEKALI lalu 32 kombinasi dievaluasi dari deret yang
-    sama (efisien & konsisten). Biaya 0,3% round-trip selalu diterapkan agar
-    avg_r realistis. Menyoroti konfigurasi terbaik (avg R tertinggi dengan
-    minimal 5 trade)."""
+
+def _matrix_one(tk: str, criteria: str, years: int,
+                ihsg_align: Optional[pd.DataFrame] = None) -> Optional[dict]:
+    """Matriks 32 kombinasi utk 1 ticker (dipanggil paralel per ticker).
+
+    Data diambil sekali lalu 32 kombinasi dievaluasi dari deret yang sama.
+    Returns {combo_key: agg} atau None bila data tidak cukup."""
     import itertools
-    keys = ("confirm", "regime", "bb", "div", "weekly")
-    combos = list(itertools.product((True, False), repeat=5))
-    agg = {c: {"trades": 0, "wins": 0, "losses": 0, "timeouts": 0, "r": 0.0} for c in combos}
-    checked = 0
-    for tk in tickers:
+    try:
+        df = _fetch_backtest_history(tk, years)
+    except Exception:
+        return None
+    if df is None or len(df) < 60:
+        return None
+    cutoff = df.index[-1] - pd.DateOffset(years=years)
+    sub = df[df.index >= cutoff]
+    if len(sub) < 40:
+        return None
+
+    close = sub["Close"].astype(float); high = sub["High"].astype(float)
+    low = sub["Low"].astype(float); vol = sub["Volume"].astype(float)
+    value = _value_series(sub)
+    atr_s = atr(sub, 14)
+    vma20 = vol.rolling(20).mean(); sma20 = close.rolling(20).mean()
+    sma50 = close.rolling(50).mean(); rsi_s = rsi(close, 14)
+    value_ma10 = value.rolling(10).mean(); value_ma20 = value.rolling(20).mean()
+    bb_up, _, bb_lo = bollinger_bands(close, 20, 2.0)
+    bull_div, _ = _divergence_series(sub)
+    bscore = _buy_score_series(sub) if criteria == "buy" else None
+    weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
+    ihsg_ok = None
+    if ihsg_align is not None and len(ihsg_align):
         try:
-            df = _fetch_backtest_history(tk, years)
+            s = ihsg_align.reindex(sub.index, method="ffill")
+            ihsg_ok = (s["c"] > s["m"]).to_numpy(dtype=bool)
         except Exception:
-            continue
-        if df is None or len(df) < 60:
-            continue
-        cutoff = df.index[-1] - pd.DateOffset(years=years)
-        sub = df[df.index >= cutoff]
-        if len(sub) < 40:
-            continue
-        checked += 1
+            ihsg_ok = None
 
-        close = sub["Close"].astype(float); high = sub["High"].astype(float)
-        low = sub["Low"].astype(float); vol = sub["Volume"].astype(float)
-        value = _value_series(sub)
-        atr_s = atr(sub, 14)
-        vma20 = vol.rolling(20).mean(); sma20 = close.rolling(20).mean()
-        sma50 = close.rolling(50).mean(); rsi_s = rsi(close, 14)
-        value_ma10 = value.rolling(10).mean(); value_ma20 = value.rolling(20).mean()
-        bb_up, _, bb_lo = bollinger_bands(close, 20, 2.0)
-        bull_div, _ = _divergence_series(sub)
-        bscore = _buy_score_series(sub) if criteria == "buy" else None
-        weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
-        ihsg_ok = None
-        if ihsg_align is not None and len(ihsg_align):
-            try:
-                s = ihsg_align.reindex(sub.index, method="ffill")
-                ihsg_ok = (s["c"] > s["m"]).to_numpy(dtype=bool)
-            except Exception:
-                ihsg_ok = None
-
-        n = len(sub)
-        max_hold = 5 if criteria in ("scalping", "bsjp") else 20
-        for combo in combos:
-            confirm, use_reg, use_bb, use_div, use_wk = combo
-            triggers = []
-            for i in range(20, n - 1):
-                last, prev = float(close.iloc[i]), float(close.iloc[i - 1])
-                day_ret = (last / prev - 1) * 100 if prev > 0 else 0.0
-                v = float(value.iloc[i])
-                vr = float(vol.iloc[i]) / float(vma20.iloc[i]) if vma20.iloc[i] > 0 else 0.0
-                if criteria == "scalping":
-                    hit = v >= 1e9 and day_ret >= 10.0 and last > 50
-                elif criteria == "bsjp":
-                    hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
-                elif criteria == "buy":
-                    hit = float(bscore.iloc[i]) >= 70.0
+    n = len(sub)
+    max_hold = 5 if criteria in ("scalping", "bsjp") else 20
+    combos = list(itertools.product((True, False), repeat=5))
+    out: Dict[str, dict] = {}
+    for combo in combos:
+        confirm, use_reg, use_bb, use_div, use_wk = combo
+        ck = "-".join("1" if c else "0" for c in combo)
+        triggers = []
+        for i in range(20, n - 1):
+            last, prev = float(close.iloc[i]), float(close.iloc[i - 1])
+            day_ret = (last / prev - 1) * 100 if prev > 0 else 0.0
+            v = float(value.iloc[i])
+            vr = float(vol.iloc[i]) / float(vma20.iloc[i]) if vma20.iloc[i] > 0 else 0.0
+            if criteria == "scalping":
+                hit = v >= 1e9 and day_ret >= 10.0 and last > 50
+            elif criteria == "bsjp":
+                hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
+            elif criteria == "buy":
+                hit = float(bscore.iloc[i]) >= 70.0
+            else:
+                hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
+                       and float(value_ma20.iloc[i]) >= 10e9
+                       and float(value.iloc[i - 1]) <= float(value.iloc[i])
+                       and float(value_ma10.iloc[i]) > float(value_ma20.iloc[i]))
+            if hit and confirm and criteria != "buy":
+                hit = (float(close.iloc[i]) > float(sma20.iloc[i])
+                       and float(rsi_s.iloc[i]) < 70.0
+                       and float(vol.iloc[i]) > float(vma20.iloc[i]))
+            if hit and use_bb and criteria in ("swing", "buy"):
+                hit = (not np.isnan(bb_up.iloc[i]) and not np.isnan(bb_lo.iloc[i])
+                       and float(close.iloc[i]) < float(bb_up.iloc[i])
+                       and float(close.iloc[i]) > float(bb_lo.iloc[i])
+                       and float(sma20.iloc[i]) > float(sma50.iloc[i]))
+            if hit and use_div:
+                hit = ((bool(bull_div.iloc[i]) or (not np.isnan(rsi_s.iloc[i]) and float(rsi_s.iloc[i]) < 70.0))
+                       and float(vol.iloc[i]) > float(vma20.iloc[i]))
+            if hit and use_wk:
+                hit = bool(weekly_trend.iloc[i])
+            if hit and use_reg and ihsg_ok is not None:
+                hit = bool(ihsg_ok[i])
+            if hit:
+                triggers.append(i)
+        if not triggers:
+            continue
+        a = {"trades": 0, "wins": 0, "losses": 0, "timeouts": 0, "r": 0.0}
+        for i in triggers:
+            entry = float(close.iloc[i])
+            atr_v = float(atr_s.iloc[i])
+            if np.isnan(atr_v):
+                atr_v = entry * 0.02
+            risk = max(atr_v * 2, entry * 0.005)
+            sl, tp = entry - risk, entry + 2 * risk
+            cost_r = (entry * 0.003) / risk
+            outcome = None
+            for j in range(i + 1, min(i + 1 + max_hold, n)):
+                if float(low.iloc[j]) <= sl:
+                    outcome = -1.0
+                    break
+                if float(high.iloc[j]) >= tp:
+                    outcome = 2.0
+                    break
+            if outcome is None:
+                exit_r = (float(close.iloc[min(i + max_hold, n - 1)]) - entry) / risk
+                a["timeouts"] += 1
+                a["r"] += exit_r - cost_r
+            else:
+                if outcome > 0:
+                    a["wins"] += 1
                 else:
-                    hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
-                           and float(value_ma20.iloc[i]) >= 10e9
-                           and float(value.iloc[i - 1]) <= float(value.iloc[i])
-                           and float(value_ma10.iloc[i]) > float(value_ma20.iloc[i]))
-                if hit and confirm and criteria != "buy":
-                    hit = (float(close.iloc[i]) > float(sma20.iloc[i])
-                           and float(rsi_s.iloc[i]) < 70.0
-                           and float(vol.iloc[i]) > float(vma20.iloc[i]))
-                if hit and use_bb and criteria in ("swing", "buy"):
-                    hit = (not np.isnan(bb_up.iloc[i]) and not np.isnan(bb_lo.iloc[i])
-                           and float(close.iloc[i]) < float(bb_up.iloc[i])
-                           and float(close.iloc[i]) > float(bb_lo.iloc[i])
-                           and float(sma20.iloc[i]) > float(sma50.iloc[i]))
-                if hit and use_div:
-                    hit = ((bool(bull_div.iloc[i]) or (not np.isnan(rsi_s.iloc[i]) and float(rsi_s.iloc[i]) < 70.0))
-                           and float(vol.iloc[i]) > float(vma20.iloc[i]))
-                if hit and use_wk:
-                    hit = bool(weekly_trend.iloc[i])
-                if hit and use_reg and ihsg_ok is not None:
-                    hit = bool(ihsg_ok[i])
-                if hit:
-                    triggers.append(i)
-            if not triggers:
-                continue
-            a = agg[combo]
-            for i in triggers:
-                entry = float(close.iloc[i])
-                atr_v = float(atr_s.iloc[i])
-                if np.isnan(atr_v):
-                    atr_v = entry * 0.02
-                risk = max(atr_v * 2, entry * 0.005)
-                sl, tp = entry - risk, entry + 2 * risk
-                cost_r = (entry * 0.003) / risk
-                outcome = None
-                for j in range(i + 1, min(i + 1 + max_hold, n)):
-                    if float(low.iloc[j]) <= sl:
-                        outcome = -1.0
-                        break
-                    if float(high.iloc[j]) >= tp:
-                        outcome = 2.0
-                        break
-                if outcome is None:
-                    exit_r = (float(close.iloc[min(i + max_hold, n - 1)]) - entry) / risk
-                    a["timeouts"] += 1
-                    a["r"] += exit_r - cost_r
-                else:
-                    if outcome > 0:
-                        a["wins"] += 1
-                    else:
-                        a["losses"] += 1
-                    a["r"] += outcome - cost_r
-                a["trades"] += 1
+                    a["losses"] += 1
+                a["r"] += outcome - cost_r
+            a["trades"] += 1
+        out[ck] = a
+    return out if out else None
 
+
+def _matrix_finish(agg: Dict[str, dict]) -> dict:
+    """Rangkum agg {combo_key: totals} menjadi daftar combo + konfigurasi terbaik."""
     results = []
-    for combo, a in agg.items():
+    for ck, a in agg.items():
         decided = a["wins"] + a["losses"]
         results.append({
-            "key": "-".join("1" if c else "0" for c in combo),
-            "labels": dict(zip(keys, combo)),
+            "key": ck,
+            "labels": dict(zip(MATRIX_KEYS, [x == "1" for x in ck.split("-")])),
             "trades": a["trades"],
             "wins": a["wins"],
             "losses": a["losses"],
@@ -2817,19 +2833,73 @@ def _backtest_matrix(tickers: List[str], criteria: str, years: int,
     if candidates:
         best = max(candidates, key=lambda r: (r["avg_r"] or -99, r["wins"] + r["losses"]))
         best_key = best["key"]
-    elif not best_key:
+    if best_key is None:
         decided_any = [r for r in results if (r["wins"] + r["losses"]) > 0]
         if decided_any:
             best_key = max(decided_any, key=lambda r: (r["avg_r"] or -99))["key"]
         elif results:
             best_key = max(results, key=lambda r: r["trades"])["key"]
     results.sort(key=lambda r: (r["avg_r"] or -99), reverse=True)
+    return {"best_key": best_key, "combos": results}
+
+
+def _backtest_matrix(tickers: List[str], criteria: str, years: int,
+                     ihsg_align: Optional[pd.DataFrame] = None) -> dict:
+    """Matriks 32 kombinasi filter, PARALEL per ticker (fix timeout 504).
+
+    criteria='all' menghitung 4 kriteria sekaligus (swing, scalping, bsjp, buy);
+    data yang sudah diunduh dipakai ulang (cache proses) utk kriteria lain.
+    Biaya 0,3% round-trip selalu diterapkan agar avg_r realistis.
+    """
+    import itertools
+    criteria_list = ["swing", "scalping", "bsjp", "buy"] if criteria == "all" else [criteria]
+    all_keys = list(itertools.product((True, False), repeat=5))
+    per_criteria: Dict[str, dict] = {}
+    overall: Dict[str, dict] = {}
+    checked_total = 0
+    for crit in criteria_list:
+        agg = {("-".join("1" if c else "0" for c in combo)): {"trades": 0, "wins": 0, "losses": 0,
+                                                              "timeouts": 0, "r": 0.0}
+               for combo in all_keys}
+        checked = 0
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            for one in ex.map(lambda tk: _matrix_one(tk, crit, years, ihsg_align), tickers):
+                if one is None:
+                    continue
+                checked += 1
+                for ck, a in one.items():
+                    d = agg[ck]
+                    d["trades"] += a["trades"]
+                    d["wins"] += a["wins"]
+                    d["losses"] += a["losses"]
+                    d["timeouts"] += a["timeouts"]
+                    d["r"] += a["r"]
+        checked_total = checked
+        fin = _matrix_finish(agg)
+        per_criteria[crit] = {"tickers_checked": checked, **fin}
+        # simpan yang terbaik dari kriteria ini utk perbandingan lintas kriteria
+        best = next((r for r in fin["combos"] if r["key"] == fin["best_key"]), None)
+        overall[crit] = {"criteria": crit, "key": fin["best_key"], **(best or {})}
+
+    if criteria == "all":
+        dec = [o for o in overall.values() if o.get("key") and (o.get("wins", 0) + o.get("losses", 0)) > 0]
+        pool = dec if dec else list(overall.values())
+        best_overall = max(pool, key=lambda o: (o.get("avg_r") or -99, o.get("trades", 0))) if pool else None
+        return {
+            "criteria": "all",
+            "years": years,
+            "tickers_checked": checked_total,
+            "per_criteria": per_criteria,
+            "best_overall": best_overall,
+            "note": ("Matriks 4 kriteria x 32 kombinasi filter (konfirmasi buku x IHSG>MA200 x "
+                     "Bollinger x divergensi+volume x tren mingguan) dihitung PARALEL. Biaya+"
+                     "slippage 0,3% round-trip selalu termasuk. Kinerja masa lalu BUKAN jaminan masa depan."),
+        }
     return {
         "criteria": criteria,
         "years": years,
-        "tickers_checked": checked,
-        "best_key": best_key,
-        "combos": results,
+        "tickers_checked": checked_total,
+        **per_criteria[criteria],
         "note": ("Matriks 32 kombinasi filter (konfirmasi buku x IHSG>MA200 x Bollinger x "
                  "divergensi+volume x tren mingguan). Biaya+slippage 0,3% round-trip selalu "
                  "termasuk. Win rate dihitung dari trade yang dituntaskan (SL/TP); timeout "
@@ -3263,7 +3333,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -3280,7 +3350,31 @@ def backtest(
     Sinyal -> entry di harga tutup, SL 2xATR, TP 2R (RRR 1:2), hold maks 5/20 hari.
     Filter optimasi (regime/bb_confirm/div_vol/weekly) mempersempit sinyal ke kondisi
     yang lebih terkonfirmasi; costs menambahkan biaya+slippage 0,3% round-trip.
+    Kriteria 'all' menjalankan 4 kriteria sekaligus dan mengembalikan hasil terbaik
+    (avg R tertinggi dengan trade yang dituntaskan SL/TP).
     Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini."""
+    if criteria == "all":
+        best = None
+        for c in ("swing", "scalping", "bsjp", "buy"):
+            r = backtest(c, universe, years, limit, confirm, regime, bb_confirm,
+                         div_vol, weekly, costs, tickers_param)
+            if r.get("total_trades", 0) <= 0:
+                continue
+            if best is None:
+                best = r
+                continue
+            bd = best.get("wins", 0) + best.get("losses", 0)
+            rd = r.get("wins", 0) + r.get("losses", 0)
+            if rd > 0 and (bd == 0 or (r.get("avg_r") or -99) > (best.get("avg_r") or -99)):
+                best = r
+        if best is None:
+            return {"criteria": "all", "total_trades": 0, "wins": 0, "losses": 0,
+                    "timeouts": 0, "win_rate_pct": None, "avg_r": None, "per_ticker": [],
+                    "note": "Tidak ada sinyal yang lolos di semua kriteria dengan filter ini.",
+                    "disclaimer": DISCLAIMER}
+        best["criteria_note"] = ("criteria=all: hasil terbaik dari 4 kriteria (swing/scalping/BSJP/buy) "
+                                 "dengan konfigurasi filter ini (avg R tertinggi, trade tuntas).")
+        return best
     if tickers_param:
         tickers = [f"{t.strip().upper()}.JK" if "." not in t.strip().upper() else t.strip().upper()
                    for t in tickers_param.split(",") if t.strip()][:45]
@@ -3350,20 +3444,23 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(15, ge=1, le=100),
     tickers_param: str = Query("", alias="tickers",
                                description="Daftar kode kustom dipisah koma (maks 30); menimpa universe"),
 ):
-    """Matriks win rate semua 32 kombinasi filter sekaligus (lihat _backtest_matrix)."""
+    """Matriks win rate semua 32 kombinasi filter sekaligus (lihat _backtest_matrix).
+
+    criteria='all' menghitung 4 kriteria x 32 kombinasi (paralel per ticker).
+    Tikers dibatasi 30 agar tetap muat dalam batas durasi function (60 dtk)."""
     if tickers_param:
         tickers = [f"{t.strip().upper()}.JK" if "." not in t.strip().upper() else t.strip().upper()
                    for t in tickers_param.split(",") if t.strip()][:30]
     else:
         tickers = load_idx_tickers(universe)
-        tickers = tickers[:100] if universe == "all" else tickers[:limit]
+        tickers = (tickers[:30] if universe == "all" else tickers[:limit])
     ihsg_align = None
     try:
         ic, im = _ihsg_series()
