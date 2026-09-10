@@ -1533,6 +1533,20 @@ def _fetch_backtest_history(ticker: str, years: int) -> Optional[pd.DataFrame]:
         gh = None
     if gh is None or len(gh) <= len(df):
         return df
+    # JANGAN gabungkan bila harga melompat drastis di perbatasan data lama (GitHub)
+    # dengan data baru (yfinance/IDX Edge). Ini terjadi saat aksi korporasi
+    # (split/dividen) belum disesuaikan di dataset lama: harga lama (mis. 37) vs
+    # baru (mis. 179) beda >2x -> menggabungkannya membuat indikator & backtest
+    # kacau. Kalau melompat, pakai data baru saja (riwayat lebih pendek tapi valid).
+    try:
+        gh_last = float(gh["Close"].iloc[-1])
+        df_first = float(df["Close"].iloc[0])
+        if gh_last > 0 and df_first > 0:
+            ratio = df_first / gh_last
+            if ratio > 2.0 or ratio < 0.5:
+                return df
+    except Exception:
+        pass
     combined = pd.concat([gh, df[~df.index.isin(gh.index)]])
     combined = combined[~combined.index.duplicated(keep="last")].sort_index()
     return combined if len(combined) > len(df) else df
@@ -3020,6 +3034,24 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     has_quote = bool(quote and quote.get("last_price"))
     # Live = kutipan intraday saat pasar sedang buka (REGULAR).
     is_live = bool(has_quote and quote.get("market_state") == "REGULAR")
+    # Deteksi data historis TIDAK sinkron dengan harga live. Ini terjadi saat
+    # yfinance diblokir (mis. di Vercel) sehingga data historis berasal dari
+    # dataset lama yang belum disesuaikan aksi korporasi (split/dividen) atau
+    # berakhir jauh di masa lalu: close historis (mis. 37) vs harga live (179)
+    # bisa beda >25% -> seluruh indikator & TP/SL jadi TIDAK VALID.
+    data_warning = None
+    hist_last = float(close.iloc[-1])
+    if has_quote and hist_last > 0:
+        dev = abs(quote["last_price"] / hist_last - 1) * 100
+        if dev > 25:
+            data_warning = (
+                f"Data historis tidak sinkron dengan harga live: close historis "
+                f"{num(hist_last, 2)} vs harga live {num(quote['last_price'], 2)} "
+                f"(beda {num(dev, 0)}%). Kemungkinan aksi korporasi (split/dividen) "
+                f"belum disesuaikan di dataset lama, atau data historis berakhir jauh "
+                f"di masa lalu. Indikator & TP/SL di bawah TIDAK valid — jangan "
+                f"dipakai untuk keputusan beli/jual."
+            )
     if has_quote:
         last_price = quote["last_price"]
         if quote.get("change_pct") is not None:
@@ -3056,6 +3088,18 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     # mencegah alert "TP tercapai" palsu saat sinyal SELL membalik arah TP/SL).
     rm = risk_management(last_price, sr_zones, signal["action"], float(atr14), risk_amount,
                          force_long=True)
+    # Bila data historis tidak sinkron dengan harga live, semua indikator & sinyal
+    # dihitung dari data yang salah -> ditangguhkan agar tidak menyesatkan (kasus
+    # ESTI: close historis 37 vs harga live 179 menghasilkan STRONG BUY palsu).
+    if data_warning:
+        signal = {
+            "action": "HOLD",
+            "score": 0.0,
+            "strength": "lemah",
+            "reasons": [data_warning],
+            "rule": "Analisis ditangguhkan karena data historis tidak sinkron dengan harga live.",
+        }
+        rm = None
 
     # --- Bandarmology (IDX Edge PRO, jika key di-set; dilewati saat light) ---
     bandarmology = None
@@ -3120,6 +3164,7 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "ticker": ticker.upper(),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
         "disclaimer": DISCLAIMER,
+        "data_warning": data_warning,
         "market": {
             "period": period,
             "bars": len(df),
@@ -3284,13 +3329,18 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
         base = {"ticker": strip_suffix(tk), "price": num(price, 2),
                 "qty": h.get("qty"), "avg": h.get("avg")}
         out: List[dict] = []
+        # TP/SL server dihitung relatif harga pasar SEKARANG, bukan harga beli (avg).
+        # Saat harga turun, TP ikut turun -> "TP hampir tercapai" jadi palsu untuk
+        # posisi minus. TP hanya bermakna bila di ATAS harga beli (profit nyata).
+        avg = h.get("avg")
+        tp_valid = bool(rm.get("take_profit")) and (not avg or rm["take_profit"] > avg)
         if rm.get("stop_loss") and price <= rm["stop_loss"]:
             out.append({**base, "type": "SL", "level": num(rm["stop_loss"], 2),
                         "message": f"🛑 {strip_suffix(tk)} menyentuh STOP LOSS ({num(rm['stop_loss'], 2)}) — harga {num(price, 2)}"})
-        if rm.get("take_profit") and price >= rm["take_profit"]:
+        if tp_valid and price >= rm["take_profit"]:
             out.append({**base, "type": "TP", "level": num(rm["take_profit"], 2),
                         "message": f"🎯 {strip_suffix(tk)} mencapai TAKE PROFIT ({num(rm['take_profit'], 2)}) — harga {num(price, 2)}"})
-        if rm.get("take_profit") and rm["stop_loss"] < price < rm["take_profit"] and price >= rm["take_profit"] * 0.98:
+        if tp_valid and rm["stop_loss"] < price < rm["take_profit"] and price >= rm["take_profit"] * 0.98:
             out.append({**base, "type": "TP_NEAR", "level": num(rm["take_profit"], 2),
                         "message": f"🔥 {strip_suffix(tk)} hampir TP (≤2% dari {num(rm['take_profit'], 2)})"})
         if rsi is not None and rsi > 70:

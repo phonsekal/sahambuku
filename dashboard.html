@@ -683,6 +683,11 @@ function renderAnalyze(d) {
     </div>
   </div>`;
 
+  if (d.data_warning) {
+    h += `<div class="bg-rose-500/10 border border-rose-500/40 rounded-2xl p-4 mb-4 text-sm text-rose-300 shadow-lg shadow-rose-500/10">
+      <b>⚠️ Analisis ditangguhkan:</b> ${esc(d.data_warning)}</div>`;
+  }
+
   h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-4 mb-4 shadow-xl shadow-black/20">
     <div class="flex flex-wrap items-center justify-between gap-2 mb-2">
       <div>
@@ -1136,13 +1141,25 @@ function renderPortoSummary() {
 
 function holdingStatus(p, q) {
   if (!q) return { label: "Belum ada harga", cls: "text-slate-500" };
+  if (q.data_warning) return { label: "⚠️ Data historis tidak sinkron — analisis ditangguhkan", cls: "text-amber-400" };
   const price = q.market.last_price, rm = q.risk_management || {};
   const rsi = q.indicators ? q.indicators.rsi14 : null;
-  if (rm.stop_loss && price <= rm.stop_loss) return { label: "🛑 SL tersentuh — pertimbangkan cut loss", cls: "text-rose-400 font-semibold" };
-  if (rm.take_profit && price >= rm.take_profit) return { label: "🎯 TP tercapai — pertimbangkan take profit", cls: "text-emerald-400 font-semibold" };
-  if (rm.take_profit && price >= rm.take_profit * 0.98) return { label: "🔥 Dekat TP (≤2%) — siapkan take profit", cls: "text-emerald-300" };
-  if (rsi !== null && rsi > 70) return { label: "⚠️ RSI > 70 (overbought)", cls: "text-amber-400" };
   const act = q.signal ? q.signal.action : "";
+  // TP/SL dari server dihitung relatif harga pasar SEKARANG, bukan harga beli.
+  // Saat harga turun, TP ikut turun sehingga "Dekat TP" bisa muncul padahal posisi
+  // minus (palsu). TP hanya bermakna bila di ATAS harga beli (profit nyata).
+  const avg = Number(p.avg) || 0;
+  const tpValid = rm.take_profit && (!avg || rm.take_profit > avg);
+  if (rm.stop_loss && price <= rm.stop_loss) return { label: "🛑 SL tersentuh — pertimbangkan cut loss", cls: "text-rose-400 font-semibold" };
+  if (tpValid && price >= rm.take_profit) return { label: "🎯 TP tercapai — pertimbangkan take profit", cls: "text-emerald-400 font-semibold" };
+  if (tpValid && price >= rm.take_profit * 0.98) return { label: "🔥 Dekat TP (≤2%) — siapkan take profit", cls: "text-emerald-300" };
+  // RSI > 70 digabung dengan sinyal, bukan menimpa — STRONG BUY + overbought bukan
+  // kontradiksi: harga bisa kuat tapi sudah jenuh (waspada koreksi).
+  if (rsi !== null && rsi > 70) {
+    if (act === "SELL" || act === "STRONG SELL") return { label: "⬇️ Sinyal jual · ⚠️ RSI > 70 — pertimbangkan take profit / cut loss", cls: "text-rose-400" };
+    if (act === "BUY" || act === "STRONG BUY") return { label: "⬆️ Sinyal beli · ⚠️ RSI > 70 (overbought) — waspada koreksi", cls: "text-amber-400" };
+    return { label: "⚠️ RSI > 70 (overbought) — waspada koreksi", cls: "text-amber-400" };
+  }
   if (act === "SELL" || act === "STRONG SELL") return { label: "⬇️ Sinyal jual — pertimbangkan take profit / cut loss", cls: "text-rose-400" };
   if (act === "BUY" || act === "STRONG BUY") return { label: "⬆️ Sinyal beli — bisa ditahan / tambah", cls: "text-emerald-400" };
   return { label: "HOLD — pantau TP/SL", cls: "text-slate-400" };
