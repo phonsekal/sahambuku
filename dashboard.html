@@ -108,20 +108,30 @@
     <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mt-5 shadow-xl shadow-black/20">
       <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">📊 Uji Win Rate Historis (Backtest)</h2>
       <p class="text-[11px] text-slate-500 mb-3">Mengukur berapa persen sinyal historis mencapai TP sebelum kena SL — entry harga tutup, SL 2×ATR, TP 2R (RRR 1:2 sesuai buku). Edukasi, bukan jaminan masa depan.</p>
-      <div class="flex flex-wrap gap-3 items-center">
+      <div class="flex flex-wrap gap-3 items-center mb-2">
         <select id="btCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="swing" selected>Swing</option>
           <option value="scalping">Scalping</option>
           <option value="bsjp">Beli Sore Jual Pagi</option>
         </select>
+        <select id="btUniverse" onchange="btUniverseChanged()" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+          <option value="liquid" selected>Liquid (LQ45)</option>
+          <option value="all">Semua (maks 100 saham)</option>
+          <option value="custom">Kustom…</option>
+        </select>
+        <input id="btTickers" placeholder="BBCA, BMRI, TLKM…" class="hidden w-52 bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 uppercase placeholder-slate-500">
+        <button id="btnBtPorto" class="text-[11px] px-3 py-2.5 rounded-xl border border-slate-700 text-slate-300 hover:text-emerald-300 hover:border-emerald-500/50 transition">Pakai portofolio saya</button>
         <select id="btYears" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="1">1 tahun</option>
           <option value="2" selected>2 tahun</option>
           <option value="3">3 tahun</option>
           <option value="5">5 tahun</option>
         </select>
+        <label class="flex items-center gap-2 text-xs text-slate-400" title="Hanya entry saat: harga di atas SMA20, RSI<70, volume di atas rata-rata 20 hari — sesuai penekanan konfirmasi di buku.">
+          <input type="checkbox" id="btConfirm" checked class="rounded bg-slate-800 border-slate-600 accent-violet-500"> Konfirmasi buku
+        </label>
         <button id="btnBacktest" class="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-violet-500/25 transition disabled:opacity-50 disabled:cursor-wait">
-          📊 Uji Win Rate (LQ45)
+          📊 Uji Win Rate
         </button>
       </div>
       <div id="backtestResult" class="mt-3"></div>
@@ -749,12 +759,29 @@ function renderScan(d) {
 }
 
 /* ---------- BACKTEST ---------- */
+function btUniverseChanged() {
+  $("#btTickers").classList.toggle("hidden", $("#btUniverse").value !== "custom");
+}
+
+function fillPortoTickers() {
+  const tk = [...new Set(porto.map(p => p.ticker))].slice(0, 45);
+  if (!tk.length) { toast("Portofolio masih kosong.", "info"); return; }
+  $("#btUniverse").value = "custom";
+  btUniverseChanged();
+  $("#btTickers").value = tk.join(", ");
+  toast(`Menguji ${tk.length} saham dari portofolio Anda.`, "info");
+}
+
 async function runBacktest() {
   const btn = $("#btnBacktest");
   btn.disabled = true; btn.textContent = "Menguji…";
-  $("#backtestResult").innerHTML = spinner("Menguji sinyal historis 45 saham LQ45… (sekitar 10–15 detik)");
-  const q = new URLSearchParams({ criteria: $("#btCriteria").value, universe: "liquid",
-    years: $("#btYears").value, limit: 45 });
+  const u = $("#btUniverse").value;
+  const q = new URLSearchParams({ criteria: $("#btCriteria").value,
+    years: $("#btYears").value, confirm: $("#btConfirm").checked ? 1 : 0, limit: 100 });
+  if (u === "custom") q.set("tickers", $("#btTickers").value);
+  else q.set("universe", u);
+  const label = u === "custom" ? "saham kustom" : (u === "all" ? "100 saham" : "45 saham LQ45");
+  $("#backtestResult").innerHTML = spinner(`Menguji sinyal historis ${label}… (sekitar 10–30 detik)`);
   try {
     const d = await getJSON(`/api/backtest?${q}`);
     let h = `<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">`;
@@ -764,7 +791,7 @@ async function runBacktest() {
     h += kv("Timeout", d.timeouts);
     h += kv("Win Rate", pct(d.win_rate_pct), (d.win_rate_pct || 0) >= 33 ? "text-emerald-400" : "text-amber-400");
     h += `</div>`;
-    h += `<div class="text-xs text-slate-400 mb-3">Rata-rata hasil per trade: <b class="tabular">${fmt(d.avg_r)}R</b> (titik impas dengan TP 2R adalah <b class="text-slate-200">≈33% win rate</b>). ${esc(d.note)}</div>`;
+    h += `<div class="text-xs text-slate-400 mb-3">Rata-rata hasil per trade: <b class="tabular">${fmt(d.avg_r)}R</b> (titik impas dengan TP 2R adalah <b class="text-slate-200">≈33% win rate</b>). Konfirmasi buku: <b class="${d.confirm ? "text-emerald-400" : "text-slate-300"}">${d.confirm ? "AKTIF (harga>SMA20, RSI<70, volume>rata-rata)" : "OFF (kriteria mentah)"}</b> — ${esc(d.note)}</div>`;
     h += `<div class="overflow-x-auto"><table class="w-full text-sm">
       <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60">
         <th class="text-left py-2">Saham</th><th class="text-right">Trade</th><th class="text-right">Win</th><th class="text-right">Loss</th><th class="text-right">Timeout</th><th class="text-right">Win Rate</th><th class="text-right">Avg R</th>
@@ -1210,6 +1237,7 @@ $("#btnAnalyze").addEventListener("click", analyze);
 $("#ticker").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
 $("#btnScan").addEventListener("click", scan);
 $("#btnBacktest").addEventListener("click", runBacktest);
+$("#btnBtPorto").addEventListener("click", fillPortoTickers);
 $("#btnSaveHolding").addEventListener("click", saveHolding);
 $("#btnCancelEdit").addEventListener("click", resetPortoForm);
 $("#btnRefreshPorto").addEventListener("click", refreshPortoQuotes);

@@ -1241,7 +1241,7 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
     scalping = {
         "value_ge_1b": bool(m["est_value"] >= 1e9),
         "day_return_ge_10pct": bool(m["day_ret"] >= 10.0),
-        "price_ge_50": bool(m["last"] >= 50),
+        "price_gt_50": bool(m["last"] > 50),
     }
     scalping["eligible"] = all(scalping.values())
     if scalping["eligible"]:
@@ -1722,9 +1722,12 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     }
 
 
-def _backtest_one(ticker: str, criteria: str, years: int) -> Optional[dict]:
+def _backtest_one(ticker: str, criteria: str, years: int,
+                  confirm: bool = True) -> Optional[dict]:
     """Backtest sederhana 1 ticker: sinyal di harga tutup -> SL 2xATR, TP 2R (RRR 1:2, Bab 8).
-    scalping/bsjp: hold maks 5 hari; swing: 20 hari. Timeout dihitung terpisah."""
+    scalping/bsjp: hold maks 5 hari; swing: 20 hari. Timeout dihitung terpisah.
+    confirm=True = konfirmasi ala buku: harga > SMA20 (bias naik), RSI < 70 (tidak
+    mengejar overbought), volume > VolumeMA20 (ada tenaga beli)."""
     try:
         df = fetch_data(ticker, "5y")
     except Exception:
@@ -1743,6 +1746,8 @@ def _backtest_one(ticker: str, criteria: str, years: int) -> Optional[dict]:
     value = df["Value"].astype(float) if "Value" in df.columns else close * vol
     atr_s = atr(df, 14)
     vma20 = vol.rolling(20).mean()
+    sma20 = close.rolling(20).mean()
+    rsi_s = rsi(close, 14)
     value_ma10 = value.rolling(10).mean()
     value_ma20 = value.rolling(20).mean()
 
@@ -1754,7 +1759,7 @@ def _backtest_one(ticker: str, criteria: str, years: int) -> Optional[dict]:
         v = float(value.iloc[i])
         vr = float(vol.iloc[i]) / float(vma20.iloc[i]) if vma20.iloc[i] > 0 else 0.0
         if criteria == "scalping":
-            hit = v >= 1e9 and day_ret >= 10.0 and last >= 50
+            hit = v >= 1e9 and day_ret >= 10.0 and last > 50
         elif criteria == "bsjp":
             hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
         else:  # swing (proksi nilai transaksi)
@@ -1762,6 +1767,11 @@ def _backtest_one(ticker: str, criteria: str, years: int) -> Optional[dict]:
                    and float(value_ma20.iloc[i]) >= 10e9
                    and float(value.iloc[i - 1]) <= float(value.iloc[i])
                    and float(value_ma10.iloc[i]) > float(value_ma20.iloc[i]))
+        if hit and confirm:
+            # Konfirmasi ala buku: bias naik + tidak mengejar overbought + volume hidup.
+            hit = (float(close.iloc[i]) > float(sma20.iloc[i])
+                   and float(rsi_s.iloc[i]) < 70.0
+                   and float(vol.iloc[i]) > float(vma20.iloc[i]))
         if hit:
             triggers.append(i)
     if not triggers:
@@ -2178,15 +2188,24 @@ def backtest(
     criteria: str = Query("swing", pattern="^(scalping|bsjp|swing)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
-    limit: int = Query(20, ge=1, le=45),
+    limit: int = Query(20, ge=1, le=100),
+    confirm: bool = Query(True, description="Konfirmasi ala buku: harga>SMA20, RSI<70, volume>MA20"),
+    tickers_param: str = Query("", alias="tickers",
+                               description="Daftar kode kustom dipisah koma (maks 45); menimpa universe"),
 ):
     """Estimasi win rate historis per kriteria screener (eduksi, bukan jaminan masa depan).
     Sinyal -> entry di harga tutup, SL 2xATR, TP 2R (RRR 1:2), hold maks 5/20 hari.
+    confirm=1 menambahkan konfirmasi ala buku (harga>SMA20, RSI<70, volume>rata-rata).
     Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini."""
-    tickers = load_idx_tickers(universe)[:limit]
+    if tickers_param:
+        tickers = [f"{t.strip().upper()}.JK" if "." not in t.strip().upper() else t.strip().upper()
+                   for t in tickers_param.split(",") if t.strip()][:45]
+    else:
+        tickers = load_idx_tickers(universe)
+        tickers = tickers[:100] if universe == "all" else tickers[:limit]
     results: List[dict] = []
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for r in ex.map(lambda t: _backtest_one(t, criteria, years), tickers):
+        for r in ex.map(lambda t: _backtest_one(t, criteria, years, confirm), tickers):
             if r and r.get("trades", 0) > 0:
                 results.append(r)
     tot_trades = sum(r["trades"] for r in results)
@@ -2200,6 +2219,7 @@ def backtest(
     return {
         "criteria": criteria,
         "years": years,
+        "confirm": bool(confirm),
         "tickers_checked": len(tickers),
         "tickers_with_signals": len(results),
         "total_trades": tot_trades,
