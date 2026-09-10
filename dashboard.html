@@ -88,6 +88,7 @@
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
         <option value="bandar">Bandar (ACC + Value Share ≥60%)</option>
+        <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
       </select>
       <select id="scLimit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="5">5 saham</option>
@@ -116,6 +117,7 @@
           <option value="swing" selected>Swing</option>
           <option value="scalping">Scalping</option>
           <option value="bsjp">Beli Sore Jual Pagi</option>
+          <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
         </select>
         <select id="btUniverse" onchange="btUniverseChanged()" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="liquid" selected>Liquid (LQ45)</option>
@@ -387,6 +389,15 @@ function sigBadge(a, small) {
   };
   return `<span class="inline-block ${small ? "px-2 py-0.5 text-[11px]" : "px-3 py-1.5 text-sm"} font-extrabold rounded-lg border ${map[a] || "bg-slate-800 text-slate-300 border-slate-600"}">${esc(a)}</span>`;
 }
+function buyScoreChip(bs) {
+  if (!bs || bs.score == null) return '<span class="text-slate-600">—</span>';
+  const sc = bs.score;
+  const cls = sc >= 70 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+    : sc >= 50 ? "border-sky-500/40 bg-sky-500/10 text-sky-400"
+    : sc >= 30 ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
+    : "border-rose-500/40 bg-rose-500/10 text-rose-400";
+  return `<span title="${esc(bs.label || "")} — skor komposit sinyal beli 0-100" class="inline-block text-[11px] px-2 py-0.5 rounded-full border font-bold cursor-help ${cls}">${fmt(sc, 0)}</span>`;
+}
 function confirmChip(bc) {
   if (!bc) return '<span class="text-slate-600">—</span>';
   const parts = [];
@@ -616,6 +627,26 @@ function renderAnalyze(d) {
   h += card("Alasan Sinyal",
     `<ul class="space-y-1.5">${s.reasons.map(x => `<li class="flex gap-2 text-sm"><span class="text-sky-400 shrink-0">▸</span><span>${esc(x)}</span></li>`).join("") || `<li class="text-slate-500 text-sm">—</li>`}</ul>`);
 
+  // --- Skor komposit Sinyal Beli (multi-konfirmasi) ---
+  const bs = d.buy_score || {};
+  const sc = bs.score || 0;
+  const scBar = sc >= 70 ? "bg-gradient-to-r from-emerald-500 to-teal-400" : sc >= 50 ? "bg-gradient-to-r from-sky-500 to-cyan-400" : sc >= 30 ? "bg-gradient-to-r from-amber-500 to-yellow-400" : "bg-gradient-to-r from-rose-500 to-red-400";
+  h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
+    <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
+      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">🎯 Skor Sinyal Beli (0-100)</h2>
+      <span class="text-[11px] px-2.5 py-1 rounded-full border font-bold ${sc >= 70 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : sc >= 50 ? "border-sky-500/40 bg-sky-500/10 text-sky-400" : sc >= 30 ? "border-amber-500/40 bg-amber-500/10 text-amber-400" : "border-rose-500/40 bg-rose-500/10 text-rose-400"}">${esc(bs.label || "—")}</span>
+    </div>
+    <div class="flex items-center gap-4 mb-3">
+      <div class="text-4xl font-extrabold tabular ${sc >= 70 ? "text-emerald-400" : sc >= 50 ? "text-sky-400" : sc >= 30 ? "text-amber-400" : "text-rose-400"}">${sc}<span class="text-sm text-slate-500 font-semibold">/100</span></div>
+      <div class="flex-1"><div class="h-2.5 rounded-full bg-slate-800 overflow-hidden"><div class="h-full rounded-full transition-all ${scBar}" style="width:${Math.min(100, sc)}%"></div></div></div>
+      <div class="text-[10px] text-slate-500 text-right whitespace-nowrap">RSI ${bs.rsi14 != null ? fmt(bs.rsi14, 1) : "—"}<br>5 hari ${bs.ret5_pct != null ? pct(bs.ret5_pct) : "—"}</div>
+    </div>
+    <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+      ${Object.entries(bs.components || {}).map(([k, v]) => `<div class="bg-slate-800/40 border border-slate-700/50 rounded-lg px-2.5 py-1.5"><div class="text-[9px] uppercase tracking-wide text-slate-500">${esc(k)}</div><div class="text-sm font-bold tabular ${v > 0 ? "text-emerald-400" : "text-slate-600"}">${v > 0 ? "+" : ""}${fmt(v, 0)}</div></div>`).join("")}
+    </div>
+    <div class="text-[11px] text-slate-500 mt-3">${esc(bs.note || "")}</div>
+  </div>`;
+
   const I = d.indicators;
   h += card("Indikator",
     `<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
@@ -759,6 +790,7 @@ function renderScan(d) {
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
       <th class="text-center px-3" title="Konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">✓ Buku</th>
+      <th class="text-center px-3" title="Skor komposit sinyal beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
@@ -770,6 +802,7 @@ function renderScan(d) {
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
+      <td class="px-3 text-center">${buyScoreChip(r.buy_score)}</td>
       <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}</td>
       <td class="px-3 text-xs text-violet-400">${esc(r.source || "—")}</td>
       <td class="px-3 text-xs">${r.bandarmology

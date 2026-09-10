@@ -719,14 +719,172 @@ def compute_signal(df: pd.DataFrame, trend: dict, sr_zones: List[dict], candles:
     }
 
 
+BUY_SCORE_WEIGHTS = {
+    "Trend naik (harga > SMA20/SMA50)": 20,
+    "Golden Cross SMA20/50 (<=5 hari)": 10,
+    "RSI di zona sehat (40-65, bonus 50-60)": 15,
+    "MACD bullish (hist > 0 & naik)": 10,
+    "Volume > VolumeMA20": 10,
+    "Pola candlestick bullish": 10,
+    "Dekat support (<=2x ATR)": 10,
+    "Momentum 5 hari sehat (0-12%)": 5,
+    "Launch Pad / Drop Base Rally": 10,
+    "Bandarmology ACC (bila ada)": 15,
+}
+
+
+def _buy_score_series(df: pd.DataFrame) -> pd.Series:
+    """Skor komposit sinyal beli 0-100 per bar (vektor, untuk backtest).
+
+    Komponen yang bisa dihitung vektor; tanpa S&R cluster & bandarmology
+    (tidak ada riwayat). Dipakai juga oleh compute_buy_score untuk bar terakhir.
+    """
+    close = df["Close"].astype(float)
+    vol = df["Volume"].astype(float)
+    o = df["Open"].astype(float)
+    h = df["High"].astype(float)
+    l = df["Low"].astype(float)
+    s20 = sma(close, 20)
+    s50 = sma(close, 50)
+    r = rsi(close, 14)
+    _, _, hist = macd(close)
+    vma = sma(vol, 20)
+    atr14 = atr(df, 14)
+    ret5 = close.pct_change(5) * 100
+
+    golden = (s20 > s50) & (s20.shift(1) <= s50.shift(1))
+    gc5 = golden.rolling(5).max().fillna(0)
+
+    body = (close - o).abs()
+    rng = (h - l)
+    lo = pd.concat([o, close], axis=1).min(axis=1)
+    hi = pd.concat([o, close], axis=1).max(axis=1)
+    lower_sh = lo - l
+    upper_sh = h - hi
+    hammer = (rng > 0) & (lower_sh >= 2 * body) & (upper_sh <= 0.35 * body)
+    engulf = (close.shift(1) < o.shift(1)) & (close > o) & (body > body.shift(1)) & (body.shift(1) > 0)
+    candle = (hammer | engulf).fillna(False).astype(float)
+
+    low20 = close.rolling(20).min()
+    near_low = ((close - low20) <= 2 * atr14).fillna(False).astype(float)
+
+    pts = pd.Series(0.0, index=df.index)
+    pts = pts + np.where((close > s20).fillna(False), 12, 0)
+    pts = pts + np.where((close > s50).fillna(False), 8, 0)
+    pts = pts + gc5 * 10
+    pts = pts + np.where((r >= 40) & (r <= 65), 10, np.where((r >= 30) & (r < 40), 5, 0))
+    pts = pts + np.where((r >= 50) & (r <= 60), 5, 0)
+    pts = pts + np.where((hist > 0) & (hist >= hist.shift(1)), 10, np.where(hist > 0, 5, 0))
+    pts = pts + np.where(vol > vma, 10, np.where(vol > 0.8 * vma, 5, 0))
+    pts = pts + candle * 10
+    pts = pts + near_low * 10
+    pts = pts + np.where((ret5 >= 0) & (ret5 <= 12), 5, np.where((ret5 > 12) & (ret5 <= 20), 2, 0))
+    return pts.clip(upper=100)
+
+
+def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> dict:
+    """Skor komposit SINYAL BELI 0-100 untuk bar terakhir (optimasi screener & analisis).
+
+    Gabungan konfirmasi ala buku (trend, cross, RSI, MACD, volume, candlestick,
+    dekat support, momentum, special pattern) + bandarmology ACC bila tersedia.
+    Label: >=70 SINYAL BELI KUAT · 50-69 BELI (KONFIRMASI) · 30-49 NETRAL · <30 HINDARI.
+    """
+    s = _buy_score_series(df)
+    score = float(s.iloc[-1]) if len(s) else 0.0
+
+    comps: Dict[str, float] = {}
+    close = df["Close"].astype(float)
+    last = float(close.iloc[-1])
+    n = len(df)
+    ret5 = (last / float(close.iloc[-6]) - 1) * 100 if n >= 6 and close.iloc[-6] > 0 else 0.0
+    atr14 = float(atr(df, 14).iloc[-1]) or last * 0.02
+    cr = cross_events(df)
+
+    pts = 0.0
+    t = 0.0
+    s20 = float(sma(close, 20).iloc[-1]); s50 = float(sma(close, 50).iloc[-1])
+    if not np.isnan(s20) and last > s20:
+        t += 12
+    if not np.isnan(s50) and last > s50:
+        t += 8
+    comps["Trend naik (harga > SMA20/SMA50)"] = t; pts += t
+
+    g = 10.0 if cr.get("golden_cross_days_ago") is not None else 0.0
+    comps["Golden Cross SMA20/50 (<=5 hari)"] = g; pts += g
+
+    r = float(rsi(close, 14).iloc[-1])
+    rp = 0.0
+    if 40 <= r <= 65:
+        rp = 10.0
+    elif 30 <= r < 40 or 65 < r <= 70:
+        rp = 5.0
+    if 50 <= r <= 60:
+        rp = min(rp + 5.0, 15.0)
+    comps["RSI di zona sehat (40-65, bonus 50-60)"] = rp; pts += rp
+
+    macd_line, sig_line, hist = macd(close)
+    h_now = float(hist.iloc[-1]); h_prev = float(hist.iloc[-2]) if n >= 2 else h_now
+    m = 10.0 if h_now > 0 and h_now >= h_prev else (5.0 if h_now > 0 else 0.0)
+    comps["MACD bullish (hist > 0 & naik)"] = m; pts += m
+
+    vol_s = df["Volume"].astype(float)
+    vma = float(sma(vol_s, 20).iloc[-1]) if n >= 20 else float(vol_s.mean())
+    vr = float(vol_s.iloc[-1]) / vma if vma > 0 else 0.0
+    v = 10.0 if vr > 1.0 else (5.0 if vr > 0.8 else 0.0)
+    comps["Volume > VolumeMA20"] = v; pts += v
+
+    pats = detect_candlestick_patterns(df).get("patterns", [])
+    cnd = 10.0 if any(p["type"] == "bullish" for p in pats) else 0.0
+    comps["Pola candlestick bullish"] = cnd; pts += cnd
+
+    sr = find_sr_zones(df)
+    supports = [z["price"] for z in sr if z["type"] == "support" and z["price"] < last]
+    near = 10.0 if supports and (last - max(supports)) <= 2 * atr14 else 0.0
+    comps["Dekat support (<=2x ATR)"] = near; pts += near
+
+    mo = 5.0 if 0 <= ret5 <= 12 else (2.0 if 12 < ret5 <= 20 else 0.0)
+    comps["Momentum 5 hari sehat (0-12%)"] = mo; pts += mo
+
+    lp = launch_pad(df)
+    dbr = drop_base_rally(df)
+    sp = 10.0 if (lp.get("detected") or dbr.get("detected")) else 0.0
+    comps["Launch Pad / Drop Base Rally"] = sp; pts += sp
+
+    bd = 0.0
+    bstatus = str((bandarmology or {}).get("status") or "")
+    if bstatus.startswith("ACC"):
+        bd = 15.0
+    comps["Bandarmology ACC (bila ada)"] = bd; pts += bd
+
+    score = min(100.0, pts)
+    label = ("SINYAL BELI KUAT" if score >= 70 else
+             "BELI (KONFIRMASI)" if score >= 50 else
+             "NETRAL" if score >= 30 else "HINDARI")
+    return {
+        "score": num(score, 0),
+        "label": label,
+        "components": comps,
+        "rsi14": num(r, 1),
+        "ret5_pct": num(ret5, 2),
+        "volume_ratio": num(vr, 2),
+        "note": "Skor komposit konfirmasi beli (0-100): >=70 BELI KUAT, 50-69 KONFIRMASI, <50 tunggu.",
+    }
+
+
 def risk_management(last_price: float, sr_zones: List[dict], action: str, atr_value: float,
-                    risk_amount: float = 5_000_000.0) -> dict:
-    """Risk management (Bab 8): SL di luar S&R, TP di S&R berikutnya, RRR min 1:2, position sizing."""
+                    risk_amount: float = 5_000_000.0, force_long: bool = False) -> dict:
+    """Risk management (Bab 8): SL di luar S&R, TP di S&R berikutnya, RRR min 1:2, position sizing.
+
+    force_long=True => TP/SL selalu arah long (TP di atas, SL di bawah). Dipakai untuk
+    portofolio & notifikasi karena pemegang saham (long) tidak relevan dengan TP/SL
+    arah short: sebelumnya saat sinyal SELL, TP berada di BAWAH harga sehingga alert
+    "TP tercapai" menyala terus dan bergantian dengan "SL tersentuh" (bug notif).
+    """
     atr_v = atr_value if atr_value and atr_value > 0 else last_price * 0.02
     supports = sorted([z["price"] for z in sr_zones if z["type"] == "support" and z["price"] < last_price], reverse=True)
     resistances = sorted([z["price"] for z in sr_zones if z["type"] == "resistance" and z["price"] > last_price])
 
-    if action in ("SELL", "STRONG SELL"):
+    if action in ("SELL", "STRONG SELL") and not force_long:
         entry = last_price
         sl = resistances[0] + 0.3 * atr_v if resistances else entry + 2 * atr_v
         tp = supports[0] - 0.3 * atr_v if supports else entry - 2 * atr_v
@@ -1871,6 +2029,9 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
                 "value_share_significant": bs.get("value_share_significant"),
             }
 
+    # Skor komposit sinyal beli (optimasi: multi-konfirmasi, lihat compute_buy_score).
+    item["buy_score"] = compute_buy_score(df, item.get("bandarmology"))
+
     if criteria == "bandar":
         # Kriteria Bandarmology buku (Bab 3-7): akumulasi + value share Top Buyer >= 60%.
         b = item.get("bandarmology") or {}
@@ -1878,6 +2039,14 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         item["criteria_met"] = ["BANDAR"] if bandar_ok else []
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": bandar_ok, "bandar_used": bandar_used}
+
+    if criteria == "buy":
+        # Sinyal beli kuat = skor komposit >= 70 (multi-konfirmasi).
+        sc = (item.get("buy_score") or {}).get("score") or 0
+        label = "BUY KUAT" if sc >= 70 else ("BUY KONF" if sc >= 50 else "")
+        item["criteria_met"] = [label] if label else []
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": sc >= 70, "bandar_used": bandar_used}
 
     return {"tk": tk, "skipped": False, "item": item,
             "eligible": bool(result["eligible"]), "bandar_used": bandar_used}
@@ -1943,6 +2112,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     value_ma10 = value.rolling(10).mean()
     value_ma20 = value.rolling(20).mean()
 
+    bscore = _buy_score_series(df) if criteria == "buy" else None
     triggers = []
     n = len(df)
     for i in range(20, n - 1):
@@ -1954,12 +2124,15 @@ def _backtest_one(ticker: str, criteria: str, years: int,
             hit = v >= 1e9 and day_ret >= 10.0 and last > 50
         elif criteria == "bsjp":
             hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
+        elif criteria == "buy":
+            # Optimasi sinyal beli: skor komposit multi-konfirmasi (vektor).
+            hit = float(bscore.iloc[i]) >= 70.0
         else:  # swing (proksi nilai transaksi)
             hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                    and float(value_ma20.iloc[i]) >= 10e9
                    and float(value.iloc[i - 1]) <= float(value.iloc[i])
                    and float(value_ma10.iloc[i]) > float(value_ma20.iloc[i]))
-        if hit and confirm:
+        if hit and confirm and criteria != "buy":
             # Konfirmasi ala buku: bias naik + tidak mengejar overbought + volume hidup.
             hit = (float(close.iloc[i]) > float(sma20.iloc[i])
                    and float(rsi_s.iloc[i]) < 70.0
@@ -2111,7 +2284,10 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     dbr = drop_base_rally(df)
     screen = screener_hints(df, ticker)
     signal = compute_signal(df, trend, sr_zones, candles, fib, div, cross, vol, lp, dbr)
-    rm = risk_management(last_price, sr_zones, signal["action"], float(atr14), risk_amount)
+    # force_long=True: TP/SL selalu arah long (konsisten utk portofolio/notifikasi,
+    # mencegah alert "TP tercapai" palsu saat sinyal SELL membalik arah TP/SL).
+    rm = risk_management(last_price, sr_zones, signal["action"], float(atr14), risk_amount,
+                         force_long=True)
 
     # --- Bandarmology (IDX Edge PRO, jika key di-set; dilewati saat light) ---
     bandarmology = None
@@ -2199,6 +2375,7 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "special_patterns": {"launch_pad": lp, "drop_base_rally": dbr},
         "screener_hints": screen,
         "signal": signal,
+        "buy_score": compute_buy_score(df, bandarmology if not light else None),
         "risk_management": rm,
         "bandarmology": bandarmology,
         "bandarmology_note": bandarmology_note,
@@ -2380,7 +2557,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -2428,7 +2605,8 @@ def backtest(
                  "(RRR 1:2 sesuai buku), hold maks 5 hari (scalping/BSJP) / 20 hari (swing). "
                  "Tidak memperhitungkan biaya/slippage/aksi korporasi dan rentan survivorship bias. "
                  "Kinerja masa lalu BUKAN jaminan masa depan. Kriteria 'bandar' tidak diuji: "
-                 "Broker Summary hanya snapshot hari ini tanpa riwayat."),
+                 "Broker Summary hanya snapshot hari ini tanpa riwayat. Kriteria 'buy' memakai "
+                 "skor komposit multi-konfirmasi (tanpa bandarmology karena tidak ada riwayat)."),
         "disclaimer": DISCLAIMER,
     }
 
@@ -2477,7 +2655,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
