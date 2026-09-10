@@ -2809,13 +2809,20 @@ def _backtest_matrix(tickers: List[str], criteria: str, years: int,
             "win_rate_pct": num(a["wins"] / decided * 100, 1) if decided else None,
             "avg_r": num(a["r"] / a["trades"], 2) if a["trades"] else None,
         })
-    # Konfigurasi terbaik: avg R tertinggi dengan minimal 5 trade (jika ada),
-    # selain itu yang trade-nya terbanyak. Sisanya urut avg_r menurun.
-    candidates = [r for r in results if r["trades"] >= 5]
+    # Konfigurasi terbaik: avg R tertinggi dengan minimal 5 trade DAN minimal 1
+    # trade yang dituntaskan SL/TP (bukan hanya timeout). Kalau tak ada, ambil
+    # yang trade-nya terbanyak. Sisanya urut avg_r menurun.
+    candidates = [r for r in results if r["trades"] >= 5 and (r["wins"] + r["losses"]) > 0]
     best_key = None
     if candidates:
-        best = max(candidates, key=lambda r: (r["avg_r"] or -99))
+        best = max(candidates, key=lambda r: (r["avg_r"] or -99, r["wins"] + r["losses"]))
         best_key = best["key"]
+    elif not best_key:
+        decided_any = [r for r in results if (r["wins"] + r["losses"]) > 0]
+        if decided_any:
+            best_key = max(decided_any, key=lambda r: (r["avg_r"] or -99))["key"]
+        elif results:
+            best_key = max(results, key=lambda r: r["trades"])["key"]
     results.sort(key=lambda r: (r["avg_r"] or -99), reverse=True)
     return {
         "criteria": criteria,
