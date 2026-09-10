@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CoachInvestasi Dashboard — Analisis Saham</title>
+<title>dedesaputra_invst — Dashboard Analisis Saham</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%230ea5e9'/><path d='M20 70 L42 48 L58 60 L80 32' stroke='%230b1220' stroke-width='9' fill='none' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <script src="https://cdn.tailwindcss.com"></script>
 <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
@@ -34,9 +34,9 @@
   <!-- ======= HEADER ======= -->
   <header class="flex items-center justify-between flex-wrap gap-3 mb-7">
     <div class="flex items-center gap-3">
-      <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-sky-400 via-blue-500 to-indigo-600 flex items-center justify-center font-black text-slate-950 text-lg shadow-lg shadow-sky-500/30">CI</div>
+      <div class="w-11 h-11 rounded-2xl bg-gradient-to-br from-emerald-400 via-sky-500 to-indigo-600 flex items-center justify-center font-black text-slate-950 text-lg shadow-lg shadow-sky-500/30">DS</div>
       <div>
-        <h1 class="text-2xl font-extrabold tracking-tight">Coach<span class="bg-gradient-to-r from-sky-400 to-blue-400 bg-clip-text text-transparent">Investasi</span> <span class="text-slate-500 font-bold text-lg">Dashboard</span></h1>
+        <h1 class="text-2xl font-extrabold tracking-tight">dedesaputra<span class="bg-gradient-to-r from-emerald-400 to-sky-400 bg-clip-text text-transparent">_invst</span> <span class="text-slate-500 font-bold text-lg">Dashboard</span></h1>
         <p class="text-xs text-slate-500">Technical Analysis + Bandarmology · 2025/2026</p>
       </div>
     </div>
@@ -87,6 +87,7 @@
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
+        <option value="bandar">Bandar (ACC + Value Share ≥60%)</option>
       </select>
       <select id="scLimit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="5">5 saham</option>
@@ -103,6 +104,28 @@
     </div>
     <div id="scanInfo" class="text-xs text-slate-400 mb-3"></div>
     <div id="screenerResult"></div>
+
+    <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mt-5 shadow-xl shadow-black/20">
+      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">📊 Uji Win Rate Historis (Backtest)</h2>
+      <p class="text-[11px] text-slate-500 mb-3">Mengukur berapa persen sinyal historis mencapai TP sebelum kena SL — entry harga tutup, SL 2×ATR, TP 2R (RRR 1:2 sesuai buku). Edukasi, bukan jaminan masa depan.</p>
+      <div class="flex flex-wrap gap-3 items-center">
+        <select id="btCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+          <option value="swing" selected>Swing</option>
+          <option value="scalping">Scalping</option>
+          <option value="bsjp">Beli Sore Jual Pagi</option>
+        </select>
+        <select id="btYears" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+          <option value="1">1 tahun</option>
+          <option value="2" selected>2 tahun</option>
+          <option value="3">3 tahun</option>
+          <option value="5">5 tahun</option>
+        </select>
+        <button id="btnBacktest" class="bg-gradient-to-r from-violet-500 to-purple-600 hover:from-violet-400 hover:to-purple-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-violet-500/25 transition disabled:opacity-50 disabled:cursor-wait">
+          📊 Uji Win Rate (LQ45)
+        </button>
+      </div>
+      <div id="backtestResult" class="mt-3"></div>
+    </div>
   </section>
 
   <!-- ======= TAB PORTOFOLIO ======= -->
@@ -614,7 +637,7 @@ function renderAnalyze(d) {
 
   const lp = d.special_patterns.launch_pad, dbr = d.special_patterns.drop_base_rally;
   h += `<div class="grid md:grid-cols-2 gap-4 mb-4">`;
-  h += card("Pola Khusus Coach", `
+  h += card("Pola Khusus (Buku)", `
     <div class="flex items-center justify-between py-2 border-b border-slate-800/60">
       <span class="text-sm">The Launch Pad</span>
       <span class="text-sm font-semibold ${lp.detected ? "text-emerald-400" : "text-slate-500"}">${lp.phase === "breakout" ? "🔥 Breakout terkonfirmasi" : lp.phase === "forming" ? "⏳ Base terbentuk" : "—"}</span>
@@ -723,6 +746,39 @@ function renderScan(d) {
   }
   h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
+}
+
+/* ---------- BACKTEST ---------- */
+async function runBacktest() {
+  const btn = $("#btnBacktest");
+  btn.disabled = true; btn.textContent = "Menguji…";
+  $("#backtestResult").innerHTML = spinner("Menguji sinyal historis 45 saham LQ45… (sekitar 10–15 detik)");
+  const q = new URLSearchParams({ criteria: $("#btCriteria").value, universe: "liquid",
+    years: $("#btYears").value, limit: 45 });
+  try {
+    const d = await getJSON(`/api/backtest?${q}`);
+    let h = `<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">`;
+    h += kv("Total Trade", d.total_trades);
+    h += kv("Menang (TP)", d.wins, "text-emerald-400");
+    h += kv("Kalah (SL)", d.losses, "text-rose-400");
+    h += kv("Timeout", d.timeouts);
+    h += kv("Win Rate", pct(d.win_rate_pct), (d.win_rate_pct || 0) >= 33 ? "text-emerald-400" : "text-amber-400");
+    h += `</div>`;
+    h += `<div class="text-xs text-slate-400 mb-3">Rata-rata hasil per trade: <b class="tabular">${fmt(d.avg_r)}R</b> (titik impas dengan TP 2R adalah <b class="text-slate-200">≈33% win rate</b>). ${esc(d.note)}</div>`;
+    h += `<div class="overflow-x-auto"><table class="w-full text-sm">
+      <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60">
+        <th class="text-left py-2">Saham</th><th class="text-right">Trade</th><th class="text-right">Win</th><th class="text-right">Loss</th><th class="text-right">Timeout</th><th class="text-right">Win Rate</th><th class="text-right">Avg R</th>
+      </tr></thead><tbody>`;
+    for (const r of d.per_ticker) {
+      h += `<tr class="border-b border-slate-800/60"><td class="py-2 font-semibold">${esc(stripJK(r.ticker))}</td><td class="text-right tabular">${r.trades}</td><td class="text-right tabular text-emerald-400">${r.wins}</td><td class="text-right tabular text-rose-400">${r.losses}</td><td class="text-right tabular">${r.timeouts}</td><td class="text-right tabular">${pct(r.win_rate_pct)}</td><td class="text-right tabular">${fmt(r.avg_r)}R</td></tr>`;
+    }
+    h += `</tbody></table></div>`;
+    $("#backtestResult").innerHTML = h;
+  } catch (e) {
+    $("#backtestResult").innerHTML = errorBox(e.message);
+  } finally {
+    btn.disabled = false; btn.textContent = "📊 Uji Win Rate (LQ45)";
+  }
 }
 
 async function scanMore(offset) {
@@ -1115,7 +1171,7 @@ async function checkAlerts(manual) {
       shownAlerts.add(id);
       toast(a.message, a.type === "SL" ? "sl" : (a.type === "TP" || a.type === "TP_NEAR") ? "tp" : "info");
       if (notifyEnabled && "Notification" in window && Notification.permission === "granted") {
-        try { new Notification("CoachInvestasi — " + a.ticker, { body: a.message }); } catch (e) {}
+        try { new Notification("dedesaputra_invst — " + a.ticker, { body: a.message }); } catch (e) {}
       }
     }
     save("ci_shown_alerts", [...shownAlerts].slice(-200));
@@ -1148,6 +1204,7 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
 $("#btnAnalyze").addEventListener("click", analyze);
 $("#ticker").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
 $("#btnScan").addEventListener("click", scan);
+$("#btnBacktest").addEventListener("click", runBacktest);
 $("#btnSaveHolding").addEventListener("click", saveHolding);
 $("#btnCancelEdit").addEventListener("click", resetPortoForm);
 $("#btnRefreshPorto").addEventListener("click", refreshPortoQuotes);

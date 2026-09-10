@@ -1652,7 +1652,7 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         return {"tk": tk, "skipped": True}
 
     bandar_series = None
-    if criteria in ("swing", "all") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+    if criteria in ("swing", "bandar", "all") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
         acc = fetch_idx_accumulation(tk)
         if acc and acc.get("bandar_accum_series"):
             bandar_series = acc["bandar_accum_series"]
@@ -1664,8 +1664,11 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
     if include_signal:
         item["signal"] = quick_signal(df)
 
+    # Broker Summary (Bab 3-7): ditampilkan bila lolos kriteria, atau wajib untuk
+    # kriteria "bandar" (ACC + value share Top Buyer >= 60% per buku).
     bandar_used = 0
-    if include_bandarmology and result["eligible"] and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+    need_bandar = criteria == "bandar" or (include_bandarmology and result["eligible"])
+    if need_bandar and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
         bs = fetch_idx_broker_summary(tk)
         if bs:
             bandar_used = 1
@@ -1675,7 +1678,16 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
                 "bandar_avg_price": bs.get("bandar_avg_price"),
                 "bandar_avg_distance_pct": bs.get("bandar_avg_distance_pct"),
                 "top_buyer_value_share_pct": bs.get("top_buyer_value_share_pct"),
+                "value_share_significant": bs.get("value_share_significant"),
             }
+
+    if criteria == "bandar":
+        # Kriteria Bandarmology buku (Bab 3-7): akumulasi + value share Top Buyer >= 60%.
+        b = item.get("bandarmology") or {}
+        bandar_ok = bool(b.get("status", "").startswith("ACC") and b.get("value_share_significant"))
+        item["criteria_met"] = ["BANDAR"] if bandar_ok else []
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": bandar_ok, "bandar_used": bandar_used}
 
     return {"tk": tk, "skipped": False, "item": item,
             "eligible": bool(result["eligible"]), "bandar_used": bandar_used}
@@ -1710,13 +1722,97 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     }
 
 
+def _backtest_one(ticker: str, criteria: str, years: int) -> Optional[dict]:
+    """Backtest sederhana 1 ticker: sinyal di harga tutup -> SL 2xATR, TP 2R (RRR 1:2, Bab 8).
+    scalping/bsjp: hold maks 5 hari; swing: 20 hari. Timeout dihitung terpisah."""
+    try:
+        df = fetch_data(ticker, "5y")
+    except Exception:
+        return None
+    if len(df) < 60:
+        return None
+    cutoff = df.index[-1] - pd.DateOffset(years=years)
+    df = df[df.index >= cutoff]
+    if len(df) < 40:
+        return None
+
+    close = df["Close"].astype(float)
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    vol = df["Volume"].astype(float)
+    value = df["Value"].astype(float) if "Value" in df.columns else close * vol
+    atr_s = atr(df, 14)
+    vma20 = vol.rolling(20).mean()
+    value_ma10 = value.rolling(10).mean()
+    value_ma20 = value.rolling(20).mean()
+
+    triggers = []
+    n = len(df)
+    for i in range(20, n - 1):
+        last, prev = float(close.iloc[i]), float(close.iloc[i - 1])
+        day_ret = (last / prev - 1) * 100 if prev > 0 else 0.0
+        v = float(value.iloc[i])
+        vr = float(vol.iloc[i]) / float(vma20.iloc[i]) if vma20.iloc[i] > 0 else 0.0
+        if criteria == "scalping":
+            hit = v >= 1e9 and day_ret >= 10.0 and last >= 50
+        elif criteria == "bsjp":
+            hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
+        else:  # swing (proksi nilai transaksi)
+            hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
+                   and float(value_ma20.iloc[i]) >= 10e9
+                   and float(value.iloc[i - 1]) <= float(value.iloc[i])
+                   and float(value_ma10.iloc[i]) > float(value_ma20.iloc[i]))
+        if hit:
+            triggers.append(i)
+    if not triggers:
+        return {"ticker": ticker, "trades": 0}
+
+    max_hold = 5 if criteria in ("scalping", "bsjp") else 20
+    wins = losses = timeouts = 0
+    r_sum = 0.0
+    for i in triggers:
+        entry = float(close.iloc[i])
+        a = float(atr_s.iloc[i])
+        atr_v = a if not np.isnan(a) else entry * 0.02
+        risk = max(atr_v * 2, entry * 0.005)
+        sl, tp = entry - risk, entry + 2 * risk
+        outcome = None
+        for j in range(i + 1, min(i + 1 + max_hold, n)):
+            if float(low.iloc[j]) <= sl:
+                outcome = -1.0
+                break
+            if float(high.iloc[j]) >= tp:
+                outcome = 2.0
+                break
+        if outcome is None:
+            timeouts += 1
+        elif outcome > 0:
+            wins += 1
+            r_sum += outcome
+        else:
+            losses += 1
+            r_sum += outcome
+    total = wins + losses + timeouts
+    decided = wins + losses
+    return {
+        "ticker": ticker,
+        "trades": total,
+        "wins": wins,
+        "losses": losses,
+        "timeouts": timeouts,
+        "win_rate_pct": num(wins / decided * 100, 1) if decided else None,
+        "avg_r": num(r_sum / total, 2) if total else None,
+        "max_hold_days": max_hold,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 7. FASTAPI APP
 # ---------------------------------------------------------------------------
 
 app = FastAPI(
-    title="CoachInvestasi Strategy API",
-    description="API analisis saham: Technical Analysis + Bandarmology ala Coach Investasi 2025-2026.",
+    title="dedesaputra_invst Strategy API",
+    description="API analisis saham: Technical Analysis + Bandarmology (edukasi).",
     version="1.0.0",
 )
 
@@ -1731,7 +1827,7 @@ app.add_middleware(
 @app.get("/")
 def root():
     return {
-        "service": "CoachInvestasi Strategy API",
+        "service": "dedesaputra_invst Strategy API",
         "dashboard": "/dashboard",
         "endpoints": [
             "GET  /api/health",
@@ -1768,7 +1864,7 @@ def health():
         "sync_enabled": SYNC_ENABLED,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "status": "ok",
-        "service": "CoachInvestasi Strategy API",
+        "service": "dedesaputra_invst Strategy API",
         "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
     }
 
@@ -2067,7 +2163,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
             dedupe = f"ci:notif:{key}:{a.get('ticker')}:{a.get('type')}:{today}"
             if _upstash_get(dedupe):
                 continue
-            if _telegram_send(a.get("message", "Alerta") + "\n\n(CoachInvestasi Dashboard)"):
+            if _telegram_send(a.get("message", "Alerta") + "\n\n(dedesaputra_invst)"):
                 _upstash_set(dedupe, "1", ttl=86400)
                 sent += 1
             else:
@@ -2075,6 +2171,51 @@ def cron_alerts(request: Request, secret: str = Query("")):
     return {"checked_portfolios": checked, "telegram_sent": sent,
             "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
+
+
+@app.get("/api/backtest")
+def backtest(
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing)$"),
+    universe: str = Query("liquid", pattern="^(all|liquid)$"),
+    years: int = Query(2, ge=1, le=5),
+    limit: int = Query(20, ge=1, le=45),
+):
+    """Estimasi win rate historis per kriteria screener (eduksi, bukan jaminan masa depan).
+    Sinyal -> entry di harga tutup, SL 2xATR, TP 2R (RRR 1:2), hold maks 5/20 hari.
+    Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini."""
+    tickers = load_idx_tickers(universe)[:limit]
+    results: List[dict] = []
+    with ThreadPoolExecutor(max_workers=8) as ex:
+        for r in ex.map(lambda t: _backtest_one(t, criteria, years), tickers):
+            if r and r.get("trades", 0) > 0:
+                results.append(r)
+    tot_trades = sum(r["trades"] for r in results)
+    tot_wins = sum(r["wins"] for r in results)
+    tot_losses = sum(r["losses"] for r in results)
+    tot_timeouts = sum(r["timeouts"] for r in results)
+    decided = tot_wins + tot_losses
+    results.sort(key=lambda r: r["trades"], reverse=True)
+    avg_r = (sum(r["avg_r"] or 0 for r in results) / len(results)
+             if results else None)
+    return {
+        "criteria": criteria,
+        "years": years,
+        "tickers_checked": len(tickers),
+        "tickers_with_signals": len(results),
+        "total_trades": tot_trades,
+        "wins": tot_wins,
+        "losses": tot_losses,
+        "timeouts": tot_timeouts,
+        "win_rate_pct": num(tot_wins / decided * 100, 1) if decided else None,
+        "avg_r": num(avg_r, 2),
+        "per_ticker": results[:15],
+        "note": ("Backtest sederhana: entry harga tutup saat sinyal, SL 2xATR, TP 2R "
+                 "(RRR 1:2 sesuai buku), hold maks 5 hari (scalping/BSJP) / 20 hari (swing). "
+                 "Tidak memperhitungkan biaya/slippage/aksi korporasi dan rentan survivorship bias. "
+                 "Kinerja masa lalu BUKAN jaminan masa depan. Kriteria 'bandar' tidak diuji: "
+                 "Broker Summary hanya snapshot hari ini tanpa riwayat."),
+        "disclaimer": DISCLAIMER,
+    }
 
 
 class BrokerRow(BaseModel):
@@ -2120,7 +2261,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
