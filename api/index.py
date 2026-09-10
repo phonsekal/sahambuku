@@ -871,32 +871,49 @@ def analyze_broker_summary(payload: dict) -> dict:
 
 
 def fetch_data(ticker: str, period: str) -> pd.DataFrame:
+    """Unduh OHLCV dengan fallback berantai:
+    1) yfinance (real-time) -> 2) dataset GitHub IDX (jika Yahoo memblokir IP server).
+    Sumber akhir dicatat di df.attrs['source'].
+    """
     key = (ticker.upper(), period)
     now = time.time()
     hit = CACHE.get(key)
     if hit and now - hit["ts"] < CACHE_TTL_SECONDS:
         return hit["df"]
+
+    yf_err = None
     try:
         df = yf.download(ticker, period=period, interval="1d",
                          auto_adjust=True, progress=False, threads=False)
     except Exception as exc:
-        msg = str(exc).lower()
-        if "rate" in msg or "too many" in msg:
+        df = None
+        yf_err = str(exc)
+
+    source = "yfinance"
+    if df is None or df.empty:
+        fallback = _download_github_csv(ticker)
+        if fallback is not None:
+            df = fallback
+            source = "github-dataset" + (" (yfinance gagal)" if yf_err else "")
+        elif yf_err and ("rate" in yf_err.lower() or "too many" in yf_err.lower()):
             raise HTTPException(
                 429,
-                detail=f"yfinance sedang rate-limited untuk {ticker}. Coba lagi beberapa saat kemudian.",
+                detail=f"yfinance sedang rate-limited untuk {ticker} dan fallback data tidak tersedia. "
+                       "Coba lagi beberapa saat kemudian.",
             )
-        raise HTTPException(502, detail=f"yfinance gagal mengunduh data {ticker}: {exc}")
-    if df is None or df.empty:
-        raise HTTPException(404, detail=(
-            f"Data tidak ditemukan untuk ticker '{ticker}'. Periksa kode saham "
-            "(mis. BBCA.JK, TLKM.JK, AAPL, TSLA)."
-        ))
+        else:
+            raise HTTPException(404, detail=(
+                f"Data tidak ditemukan untuk ticker '{ticker}'. Periksa kode saham "
+                "(mis. BBCA.JK, TLKM.JK, AAPL, TSLA)."
+            ))
+
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"]).tail(500)
+    if "Close" in df.columns:
+        df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"]).tail(500)
     if len(df) < 30:
         raise HTTPException(422, detail="Data historis terlalu sedikit untuk analisis (min 30 bar).")
+    df.attrs["source"] = source
     CACHE[key] = {"ts": now, "df": df}
     return df
 
@@ -908,6 +925,14 @@ def fetch_data(ticker: str, period: str) -> pd.DataFrame:
 IDX_TICKER_CSV_URL = (
     "https://raw.githubusercontent.com/wildangunawan/Dataset-Saham-IDX/"
     "master/List%20Emiten/all.csv"
+)
+IDX_HIST_CSV_BASE = (
+    "https://raw.githubusercontent.com/wildangunawan/Dataset-Saham-IDX/"
+    "master/Saham/Semua"
+)
+GITHUB_DATASET_NOTE = (
+    "Sumber data: dataset publik IDX (wildangunawan/Dataset-Saham-IDX, 2019-2025), "
+    "bukan real-time. Harga mungkin belum disesuaikan aksi korporasi (split/dividen)."
 )
 
 # Universe "liquid": konstituen LQ45 (dipakai sebagai fallback & mode cepat)
@@ -959,6 +984,39 @@ def load_idx_tickers(universe: str = "all") -> List[str]:
     return tickers
 
 
+def _download_github_csv(ticker: str) -> Optional[pd.DataFrame]:
+    """Fallback data historis IDX dari dataset publik GitHub (2019-2025).
+
+    Dipakai saat Yahoo Finance memblokir/rate-limit IP datacenter (mis. Vercel).
+    Kolom utama: date, open_price, high, low, close, volume, value, foreign_buy, foreign_sell.
+    """
+    if ".JK" not in ticker.upper():
+        return None
+    code = ticker.upper().replace(".JK", "")
+    url = f"{IDX_HIST_CSV_BASE}/{code}.csv"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            csv_data = resp.read()
+        df = pd.read_csv(io.BytesIO(csv_data), parse_dates=[0])
+        df = df.set_index(df.columns[0])
+        df.columns = [str(c).strip().upper() for c in df.columns]
+        rename = {"OPEN_PRICE": "Open", "HIGH": "High", "LOW": "Low",
+                  "CLOSE": "Close", "VOLUME": "Volume", "VALUE": "Value"}
+        df = df.rename(columns=rename)
+        keep = [c for c in ["Open", "High", "Low", "Close", "Volume", "Value"] if c in df.columns]
+        df = df[keep].dropna(subset=["Open", "High", "Low", "Close"])
+        if "Volume" in df.columns:
+            df["Volume"] = df["Volume"].fillna(0.0)
+        df.index = pd.to_datetime(df.index)
+        df = df.sort_index().tail(500)
+        if len(df) < 30:
+            return None
+        return df
+    except Exception:
+        return None
+
+
 def _download_batch(tickers: List[str], period: str) -> Dict[str, pd.DataFrame]:
     """Unduh OHLCV beberapa ticker dalam satu panggilan Yahoo (lebih cepat & hemat rate-limit)."""
     if not tickers:
@@ -996,7 +1054,10 @@ def _screener_metrics(df: pd.DataFrame) -> dict:
     last = float(close.iloc[-1])
     prev = float(close.iloc[-2])
     day_ret = (last / prev - 1) * 100 if prev > 0 else 0.0
-    est_value = last * float(vol.iloc[-1])
+    if "Value" in df.columns and not np.isnan(float(df["Value"].iloc[-1])):
+        est_value = float(df["Value"].iloc[-1])
+    else:
+        est_value = last * float(vol.iloc[-1])
     vma = float(sma(vol, 20).iloc[-1]) if len(df) >= 20 else float(vol.mean())
     vol_ratio = float(vol.iloc[-1]) / vma if vma > 0 else 0.0
     return {"last": last, "day_ret": day_ret, "est_value": est_value, "vol_ratio": vol_ratio}
@@ -1188,9 +1249,14 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool) 
         frames = _download_batch(chunk, period)
         for tk in chunk:
             df = frames.get(tk)
+            src = "yfinance"
+            if df is None and ".JK" in tk.upper():
+                df = _download_github_csv(tk)
+                src = "github-dataset" if df is not None else src
             if df is None:
                 skipped += 1
                 continue
+            df.attrs["source"] = src
             scanned += 1
             bs = None
             bandar_series = None
@@ -1200,7 +1266,7 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool) 
                     bandar_used += 1
                     bandar_series = bs.get("bandar_series") or None
             result = run_screener(df, criteria, bandar_series)
-            item = {"ticker": tk, **result["metrics"], "criteria_met": result["criteria_met"]}
+            item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"]}
             if include_signal:
                 item["signal"] = quick_signal(df)
             if bs:
@@ -1307,6 +1373,8 @@ def analyze(
             "last_price": num(last_price, 2),
             "change_pct": num(change_pct, 2),
             "date": str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1]),
+            "source": df.attrs.get("source", "yfinance"),
+            "note": GITHUB_DATASET_NOTE if "github" in str(df.attrs.get("source", "")) else None,
         },
         "indicators": {
             "sma20": num(s20, 2),
