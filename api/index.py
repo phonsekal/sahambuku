@@ -1411,29 +1411,110 @@ def _call_with_timeout(fn, timeout: float, *args, **kwargs):
 
 
 YFINANCE_TIMEOUT = 25
-LIVE_QUOTE_TIMEOUT = 3
+LIVE_QUOTE_TIMEOUT = 10
+
+# Intraday (5m) dari Yahoo via curl_cffi (impersonasi browser) — jalur ini lolos
+# blokir/rate-limit yang menimpa yfinance biasa (requests/urllib) dari IP datacenter.
+YAHOO_INTRADAY_CACHE: Dict[str, dict] = {}
+YAHOO_INTRADAY_TTL = 45  # detik (bar 5m hanya berubah tiap 5 menit)
+
+_YAHOO_UA = (
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+)
+
+
+def _yahoo_chart_cffi(ticker: str, interval: str = "5m", rng: str = "1d") -> Optional[dict]:
+    """Yahoo chart API via curl_cffi (impersonasi chrome) -> dict {meta, bars}."""
+    try:
+        from curl_cffi import requests as cr
+    except Exception:
+        return None
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/"
+           f"{urllib.parse.quote(ticker)}?interval={interval}&range={rng}")
+    try:
+        r = cr.get(url, impersonate="chrome", timeout=6,
+                   headers={"User-Agent": _YAHOO_UA,
+                            "Accept": "application/json,text/plain,*/*"})
+        if r.status_code != 200:
+            return None
+        j = r.json()
+        res = (j.get("chart") or {}).get("result") or []
+        if not res:
+            return None
+        r0 = res[0]
+        meta = r0.get("meta") or {}
+        # marketState tidak ada di endpoint chart -> deteksi dari sesi reguler.
+        _ctp = (meta.get("currentTradingPeriod") or {}).get("regular") or {}
+        _now = time.time()
+        _s, _e = _ctp.get("start"), _ctp.get("end")
+        meta["marketState"] = "REGULAR" if (_s and _e and _s <= _now <= _e) else None
+        ts = r0.get("timestamp") or []
+        q0 = ((r0.get("indicators") or {}).get("quote") or [{}])[0] or {}
+        o, h, l, c, v = (q0.get("open"), q0.get("high"), q0.get("low"),
+                         q0.get("close"), q0.get("volume"))
+        bars = []
+        for i, t in enumerate(ts):
+            if not (c and i < len(c) and c[i] is not None):
+                continue
+            bars.append({
+                "time": int(t),
+                "open": num(o[i], 2) if o and i < len(o) and o[i] is not None else num(c[i], 2),
+                "high": num(h[i], 2) if h and i < len(h) and h[i] is not None else num(c[i], 2),
+                "low": num(l[i], 2) if l and i < len(l) and l[i] is not None else num(c[i], 2),
+                "close": num(c[i], 2),
+                "volume": int(v[i]) if v and i < len(v) and v[i] is not None else 0,
+            })
+        if not bars:
+            return None
+        return {"meta": meta, "bars": bars}
+    except Exception:
+        return None
+
+
+def fetch_intraday(ticker: str) -> Optional[dict]:
+    """Bar 5m hari ini + meta pasar dari Yahoo (curl_cffi), cache 45 dtk.
+    Kode pendek tanpa titik dicoba dengan suffix .JK dulu (bursa IDX)."""
+    t = ticker.upper()
+    now = time.time()
+    hit = YAHOO_INTRADAY_CACHE.get(t)
+    if hit and now - hit["ts"] < YAHOO_INTRADAY_TTL:
+        return hit["data"]
+    variants = [t + ".JK", t] if ("." not in t and t.isalnum() and len(t) <= 5) else [t]
+    for v in variants:
+        data = _yahoo_chart_cffi(v)
+        if data:
+            YAHOO_INTRADAY_CACHE[t] = {"ts": now, "data": data}
+            return data
+    return None
 
 
 def _fetch_live_quote_inner(ticker: str) -> Optional[dict]:
-    """Kutipan harga real-time dari Yahoo (fast_info). None bila gagal/rate-limited."""
+    """Kutipan harga real-time dari Yahoo (chart 5m via curl_cffi). None bila gagal."""
     try:
-        fi = yf.Ticker(ticker).fast_info
-        px = float(fi.get("last_price") or 0)
-        prev = float(fi.get("previous_close") or 0)
-        if px <= 0:
+        data = fetch_intraday(ticker)
+        if not data:
+            return None
+        meta = data.get("meta") or {}
+        px = meta.get("regularMarketPrice") or data["bars"][-1]["close"]
+        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+        if not px or px <= 0:
             return None
         return {
-            "last_price": px,
-            "previous_close": prev,
-            "change_pct": (px / prev - 1) * 100 if prev > 0 else None,
+            "last_price": float(px),
+            "previous_close": float(prev) if prev else None,
+            "change_pct": (px / prev - 1) * 100 if prev and prev > 0 else None,
             "source": "yahoo-live",
+            "as_of": meta.get("regularMarketTime"),
+            "market_state": meta.get("marketState"),
+            "long_name": meta.get("longName"),
         }
     except Exception:
         return None
 
 
 def fetch_live_quote(ticker: str) -> Optional[dict]:
-    """Best-effort harga real-time dengan timeout singkat (agar tak memperlambat API)."""
+    """Best-effort harga real-time (curl_cffi, timeout singkat agar tak memperlambat API)."""
     try:
         return _call_with_timeout(_fetch_live_quote_inner, LIVE_QUOTE_TIMEOUT, ticker)
     except Exception:
@@ -1532,8 +1613,9 @@ def root():
         "endpoints": [
             "GET  /api/health",
             "GET  /api/analyze/{ticker}?period=1y",
+            "GET  /api/quotes?tickers=BBCA,TLKM&with_bandar=0",
             "POST /api/bandarmology/analyze",
-            "GET  /api/chart/{ticker}?period=1y&limit=120",
+            "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
             "GET  /api/screener?criteria=all|swing|scalping|bsjp&universe=liquid|all&limit=20&offset=0",
             "POST /api/screener",
@@ -1562,24 +1644,24 @@ def health():
     }
 
 
-@app.get("/api/analyze/{ticker}")
-def analyze(
-    ticker: str,
-    period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
-    risk_amount: float = Query(5_000_000, gt=0),
-):
+def _analyze_core(ticker: str, period: str, risk_amount: float,
+                  light: bool = False) -> dict:
+    """Analisis lengkap 1 saham. light=True -> tanpa bandarmology (hemat kuota IDX Edge)."""
     df = fetch_data(ticker, period)
     close = df["Close"]
     last_price = float(close.iloc[-1])
     prev_price = float(close.iloc[-2])
     change_pct = (last_price / prev_price - 1) * 100 if prev_price > 0 else None
 
-    # Kutipan harga live (best-effort; Yahoo kadang diblokir/rate-limited di server).
+    # Kutipan harga live (Yahoo 5m via curl_cffi; best-effort).
     quote = fetch_live_quote(ticker)
-    is_live = bool(quote and quote.get("last_price"))
-    if is_live:
+    has_quote = bool(quote and quote.get("last_price"))
+    # Live = kutipan intraday saat pasar sedang buka (REGULAR).
+    is_live = bool(has_quote and quote.get("market_state") == "REGULAR")
+    if has_quote:
         last_price = quote["last_price"]
-        change_pct = quote.get("change_pct")
+        if quote.get("change_pct") is not None:
+            change_pct = quote["change_pct"]
 
     # --- indikator ---
     s20, s50, s200 = sma(close, 20).iloc[-1], sma(close, 50).iloc[-1], sma(close, 200).iloc[-1]
@@ -1602,12 +1684,16 @@ def analyze(
     signal = compute_signal(df, trend, sr_zones, candles, fib, div, cross, vol, lp, dbr)
     rm = risk_management(last_price, sr_zones, signal["action"], float(atr14), risk_amount)
 
-    # --- Bandarmology (IDX Edge PRO, jika key di-set) ---
+    # --- Bandarmology (IDX Edge PRO, jika key di-set; dilewati saat light) ---
     bandarmology = None
     bandarmology_note = BANDARMOLOGY_NOTE
-    if IDX_EDGE_API_KEYS and ".JK" in ticker.upper():
+    # Normalisasi varian bursa IDX (.JK) untuk input pendek tanpa titik (mis. BBCA).
+    bandar_tk = ticker.upper()
+    if ".JK" not in bandar_tk and "." not in bandar_tk and bandar_tk.isalnum() and len(bandar_tk) <= 5:
+        bandar_tk += ".JK"
+    if not light and IDX_EDGE_API_KEYS and ".JK" in bandar_tk:
         bandarmology = {"source": "IDX Edge PRO"}
-        bs = fetch_idx_broker_summary(ticker)
+        bs = fetch_idx_broker_summary(bandar_tk)
         if bs:
             bandarmology.update({
                 "status": bs.get("status"),
@@ -1620,7 +1706,7 @@ def analyze(
                 "top_sellers": bs.get("top_sellers", [])[:5],
                 "interpretation": bs.get("interpretation"),
             })
-        acc = fetch_idx_accumulation(ticker)
+        acc = fetch_idx_accumulation(bandar_tk)
         if acc:
             bandarmology["bandar_accumulation"] = {
                 "last_bandar_value": num(acc.get("last_bandar_value"), 0),
@@ -1653,7 +1739,9 @@ def analyze(
             "date": str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1]),
             "source": df.attrs.get("source", "yfinance"),
             "is_live": is_live,
-            "quote_source": quote.get("source") if is_live else None,
+            "quote_source": quote.get("source") if has_quote else None,
+            "quote_as_of": quote.get("as_of") if has_quote else None,
+            "market_state": quote.get("market_state") if has_quote else None,
             "note": GITHUB_DATASET_NOTE if "github" in str(df.attrs.get("source", "")) else None,
         },
         "indicators": {
@@ -1685,6 +1773,50 @@ def analyze(
         "risk_management": rm,
         "bandarmology": bandarmology,
         "bandarmology_note": bandarmology_note,
+    }
+
+
+@app.get("/api/analyze/{ticker}")
+def analyze(
+    ticker: str,
+    period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
+    risk_amount: float = Query(5_000_000, gt=0),
+):
+    return _analyze_core(ticker, period, risk_amount, light=False)
+
+
+@app.get("/api/quotes")
+def quotes(
+    tickers: str = Query(..., description="Kode saham dipisah koma, maks 15. Contoh: BBCA,TLKM,BBRI"),
+    period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
+    with_bandar: bool = Query(False, description="Sertakan Broker Summary (memakai kuota IDX Edge)"),
+):
+    """Kutipan + sinyal + TP/SL untuk portofolio/watchlist (paralel, hemat kuota)."""
+    codes = [c.strip().upper() for c in tickers.split(",") if c.strip()][:15]
+    if not codes:
+        raise HTTPException(422, "Parameter tickers tidak boleh kosong.")
+
+    def one(code: str) -> dict:
+        try:
+            d = _analyze_core(code, period, 5_000_000, light=not with_bandar)
+            return {"ticker": code, "ok": True, "data": d}
+        except HTTPException as exc:
+            return {"ticker": code, "ok": False, "error": str(exc.detail)[:150]}
+        except Exception:
+            return {"ticker": code, "ok": False, "error": "Gagal memproses ticker."}
+
+    workers = min(8, max(1, len(codes)))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        results = list(ex.map(one, codes))
+
+    return {
+        "requested": len(codes),
+        "bandarmology_checked": bool(with_bandar and IDX_EDGE_API_KEYS),
+        "results": results,
+        "note": ("Live price = Yahoo 5m (saat pasar buka); sinyal/TP/SL dari data harian "
+                 "IDX Edge PRO/yfinance (cache 6 jam). with_bandar=1 memakai kuota "
+                 "Broker Summary IDX Edge."),
+        "disclaimer": DISCLAIMER,
     }
 
 
@@ -1777,8 +1909,32 @@ def chart(
     ticker: str,
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
     limit: int = Query(120, ge=20, le=500),
+    interval: str = Query("daily", pattern="^(daily|intraday)$"),
 ):
-    """Data OHLCV untuk grafik candlestick (pakai sumber data yang sama dengan analyze)."""
+    """Data OHLCV grafik. interval=daily -> data harian (sumber sama dengan analyze);
+    interval=intraday -> bar 5m hari ini dari Yahoo (curl_cffi, cache 45 dtk)."""
+    if interval == "intraday":
+        data = fetch_intraday(ticker)
+        if not data:
+            raise HTTPException(502, detail=(
+                "Data intraday tidak tersedia saat ini (Yahoo sedang membatasi akses). "
+                "Gunakan interval=daily untuk data harian."))
+        meta = data.get("meta") or {}
+        prev = meta.get("chartPreviousClose") or meta.get("previousClose")
+        last = meta.get("regularMarketPrice") or data["bars"][-1]["close"]
+        return {
+            "ticker": ticker.upper(),
+            "interval": "intraday",
+            "source": "yahoo-live",
+            "market_state": meta.get("marketState"),
+            "is_market_open": meta.get("marketState") == "REGULAR",
+            "last_price": num(last, 2),
+            "previous_close": num(prev, 2) if prev else None,
+            "change_pct": num((last / prev - 1) * 100, 2) if prev and prev > 0 else None,
+            "as_of": meta.get("regularMarketTime"),
+            "bars": data["bars"][-150:],
+            "disclaimer": DISCLAIMER,
+        }
     df = fetch_data(ticker, period)
     n = min(limit, len(df))
     sub = df.tail(n)
@@ -1790,6 +1946,7 @@ def chart(
     } for idx, r in sub.iterrows()]
     return {
         "ticker": ticker.upper(),
+        "interval": "daily",
         "source": df.attrs.get("source", "yfinance"),
         "data_date": str(sub.index[-1].date()) if hasattr(sub.index[-1], "date") else str(sub.index[-1]),
         "bars": bars,
