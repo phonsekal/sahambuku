@@ -95,6 +95,9 @@
         <option value="20">20 saham</option>
         <option value="50">50 saham</option>
       </select>
+      <label class="flex items-center gap-2 text-xs text-slate-400" title="Hanya tampilkan saham yang lolos konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">
+        <input type="checkbox" id="scConfirm" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> Konfirmasi buku
+      </label>
       <label class="flex items-center gap-2 text-xs text-slate-400">
         <input type="checkbox" id="scBandar" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> + Bandarmology
       </label>
@@ -158,8 +161,14 @@
       <div class="grid grid-cols-2 md:grid-cols-6 gap-3 items-end">
         <div><label class="text-[10px] uppercase text-slate-500">Kode</label>
           <input id="pfTicker" placeholder="BBCA" class="w-full bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 uppercase"></div>
-        <div><label class="text-[10px] uppercase text-slate-500">Jumlah (lot*)</label>
-          <input id="pfQty" type="number" min="0" step="1" placeholder="100" class="w-full bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"></div>
+        <div><label class="text-[10px] uppercase text-slate-500">Jumlah</label>
+          <div class="flex gap-2">
+            <input id="pfQty" type="number" min="0" step="any" placeholder="10" class="w-full bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+            <select id="pfUnit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-2 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+              <option value="lot" selected>Lot</option>
+              <option value="lembar">Lembar</option>
+            </select>
+          </div></div>
         <div><label class="text-[10px] uppercase text-slate-500">Harga beli</label>
           <input id="pfAvg" type="number" min="0" step="1" placeholder="6500" class="w-full bg-slate-800/70 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"></div>
         <div><label class="text-[10px] uppercase text-slate-500">Tgl beli</label>
@@ -172,7 +181,7 @@
         <button id="btnRefreshPorto" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-5 py-2.5 text-sm shadow-lg shadow-sky-500/25 transition">🔄 Muat Harga &amp; Sinyal</button>
         <button id="btnCancelEdit" class="hidden text-slate-400 hover:text-slate-200 rounded-xl px-4 py-2.5 text-sm">Batal</button>
       </div>
-      <div class="text-[11px] text-slate-500 mt-2">*Jumlah dalam lembar saham (1 lot = 100 lembar). P/L dihitung dari jumlah lembar × harga.</div>
+      <div class="text-[11px] text-slate-500 mt-2">Unit <b class="text-slate-300">Lot</b> = 100 lembar (mis. 5 lot BBCA = 500 lembar). P/L dihitung dari jumlah <b class="text-slate-300">lembar</b> × harga.</div>
     </div>
 
     <div id="portoSummary" class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4"></div>
@@ -377,6 +386,17 @@ function sigBadge(a, small) {
     "STRONG SELL": "bg-rose-500/15 text-rose-400 border-rose-500/40",
   };
   return `<span class="inline-block ${small ? "px-2 py-0.5 text-[11px]" : "px-3 py-1.5 text-sm"} font-extrabold rounded-lg border ${map[a] || "bg-slate-800 text-slate-300 border-slate-600"}">${esc(a)}</span>`;
+}
+function confirmChip(bc) {
+  if (!bc) return '<span class="text-slate-600">—</span>';
+  const parts = [];
+  parts.push((bc.price_above_sma20 ? "harga>SMA20" : "harga<SMA20") + (bc.sma20 ? ` (${fmt(bc.sma20, 0)})` : ""));
+  parts.push(bc.rsi14 != null ? (bc.rsi_below_70 ? `RSI ${fmt(bc.rsi14, 1)}<70` : `RSI ${fmt(bc.rsi14, 1)}≥70`) : "RSI n/a");
+  parts.push(bc.volume_above_ma20 ? "vol>MA20" : "vol<MA20");
+  const tip = parts.join(", ");
+  return bc.ok
+    ? `<span title="${esc(tip)}" class="inline-block text-[11px] px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 cursor-help font-bold">✓</span>`
+    : `<span title="${esc(tip)}" class="inline-block text-[11px] px-2 py-0.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-400 cursor-help font-bold">✗</span>`;
 }
 const card = (title, inner) =>
   `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 shadow-xl shadow-black/20 transition hover:border-slate-700">
@@ -709,7 +729,8 @@ function setChartInterval(iv) {
 async function scan() {
   const btn = $("#btnScan");
   const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
-    limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked });
+    limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked,
+    require_confirm: $("#scConfirm").checked });
   btn.disabled = true; btn.textContent = "Scanning…";
   $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai saham… (bisa butuh beberapa detik)`;
   $("#screenerResult").innerHTML = "";
@@ -737,6 +758,7 @@ function renderScan(d) {
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
+      <th class="text-center px-3" title="Konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">✓ Buku</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
@@ -747,6 +769,7 @@ function renderScan(d) {
       <td class="px-3 text-right tabular text-slate-400">${fmtIdr(r.estimated_value_idr)}</td>
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
       <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}</td>
       <td class="px-3 text-xs text-violet-400">${esc(r.source || "—")}</td>
       <td class="px-3 text-xs">${r.bandarmology
@@ -810,7 +833,8 @@ async function runBacktest() {
 
 async function scanMore(offset) {
   const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
-    limit: $("#scLimit").value, offset: offset, include_bandarmology: $("#scBandar").checked });
+    limit: $("#scLimit").value, offset: offset, include_bandarmology: $("#scBandar").checked,
+    require_confirm: $("#scConfirm").checked });
   $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
   try {
     renderScan(await getJSON(`/api/screener?${q}`));
@@ -824,7 +848,22 @@ async function scanMore(offset) {
    TAB PORTOFOLIO  (localStorage + /api/quotes)
 ================================================================= */
 const PALETTE = ["#38bdf8", "#34d399", "#fbbf24", "#f472b6", "#a78bfa", "#f87171", "#4ade80", "#fb923c", "#22d3ee", "#a3e635"];
-let porto = load("ci_portfolio", []);
+// Migrasi data lama: posisi tersimpan tanpa field `unit` diisi dari form berlabel
+// "lot" sehingga isinya LOT -> konversi ke LEMBAR (qty selalu lembar di dalam app).
+function normalizeHoldings(arr) {
+  let changed = false;
+  const out = (arr || []).map(h => {
+    if (!h || h.unit) return h;
+    changed = true;
+    const qty = Number(h.qty) || 0;
+    return { ...h, qty: qty * 100, unit: "lot" };
+  });
+  return { out, changed };
+}
+
+const _pNorm = normalizeHoldings(load("ci_portfolio", []));
+let porto = _pNorm.out;
+if (_pNorm.changed) save("ci_portfolio", porto);
 let portoQuotes = {};   // ticker -> data analyze
 
 function renderPortoSummary() {
@@ -863,12 +902,12 @@ function holdingStatus(p, q) {
 function renderPortfolio() {
   renderPortoSummary();
   if (!porto.length) {
-    $("#portfolioResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">Belum ada posisi. Tambahkan saham yang Anda miliki (kode, jumlah lembar, harga beli) lalu klik <b class="text-slate-300">🔄 Muat Harga &amp; Sinyal</b> untuk melihat sinyal take profit / stop loss.</div>`;
+    $("#portfolioResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">Belum ada posisi. Tambahkan saham yang Anda miliki (kode, jumlah lot/lembar, harga beli) lalu klik <b class="text-slate-300">🔄 Muat Harga &amp; Sinyal</b> untuk melihat sinyal take profit / stop loss.</div>`;
     return;
   }
   let h = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><table class="w-full text-sm min-w-[900px]">
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
-      <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Lembar</th><th class="text-right px-3">Harga Beli</th>
+      <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Lot</th><th class="text-right px-3">Lembar</th><th class="text-right px-3">Harga Beli</th>
       <th class="text-right px-3">Harga Skrg</th><th class="text-right px-3">P/L Rp</th><th class="text-right px-3">P/L %</th>
       <th class="text-left px-3">Sinyal</th><th class="text-right px-3">TP</th><th class="text-right px-3">SL</th>
       <th class="text-left px-3">Status / Aksi</th><th class="px-3"></th>
@@ -884,6 +923,7 @@ function renderPortfolio() {
     const rm = q ? (q.risk_management || {}) : {};
     h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
       <td class="px-4 py-3"><div class="font-bold">${esc(p.ticker)}</div>${p.note ? `<div class="text-[10px] text-slate-500">${esc(p.note)}</div>` : ""}${p.buyDate ? `<div class="text-[10px] text-slate-600">beli ${esc(p.buyDate)}</div>` : ""}</td>
+      <td class="px-3 text-right tabular">${fmt(p.qty / 100, 2)}</td>
       <td class="px-3 text-right tabular">${fmt(p.qty, 0)}</td>
       <td class="px-3 text-right tabular text-slate-300">${fmt(p.avg)}</td>
       <td class="px-3 text-right tabular font-semibold">${q ? fmt(price) : "—"}</td>
@@ -907,18 +947,21 @@ function renderPortfolio() {
 function saveHolding(e) {
   e.preventDefault();
   const ticker = $("#pfTicker").value.trim().toUpperCase().replace(/\.JK$/i, "");
-  const qty = parseFloat($("#pfQty").value), avg = parseFloat($("#pfAvg").value);
-  if (!ticker || !qty || qty <= 0 || !avg || avg <= 0) {
-    $("#portoAlert").innerHTML = errorBox("Isi kode saham, jumlah lembar, dan harga beli dengan benar.");
+  const qtyIn = parseFloat($("#pfQty").value), avg = parseFloat($("#pfAvg").value);
+  const unit = $("#pfUnit").value;
+  // qty SELALU disimpan dalam LEMBAR: 1 lot = 100 lembar
+  const qty = qtyIn * (unit === "lot" ? 100 : 1);
+  if (!ticker || !qtyIn || qtyIn <= 0 || !avg || avg <= 0) {
+    $("#portoAlert").innerHTML = errorBox("Isi kode saham, jumlah, dan harga beli dengan benar.");
     return;
   }
   $("#portoAlert").innerHTML = "";
   const id = $("#pfTicker").dataset.editId;
   if (id) {
     const p = porto.find(x => x.id === id);
-    if (p) Object.assign(p, { ticker, qty, avg, buyDate: $("#pfDate").value, note: $("#pfNote").value.trim() });
+    if (p) Object.assign(p, { ticker, qty, unit, avg, buyDate: $("#pfDate").value, note: $("#pfNote").value.trim() });
   } else {
-    porto.push({ id: "h" + Date.now(), ticker, qty, avg, buyDate: $("#pfDate").value, note: $("#pfNote").value.trim() });
+    porto.push({ id: "h" + Date.now(), ticker, qty, unit, avg, buyDate: $("#pfDate").value, note: $("#pfNote").value.trim() });
   }
   save("ci_portfolio", porto);
   resetPortoForm();
@@ -928,7 +971,7 @@ function saveHolding(e) {
 }
 
 function resetPortoForm() {
-  $("#pfTicker").value = ""; $("#pfQty").value = ""; $("#pfAvg").value = "";
+  $("#pfTicker").value = ""; $("#pfQty").value = ""; $("#pfUnit").value = "lot"; $("#pfAvg").value = "";
   $("#pfDate").value = ""; $("#pfNote").value = "";
   delete $("#pfTicker").dataset.editId;
   $("#btnCancelEdit").classList.add("hidden");
@@ -937,7 +980,11 @@ function resetPortoForm() {
 function editHolding(id) {
   const p = porto.find(x => x.id === id);
   if (!p) return;
-  $("#pfTicker").value = p.ticker; $("#pfQty").value = p.qty; $("#pfAvg").value = p.avg;
+  const unit = p.unit || "lembar";
+  $("#pfTicker").value = p.ticker;
+  $("#pfQty").value = unit === "lot" ? p.qty / 100 : p.qty;
+  $("#pfUnit").value = unit;
+  $("#pfAvg").value = p.avg;
   $("#pfDate").value = p.buyDate || ""; $("#pfNote").value = p.note || "";
   $("#pfTicker").dataset.editId = id;
   $("#btnCancelEdit").classList.remove("hidden");
@@ -1127,7 +1174,11 @@ async function syncPull() {
   try {
     const d = await getJSON(`/api/sync?key=${encodeURIComponent(getSyncKey())}`);
     if (d.exists) {
-      if (Array.isArray(d.portfolio) && d.portfolio.length) { porto = d.portfolio; save("ci_portfolio", porto); }
+      if (Array.isArray(d.portfolio) && d.portfolio.length) {
+        const norm = normalizeHoldings(d.portfolio);
+        porto = norm.out; save("ci_portfolio", porto);
+        if (norm.changed) syncPush();  // perbaiki data lama di cloud (lot -> lembar)
+      }
       if (Array.isArray(d.watchlist) && d.watchlist.length) { watch = d.watchlist; save("ci_watchlist", watch); }
       setSyncStatus("Tersinkron ✓ (data dari cloud)", true);
       renderWlChips(); renderPortfolio();

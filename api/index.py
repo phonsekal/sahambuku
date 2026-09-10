@@ -1059,6 +1059,33 @@ def _unwrap_json(raw: Optional[str], default):
     return d
 
 
+def _normalize_holdings(portfolio: Optional[list]) -> Optional[list]:
+    """Normalisasi posisi: qty SELALU disimpan dalam LEMBAR.
+
+    Data lama (tanpa field `unit`) disimpan dari form yang berlabel "lot" sehingga
+    isinya LOT -> kalikan 100 (1 lot = 100 lembar) agar nilai portofolio benar.
+    Idempoten: posisi yang sudah punya `unit` tidak diubah.
+    """
+    if not portfolio:
+        return portfolio
+    out: List[dict] = []
+    for h in portfolio:
+        if not isinstance(h, dict):
+            continue
+        h = dict(h)
+        try:
+            qty = float(h.get("qty") or 0)
+        except Exception:
+            qty = 0
+        unit = str(h.get("unit") or "")
+        if not unit:
+            qty = qty * 100
+            h["unit"] = "lot"
+        h["qty"] = qty
+        out.append(h)
+    return out
+
+
 def sync_load(key: str) -> dict:
     """Muat data tersinkron untuk sebuah sync key."""
     raw = _upstash_get(f"ci:{key}")
@@ -1306,10 +1333,33 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
     else:
         eligible = bool(met)
 
+    # Konfirmasi ala buku (Bab 5-8): harga > SMA20 (bias naik), RSI < 70 (tidak
+    # mengejar overbought), volume > VolumeMA20 (ada tenaga beli). Dipakai sebagai
+    # filter opsional (require_confirm) dan kolom pada hasil screener.
+    try:
+        close_s = df["Close"].astype(float)
+        vol_s = df["Volume"].astype(float)
+        sma20_v = float(sma(close_s, 20).iloc[-1]) if len(df) >= 20 else float(close_s.mean())
+        vma20_v = float(sma(vol_s, 20).iloc[-1]) if len(df) >= 20 else float(vol_s.mean())
+        rsi14_v = float(rsi(close_s, 14).iloc[-1]) if len(df) >= 15 else None
+        book_confirm = {
+            "price_above_sma20": bool(float(close_s.iloc[-1]) > sma20_v),
+            "rsi_below_70": bool(rsi14_v < 70) if rsi14_v is not None else False,
+            "volume_above_ma20": bool(float(vol_s.iloc[-1]) > vma20_v),
+            "rsi14": num(rsi14_v, 1) if rsi14_v is not None else None,
+            "sma20": num(sma20_v, 2),
+        }
+        book_confirm["ok"] = all(book_confirm[k] for k in
+                                  ("price_above_sma20", "rsi_below_70", "volume_above_ma20"))
+    except Exception:
+        book_confirm = {"price_above_sma20": False, "rsi_below_70": False,
+                        "volume_above_ma20": False, "ok": False, "rsi14": None, "sma20": None}
+
     return {
         "eligible": eligible,
         "criteria_met": met,
         "checks": checks,
+        "book_confirm": book_confirm,
         "metrics": {
             "price": num(m["last"], 2),
             "day_return_pct": num(m["day_ret"], 2),
@@ -1658,7 +1708,8 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             bandar_series = acc["bandar_accum_series"]
 
     result = run_screener(df, criteria, bandar_series)
-    item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"]}
+    item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"],
+            "book_confirm": result.get("book_confirm")}
     item["data_date"] = (str(df.index[-1].date()) if hasattr(df.index[-1], "date")
                           else str(df.index[-1]))
     if include_signal:
@@ -1694,7 +1745,7 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 
 
 def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
-          include_bandarmology: bool = True) -> dict:
+          include_bandarmology: bool = True, require_confirm: bool = False) -> dict:
     matched: List[dict] = []
     scanned = skipped = bandar_used = 0
     workers = min(8, max(1, len(tickers)))
@@ -1713,6 +1764,8 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
             scanned += 1
             bandar_used += out.get("bandar_used", 0)
             if out.get("eligible"):
+                if require_confirm and not (out["item"].get("book_confirm") or {}).get("ok"):
+                    continue
                 matched.append(out["item"])
     return {
         "scanned": scanned,
@@ -2079,7 +2132,7 @@ def sync_put(key: str = Query(..., min_length=6, max_length=128), payload: SyncP
     if not SYNC_ENABLED:
         return {"ok": False, "sync_enabled": False,
                 "note": "Penyimpanan cloud belum dikonfigurasi (UPSTASH_REDIS_REST_URL/TOKEN)."}
-    ok = sync_save(key, payload.portfolio, payload.watchlist)
+    ok = sync_save(key, _normalize_holdings(payload.portfolio), payload.watchlist)
     if not ok:
         raise HTTPException(502, "Gagal menyimpan ke penyimpanan cloud. Coba lagi.")
     return {"ok": True, "sync_enabled": True}
@@ -2087,6 +2140,7 @@ def sync_put(key: str = Query(..., min_length=6, max_length=128), payload: SyncP
 
 def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
     """Hitung alert TP/SL/overbought/sinyal jual untuk daftar posisi (paralel)."""
+    portfolio = _normalize_holdings(portfolio) or []
     if not portfolio:
         return []
 
@@ -2265,6 +2319,7 @@ class ScreenerRequest(BaseModel):
     period: str = "3mo"
     include_signal: bool = True
     include_bandarmology: bool = True
+    require_confirm: bool = False
 
 
 @app.get("/api/screener/tickers")
@@ -2288,9 +2343,12 @@ def screener(
     period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"),
     include_signal: bool = Query(True),
     include_bandarmology: bool = Query(True),
+    require_confirm: bool = Query(False),
 ):
     """Scan saham dengan kriteria screener Coachinvestasi.
 
+    require_confirm=True hanya menampilkan saham yang lolos konfirmasi buku
+    (harga > SMA20, RSI < 70, volume > VolumeMA20).
     Gunakan offset/limit berulang-ulang untuk memindai SELURUH kode saham
     (total_tickers & next_offset disediakan untuk paginasi).
     """
@@ -2299,9 +2357,11 @@ def screener(
     if not window:
         raise HTTPException(404, "Offset melebihi jumlah ticker.")
 
-    scan = _scan(window, criteria, period, include_signal, include_bandarmology)
+    scan = _scan(window, criteria, period, include_signal, include_bandarmology,
+                 require_confirm)
     return {
         "criteria": criteria,
+        "require_confirm": require_confirm,
         "universe": universe,
         "period": period,
         "requested": len(window),
@@ -2379,9 +2439,11 @@ def screener_post(payload: ScreenerRequest):
         raise HTTPException(422, "List tickers tidak boleh kosong.")
     tickers = [t.upper() if "." in t else f"{t.upper()}.JK" for t in payload.tickers][:100]
     scan = _scan(tickers, payload.criteria, payload.period,
-                 payload.include_signal, payload.include_bandarmology)
+                 payload.include_signal, payload.include_bandarmology,
+                 payload.require_confirm)
     return {
         "criteria": payload.criteria,
+        "require_confirm": payload.require_confirm,
         "period": payload.period,
         "requested": len(tickers),
         "scanned": scan["scanned"],
