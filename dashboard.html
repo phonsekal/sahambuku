@@ -417,7 +417,13 @@ function buyScoreChip(bs) {
     : sc >= 50 ? "border-sky-500/40 bg-sky-500/10 text-sky-400"
     : sc >= 30 ? "border-amber-500/40 bg-amber-500/10 text-amber-400"
     : "border-rose-500/40 bg-rose-500/10 text-rose-400";
-  return `<span title="${esc(bs.label || "")} — skor komposit sinyal beli 0-100" class="inline-block text-[11px] px-2 py-0.5 rounded-full border font-bold cursor-help ${cls}">${fmt(sc, 0)}</span>`;
+  return `<span title="${esc(bs.label || "")} — skor komposit kualitas beli 0-100 (beda dari sinyal BUY/SELL/HOLD)" class="inline-block text-[11px] px-2 py-0.5 rounded-full border font-bold cursor-help ${cls}">${fmt(sc, 0)}</span>`;
+}
+function brkTag(t) {
+  const k = (t.kekuatan || "").toLowerCase();
+  if (k === "kuat") return `<span title="Broker kuat (bandar/institusi) per buku Bab 4 & 7: AK, BK, ZP, YU, BB, CC, dll." class="inline-block text-[9px] px-1.5 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold align-middle cursor-help">🏦 BANDAR</span>`;
+  if (k === "lemah") return `<span title="Broker ritel (lemah) per buku Bab 4 & 7: XL, XC, YP, PD, KK, CP, dll." class="inline-block text-[9px] px-1.5 py-0.5 rounded-full border border-slate-500/40 bg-slate-500/10 text-slate-400 font-bold align-middle cursor-help">🧑‍💼 RITEL</span>`;
+  return `<span title="Broker netral (tidak diklasifikasikan kuat/lemah)" class="inline-block text-[9px] px-1.5 py-0.5 rounded-full border border-slate-700 bg-slate-800 text-slate-500 font-bold align-middle">⚖️ NETRAL</span>`;
 }
 function wkChip(w) {
   if (!w || w.up == null) return '<span class="text-slate-600">—</span>';
@@ -720,7 +726,7 @@ function renderAnalyze(d) {
   const scBar = sc >= 70 ? "bg-gradient-to-r from-emerald-500 to-teal-400" : sc >= 50 ? "bg-gradient-to-r from-sky-500 to-cyan-400" : sc >= 30 ? "bg-gradient-to-r from-amber-500 to-yellow-400" : "bg-gradient-to-r from-rose-500 to-red-400";
   h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
     <div class="flex flex-wrap items-center justify-between gap-3 mb-3">
-      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">🎯 Skor Sinyal Beli (0-100)</h2>
+      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">🎯 Skor Kualitas Beli (0-100)</h2>
       <div class="flex items-center gap-2">
       ${bs.liquidity_grade ? `<span class="text-[10px] px-2 py-1 rounded-full border border-sky-500/40 bg-sky-500/10 text-sky-400" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari — komponen skor">💧 ${esc(bs.liquidity_grade)}</span>` : ""}
       <span class="text-[11px] px-2.5 py-1 rounded-full border font-bold ${sc >= 70 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : sc >= 50 ? "border-sky-500/40 bg-sky-500/10 text-sky-400" : sc >= 30 ? "border-amber-500/40 bg-amber-500/10 text-amber-400" : "border-rose-500/40 bg-rose-500/10 text-rose-400"}">${esc(bs.label || "—")}</span>
@@ -840,12 +846,21 @@ function renderAnalyze(d) {
       <div class="grid md:grid-cols-2 gap-4">
         <div><h3 class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Top Buyers</h3>
           <table class="w-full text-sm"><thead><tr class="text-slate-500 text-xs border-b border-slate-700/60"><th class="text-left py-1.5">Broker</th><th class="text-right">Harga</th><th class="text-right">Nilai</th></tr></thead>
-          <tbody>${(b.top_buyers || []).map(t => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(t.broker)}</td><td class="text-right tabular">${fmt(t.avg_price)}</td><td class="text-right tabular text-emerald-400">${fmtIdr(t.value)}</td></tr>`).join("")}</tbody></table></div>
+          <tbody>${(b.top_buyers || []).map(t => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(t.broker)} ${brkTag(t)}</td><td class="text-right tabular">${fmt(t.avg_price)}</td><td class="text-right tabular text-emerald-400">${fmtIdr(t.value)}</td></tr>`).join("")}</tbody></table></div>
         <div><h3 class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Top Sellers</h3>
           <table class="w-full text-sm"><thead><tr class="text-slate-500 text-xs border-b border-slate-700/60"><th class="text-left py-1.5">Broker</th><th class="text-right">Harga</th><th class="text-right">Nilai</th></tr></thead>
-          <tbody>${(b.top_sellers || []).map(t => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(t.broker)}</td><td class="text-right tabular">${fmt(t.avg_price)}</td><td class="text-right tabular text-rose-400">${fmtIdr(t.value)}</td></tr>`).join("")}</tbody></table></div>
+          <tbody>${(b.top_sellers || []).map(t => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(t.broker)} ${brkTag(t)}</td><td class="text-right tabular">${fmt(t.avg_price)}</td><td class="text-right tabular text-rose-400">${fmtIdr(t.value)}</td></tr>`).join("")}</tbody></table></div>
       </div>
       <div class="text-xs text-slate-500 mt-4">${esc(b.scenario)}</div>
+      <div class="mt-3 text-[11px] text-slate-400 bg-slate-800/40 border border-slate-700/50 rounded-xl px-3.5 py-3 space-y-1.5">
+        <div class="font-bold uppercase tracking-wider text-slate-500 text-[10px]">📖 Panduan Buku (Bab 4 &amp; 7)</div>
+        <div>🏦 <b class="text-emerald-400">Bandar kuat</b>: AK, BK, ZP, YU, BB, CC (dll.) · 🧑‍💼 <b class="text-slate-300">Ritel</b>: XL, XC, YP, PD, KK, CP</div>
+        <div>🎯 Cari <b class="text-emerald-400">ACC (akumulasi)</b> vs <b class="text-rose-400">DIS (distribusi)</b> — net value positif = akumulasi</div>
+        <div>📊 AVG bandar = harga rata-rata tertimbang bandar → berfungsi sebagai <b class="text-slate-300">support psikologis</b></div>
+        <div>✨ Skenario idaman: big accumulation (broker kuat menampung) disertai ritel yang justru menjual</div>
+        <div>📈 Saham cenderung naik bila Top Buyer menguasai ≥ ~60% dari net value hari itu</div>
+        <div>🛡 Bid/Offer: bid tebal = support, offer tebal = resistance; waspadai fake bid/offer (lot besar tapi frekuensi rendah)</div>
+      </div>
     </div>`;
   } else {
     h += card("Bandarmology", `<div class="text-xs text-slate-500">${esc(d.bandarmology_note)}</div>`);

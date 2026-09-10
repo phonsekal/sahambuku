@@ -800,11 +800,14 @@ def _buy_score_series(df: pd.DataFrame) -> pd.Series:
 
 
 def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> dict:
-    """Skor komposit SINYAL BELI 0-100 untuk bar terakhir (optimasi screener & analisis).
+    """Skor komposit KUALITAS BELI 0-100 untuk bar terakhir (optimasi screener & analisis).
 
     Gabungan konfirmasi ala buku (trend, cross, RSI, MACD, volume, candlestick,
     dekat support, momentum, special pattern) + bandarmology ACC bila tersedia.
-    Label: >=70 SINYAL BELI KUAT · 50-69 BELI (KONFIRMASI) · 30-49 NETRAL · <30 HINDARI.
+    BEDA dari sinyal (BUY/SELL/HOLD): skor menilai KUALITAS saham, sinyal menilai
+    momentum saat ini — skor tinggi + sinyal SELL = saham kuat sedang koreksi.
+    Label: >=70 KUALITAS BELI KUAT · 50-69 KUALITAS BELI (KONFIRMASI) ·
+    30-49 KUALITAS NETRAL · <30 KUALITAS HINDARI.
     """
     s = _buy_score_series(df)
     score = float(s.iloc[-1]) if len(s) else 0.0
@@ -878,9 +881,9 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
     comps["Likuiditas (nilai rata-rata 20 hari)"] = liq; pts += liq
 
     score = min(100.0, pts)
-    label = ("SINYAL BELI KUAT" if score >= 70 else
-             "BELI (KONFIRMASI)" if score >= 50 else
-             "NETRAL" if score >= 30 else "HINDARI")
+    label = ("KUALITAS BELI KUAT" if score >= 70 else
+             "KUALITAS BELI (KONFIRMASI)" if score >= 50 else
+             "KUALITAS NETRAL" if score >= 30 else "KUALITAS HINDARI")
     return {
         "score": num(score, 0),
         "label": label,
@@ -889,7 +892,7 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
         "ret5_pct": num(ret5, 2),
         "volume_ratio": num(vr, 2),
         "liquidity_grade": _liquidity_grade(val20),
-        "note": "Skor komposit konfirmasi beli (0-100): >=70 BELI KUAT, 50-69 KONFIRMASI, <50 tunggu.",
+        "note": "Skor komposit KUALITAS BELI (0-100): >=70 KUALITAS BELI KUAT, 50-69 KUALITAS BELI (KONFIRMASI), <50 tunggu. Berbeda dari Sinyal (BUY/SELL/HOLD): skor menilai kualitas saham, sinyal menilai momentum saat ini.",
     }
 
 
