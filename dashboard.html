@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CoachInvestasi Dashboard — Analisis Saham</title>
+<style>
+  :root {
+    --bg: #0b1220; --panel: #111a2c; --panel2: #0e1626; --border: #1e2a40;
+    --text: #e2e8f0; --muted: #8fa3bf; --green: #22c55e; --red: #ef4444;
+    --yellow: #f59e0b; --blue: #38bdf8; --purple: #a78bfa;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; min-height: 100vh; }
+  .wrap { max-width: 1150px; margin: 0 auto; padding: 20px 16px 60px; }
+  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
+  header h1 { font-size: 20px; font-weight: 800; letter-spacing: .3px; }
+  header h1 span { color: var(--blue); }
+  .badge { font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
+  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+  .tab { background: var(--panel); border: 1px solid var(--border); color: var(--muted); padding: 8px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; }
+  .tab.active { color: var(--blue); border-color: var(--blue); }
+  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
+  input, select, button {
+    background: var(--panel); border: 1px solid var(--border); color: var(--text);
+    padding: 9px 12px; border-radius: 10px; font-size: 14px; outline: none;
+  }
+  input:focus, select:focus { border-color: var(--blue); }
+  button.primary { background: var(--blue); color: #04121f; font-weight: 700; cursor: pointer; border: none; }
+  button.primary:hover { filter: brightness(1.1); }
+  button.primary:disabled { opacity: .5; cursor: wait; }
+  label.fld { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
+  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 12px; }
+  .grid { display: grid; gap: 12px; }
+  .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .g4 { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
+  .kv { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
+  .kv .k { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+  .kv .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .bigprice { font-size: 30px; font-weight: 800; }
+  .up { color: var(--green); } .down { color: var(--red); } .flat { color: var(--muted); }
+  .signal { display: inline-block; font-size: 13px; font-weight: 800; padding: 6px 16px; border-radius: 10px; letter-spacing: .5px; }
+  .sig-BUY, .sig-STRONG_BUY { background: rgba(34,197,94,.15); color: var(--green); border: 1px solid var(--green); }
+  .sig-SELL, .sig-STRONG_SELL { background: rgba(239,68,68,.15); color: var(--red); border: 1px solid var(--red); }
+  .sig-HOLD { background: rgba(245,158,11,.12); color: var(--yellow); border: 1px solid var(--yellow); }
+  .src { font-size: 11px; color: var(--purple); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
+  .chip { display: inline-block; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); margin: 2px 4px 2px 0; background: var(--panel2); }
+  .chip.bull { color: var(--green); border-color: var(--green); }
+  .chip.bear { color: var(--red); border-color: var(--red); }
+  ul.reasons { list-style: none; }
+  ul.reasons li { padding: 5px 0 5px 18px; position: relative; font-size: 13px; color: var(--text); }
+  ul.reasons li::before { content: "▸"; position: absolute; left: 0; color: var(--blue); }
+  .note { font-size: 12px; color: var(--muted); line-height: 1.5; }
+  .disclaimer { font-size: 11px; color: var(--muted); text-align: center; margin-top: 26px; line-height: 1.6; }
+  .error { background: rgba(239,68,68,.1); border: 1px solid var(--red); color: var(--red); padding: 12px 16px; border-radius: 10px; font-size: 13px; }
+  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -3px; margin-right: 8px; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .muted { color: var(--muted); }
+  .rowflex { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .hide { display: none; }
+  @media (max-width: 640px) { .bigprice { font-size: 24px; } .controls > * { flex: 1 1 100%; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Coach<span>Investasi</span> Dashboard</h1>
+    <span class="badge" id="apiStatus">cek API…</span>
+  </header>
+
+  <div class="tabs">
+    <button class="tab active" data-tab="analyze">📊 Analisis Saham</button>
+    <button class="tab" data-tab="screener">🔍 Screener</button>
+  </div>
+
+  <!-- ============ TAB ANALISIS ============ -->
+  <section id="tab-analyze">
+    <div class="controls">
+      <input id="ticker" placeholder="Kode saham, mis. BBCA.JK / TLKM / AAPL" value="BBCA.JK" style="width:220px">
+      <select id="period">
+        <option value="3mo">3 Bulan</option>
+        <option value="6mo">6 Bulan</option>
+        <option value="1y" selected>1 Tahun</option>
+        <option value="2y">2 Tahun</option>
+        <option value="5y">5 Tahun</option>
+      </select>
+      <button class="primary" id="btnAnalyze">Analisis</button>
+      <span class="note" id="analyzeHint"></span>
+    </div>
+    <div id="analyzeResult"></div>
+  </section>
+
+  <!-- ============ TAB SCREENER ============ -->
+  <section id="tab-screener" class="hide">
+    <div class="controls">
+      <select id="scUniverse">
+        <option value="liquid" selected>Liquid (LQ45)</option>
+        <option value="all">Semua (951 saham)</option>
+      </select>
+      <select id="scCriteria">
+        <option value="all" selected>Semua kriteria</option>
+        <option value="swing">Swing</option>
+        <option value="scalping">Scalping</option>
+        <option value="bsjp">Beli Sore Jual Pagi</option>
+      </select>
+      <select id="scLimit">
+        <option value="5">5 saham</option>
+        <option value="10" selected>10 saham</option>
+        <option value="20">20 saham</option>
+        <option value="50">50 saham</option>
+      </select>
+      <label class="fld"><input type="checkbox" id="scBandar" checked> + Bandarmology</label>
+      <button class="primary" id="btnScan">Scan</button>
+    </div>
+    <div id="scanInfo" class="note" style="margin-bottom:10px"></div>
+    <div id="screenerResult"></div>
+  </section>
+
+  <div class="disclaimer">
+    Hasil ini murni edukasi berdasarkan e-book "Technical Analysis & Bandarmology Coach Investasi 2025-2026".
+    BUKAN saran beli/jual. Selalu lakukan riset mandiri (DYOR).
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const fmt = (v, d=2) => v === null || v === undefined || isNaN(v) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d, minimumFractionDigits: d});
+const fmtIdr = v => v === null || v === undefined || isNaN(v) ? "—" : "Rp" + Number(v).toLocaleString("id-ID", {maximumFractionDigits: 0});
+const pct = (v, d=2) => v === null || v === undefined || isNaN(v) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d}) + "%";
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const clsPct = v => v > 0 ? "up" : v < 0 ? "down" : "flat";
+const arrow = v => v > 0 ? "▲" : v < 0 ? "▼" : "•";
+
+function sigBadge(a) { return `<span class="signal sig-${esc(a)}">${esc(a)}</span>`; }
+function srcTag(s) { return s ? `<span class="src">· ${esc(s)}</span>` : ""; }
+
+/* ---------- ANALISIS ---------- */
+async function analyze() {
+  const btn = $("#btnAnalyze"), ticker = $("#ticker").value.trim().toUpperCase(), period = $("#period").value;
+  if (!ticker) return;
+  btn.disabled = true; btn.textContent = "Memuat…";
+  $("#analyzeResult").innerHTML = `<div class="card"><span class="spinner"></span>Menganalisis <b>${esc(ticker)}</b>… (data diambil dari yfinance / IDX Edge / dataset)</div>`;
+  try {
+    const r = await fetch(`/api/analyze/${encodeURIComponent(ticker)}?period=${period}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Gagal mengambil data (" + r.status + ")");
+    $("#analyzeHint").textContent = "";
+    renderAnalyze(d);
+  } catch (e) {
+    $("#analyzeResult").innerHTML = `<div class="error">⚠ ${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = "Analisis";
+  }
+}
+
+function renderAnalyze(d) {
+  const m = d.market, s = d.signal, b = d.bandarmology || {};
+  const up = m.change_pct > 0;
+  let html = "";
+
+  // harga + sinyal
+  html += `<div class="card">
+    <div class="rowflex" style="justify-content:space-between">
+      <div>
+        <div style="font-size:14px;color:var(--muted)">${esc(m.date)} ${srcTag(m.source)}</div>
+        <div class="bigprice ${clsPct(m.change_pct)}">${fmt(m.last_price)} <span style="font-size:15px">${arrow(m.change_pct)} ${pct(m.change_pct)}</span></div>
+      </div>
+      <div style="text-align:right">${sigBadge(s.action)}
+        <div class="muted" style="font-size:12px;margin-top:6px">skor ${fmt(s.score)} · kekuatan ${esc(s.strength)}</div>
+      </div>
+    </div>
+    ${m.note ? `<div class="note" style="margin-top:8px">⚠ ${esc(m.note)}</div>` : ""}
+  </div>`;
+
+  // alasan
+  html += `<div class="card"><h2>Alasan Sinyal</h2><ul class="reasons">${s.reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+
+  // indikator
+  const I = d.indicators;
+  html += `<div class="card"><h2>Indikator</h2><div class="grid g4">
+    ${kv("RSI (14)", fmt(I.rsi14), rsiCls(I.rsi14))}
+    ${kv("SMA 20", fmt(I.sma20))} ${kv("SMA 50", fmt(I.sma50))} ${kv("SMA 200", fmt(I.sma200))}
+    ${kv("EMA 20", fmt(I.ema20))} ${kv("ATR (14)", fmt(I.atr14))}
+    ${kv("MACD", fmt(I.macd.line, 3))} ${kv("Sinyal MACD", fmt(I.macd.signal, 3))}
+    ${kv("Histogram", fmt(I.macd.histogram, 3))}
+    ${kv("Volume vs MA20", fmt(I.volume.ratio_to_ma20) + "×", I.volume.spike ? "up" : "")}
+  </div></div>`;
+
+  // tren + pola candlestick + pola khusus
+  html += `<div class="grid g2">
+    <div class="card"><h2>Tren (Dow Theory)</h2>
+      <div class="kv" style="margin-bottom:8px"><div class="k">Arah</div><div class="v">${esc(d.trend.direction)}</div></div>
+      <div class="kv"><div class="k">Pola</div><div class="v" style="font-size:13px">${esc(d.trend.dow_pattern)}</div></div>
+      <div class="note" style="margin-top:8px">${esc(d.trend.ma_alignment)}</div>
+    </div>
+    <div class="card"><h2>Candlestick &amp; Divergensi</h2>
+      <div>${(d.candlestick.patterns.length ? d.candlestick.patterns.map(p => `<span class="chip ${p.type === "bullish" ? "bull" : p.type === "bearish" ? "bear" : ""}">${esc(p.pattern)}</span>`).join("") : `<span class="muted">Tidak ada pola terdeteksi</span>`)}</div>
+      ${d.rsi_divergence.bullish ? `<div class="chip bull" style="margin-top:8px">Bullish Divergence RSI</div>` : ""}
+      ${d.rsi_divergence.bearish ? `<div class="chip bear" style="margin-top:8px">Bearish Divergence RSI</div>` : ""}
+      <div class="note" style="margin-top:8px">Candle terakhir: ${esc(d.candlestick.last_candle.color)} · ${pct(d.candlestick.last_candle.change_pct)}</div>
+    </div>
+  </div>`;
+
+  // S&R + Fibonacci
+  html += `<div class="grid g2">
+    <div class="card"><h2>Support &amp; Resistance</h2>
+      <table><tr><th>Level</th><th>Tipe</th><th>Sentuhan</th><th>Kekuatan</th></tr>
+      ${d.support_resistance.zones.map(z => `<tr><td>${fmt(z.price)}</td><td>${z.type === "support" ? `<span class="up">Support</span>` : `<span class="down">Resistance</span>`}</td><td>${z.touches}</td><td>${fmt(z.strength, 1)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">Belum ada zona</td></tr>`}
+      </table>
+      <div class="note" style="margin-top:8px">${esc(d.support_resistance.note)}</div>
+    </div>
+    <div class="card"><h2>Fibonacci (${esc((d.fibonacci.direction || "—").toUpperCase())})</h2>
+      <table><tr><th>Rasio</th><th>Harga</th></tr>
+      ${(d.fibonacci.levels || []).map(lv => `<tr><td>${fmt(lv.ratio * 100, 1)}%</td><td>${fmt(lv.price)}</td></tr>`).join("")}
+      </table>
+      ${d.fibonacci.nearest_level ? `<div class="note" style="margin-top:8px">Terdekat: ${fmt(d.fibonacci.nearest_level.ratio * 100, 1)}% @ ${fmt(d.fibonacci.nearest_level.price)} (${pct(d.fibonacci.nearest_level.distance_pct)})</div>` : ""}
+    </div>
+  </div>`;
+
+  // pola khusus + risk management
+  const lp = d.special_patterns.launch_pad, dbr = d.special_patterns.drop_base_rally;
+  html += `<div class="grid g2">
+    <div class="card"><h2>Pola Khusus Coach</h2>
+      <div class="kv" style="margin-bottom:8px"><div class="k">The Launch Pad</div><div class="v" style="font-size:13px;color:${lp.detected ? "var(--green)" : "var(--muted)"}">${lp.phase === "breakout" ? "🔥 Breakout terkonfirmasi" : lp.phase === "forming" ? "⏳ Base terbentuk" : "—"}</div></div>
+      <div class="kv"><div class="k">Drop Base Rally</div><div class="v" style="font-size:13px;color:${dbr.detected ? "var(--green)" : "var(--muted)"}">${dbr.detected ? "✅ Terdeteksi" : "—"}</div></div>
+    </div>
+    <div class="card"><h2>Risk Management (Bab 8)</h2>
+      <div class="grid g4">
+        ${kv("Entry", fmt(d.risk_management.entry))}
+        ${kv("Stop Loss", fmt(d.risk_management.stop_loss), "down")}
+        ${kv("Take Profit", fmt(d.risk_management.take_profit), "up")}
+        ${kv("RRR", fmt(d.risk_management.risk_reward_ratio), (d.risk_management.risk_reward_ratio||0) >= 2 ? "up" : (d.risk_management.risk_reward_ratio||0) < 1 ? "down" : "")}
+      </div>
+      <div class="note" style="margin-top:8px">Maks posisi: <b>${fmtIdr(d.risk_management.max_position_idr)}</b> (contoh risk Rp5.000.000)</div>
+    </div>
+  </div>`;
+
+  // bandarmology
+  if (b.status) {
+    html += `<div class="card"><h2>Bandarmology (IDX Edge PRO)</h2>
+      <div class="grid g4" style="margin-bottom:12px">
+        ${kv("Status", esc(b.status), b.status.includes("ACC") ? "up" : b.status.includes("DIS") ? "down" : "")}
+        ${kv("AVG Bandar", fmt(b.bandar_avg_price))}
+        ${kv("Jarak AVG", pct(b.bandar_avg_distance_pct), Math.abs(b.bandar_avg_distance_pct||0) < 3 ? "up" : "down")}
+        ${kv("Share Top Buyer", pct(b.top_buyer_value_share_pct), b.value_share_significant ? "up" : "")}
+      </div>
+      ${b.net_foreign ? `<div class="note" style="margin-bottom:10px">Net Foreign: hari ini <b class="${b.net_foreign.today > 0 ? "up" : "down"}">${fmtIdr(b.net_foreign.today)}</b> · 5 hari <b class="${b.net_foreign.sum_5d > 0 ? "up" : "down"}">${fmtIdr(b.net_foreign.sum_5d)}</b> · 20 hari <b class="${b.net_foreign.sum_20d > 0 ? "up" : "down"}">${fmtIdr(b.net_foreign.sum_20d)}</b></div>` : ""}
+      ${b.bandar_accumulation ? `<div class="note" style="margin-bottom:10px">Akumulasi bandar terakhir: <b>${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.top_accumulating_broker ? ` · Top: ${esc(b.bandar_accumulation.top_accumulating_broker.broker)} (${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})` : ""}</div>` : ""}
+      <div class="grid g2">
+        <div><h2 style="font-size:11px">Top Buyers</h2><table><tr><th>Broker</th><th>Harga</th><th>Nilai</th></tr>
+        ${(b.top_buyers||[]).map(t => `<tr><td>${esc(t.broker)}</td><td>${fmt(t.avg_price)}</td><td>${fmtIdr(t.value)}</td></tr>`).join("")}</table></div>
+        <div><h2 style="font-size:11px">Top Sellers</h2><table><tr><th>Broker</th><th>Harga</th><th>Nilai</th></tr>
+        ${(b.top_sellers||[]).map(t => `<tr><td>${esc(t.broker)}</td><td>${fmt(t.avg_price)}</td><td>${fmtIdr(t.value)}</td></tr>`).join("")}</table></div>
+      </div>
+      <div class="note" style="margin-top:10px">${esc(b.scenario)}</div>
+    </div>`;
+  } else {
+    html += `<div class="card"><h2>Bandarmology</h2><div class="note">${esc(d.bandarmology_note)}</div></div>`;
+  }
+
+  $("#analyzeResult").innerHTML = html;
+}
+
+function kv(k, v, cls = "") { return `<div class="kv"><div class="k">${esc(k)}</div><div class="v ${cls}">${v}</div></div>`; }
+function rsiCls(r) { if (r === null || r === undefined || isNaN(r)) return ""; return r >= 70 ? "down" : r <= 30 ? "up" : ""; }
+
+/* ---------- SCREENER ---------- */
+async function scan() {
+  const btn = $("#btnScan");
+  const q = new URLSearchParams({
+    criteria: $("#scCriteria").value,
+    universe: $("#scUniverse").value,
+    limit: $("#scLimit").value,
+    include_bandarmology: $("#scBandar").checked
+  });
+  btn.disabled = true; btn.textContent = "Scanning…";
+  $("#scanInfo").innerHTML = `<span class="spinner"></span>Memindai saham… (bisa butuh beberapa detik)`;
+  $("#screenerResult").innerHTML = "";
+  try {
+    const r = await fetch(`/api/screener?${q}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Gagal (" + r.status + ")");
+    renderScan(d);
+  } catch (e) {
+    $("#screenerResult").innerHTML = `<div class="error">⚠ ${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = "Scan";
+  }
+}
+
+function renderScan(d) {
+  $("#scanInfo").innerHTML =
+    `Dipindai <b>${d.scanned}</b> saham · dilewati <b>${d.skipped}</b> · bandarmology dicek <b>${d.bandarmology_checked}</b> · total universe <b>${d.total_tickers}</b>` +
+    (d.next_offset ? ` · <button class="tab" onclick="scanMore(${d.next_offset})" style="padding:3px 10px">Lanjut halaman berikutnya (offset ${d.next_offset})</button>` : "") +
+    `<div style="margin-top:4px">${esc(d.bandarmology_note)}</div>`;
+  if (!d.results.length) {
+    $("#screenerResult").innerHTML = `<div class="card"><div class="note">Tidak ada saham yang lolos kriteria pada halaman ini.</div></div>`;
+    return;
+  }
+  let h = `<div class="card"><table><tr><th>Ticker</th><th>Harga</th><th>Perubahan</th><th>Value</th><th>Vol/MA20</th><th>Sinyal</th><th>Kriteria</th><th>Sumber</th><th>Bandar</th></tr>`;
+  for (const r of d.results) {
+    h += `<tr>
+      <td><b>${esc(r.ticker)}</b></td>
+      <td>${fmt(r.price)}</td>
+      <td class="${clsPct(r.day_return_pct)}">${pct(r.day_return_pct)}</td>
+      <td>${fmtIdr(r.estimated_value_idr)}</td>
+      <td>${fmt(r.volume_ratio_to_ma20)}×</td>
+      <td>${r.signal ? sigBadge(r.signal) : "—"}</td>
+      <td>${r.criteria_met.map(c => `<span class="chip bull">${esc(c)}</span>`).join("")}</td>
+      <td class="src">${esc(r.source || "—")}</td>
+      <td>${r.bandarmology ? `<span class="${r.bandarmology.status.includes("ACC") ? "up" : r.bandarmology.status.includes("DIS") ? "down" : "muted"}">${esc(r.bandarmology.status.split(" ")[0])}</span>` : "—"}</td>
+    </tr>`;
+  }
+  h += `</table></div>`;
+  $("#screenerResult").innerHTML = h;
+}
+
+let scanOffset = 0;
+async function scanMore(offset) {
+  scanOffset = offset;
+  const q = new URLSearchParams({
+    criteria: $("#scCriteria").value,
+    universe: $("#scUniverse").value,
+    limit: $("#scLimit").value,
+    offset: offset,
+    include_bandarmology: $("#scBandar").checked
+  });
+  $("#scanInfo").innerHTML = `<span class="spinner"></span>Memindai halaman berikutnya (offset ${offset})…`;
+  try {
+    const r = await fetch(`/api/screener?${q}`);
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || "Gagal (" + r.status + ")");
+    renderScan(d);
+  } catch (e) {
+    $("#screenerResult").innerHTML = `<div class="error">⚠ ${esc(e.message)}</div>`;
+  }
+}
+
+/* ---------- init ---------- */
+document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
+  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
+  t.classList.add("active");
+  $("#tab-analyze").classList.toggle("hide", t.dataset.tab !== "analyze");
+  $("#tab-screener").classList.toggle("hide", t.dataset.tab !== "screener");
+}));
+$("#btnAnalyze").addEventListener("click", analyze);
+$("#ticker").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
+$("#btnScan").addEventListener("click", scan);
+
+fetch("/api/health").then(r => r.json()).then(d => {
+  $("#apiStatus").textContent = "API: " + d.status;
+}).catch(() => { $("#apiStatus").textContent = "API: offline"; });
+
+analyze();
+</script>
+</body>
+</html>

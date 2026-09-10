@@ -38,6 +38,7 @@ import pandas as pd
 import yfinance as yf
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from pydantic import BaseModel
 
 # ---------------------------------------------------------------------------
@@ -1423,6 +1424,7 @@ app.add_middleware(
 def root():
     return {
         "service": "CoachInvestasi Strategy API",
+        "dashboard": "/dashboard",
         "endpoints": [
             "GET  /api/health",
             "GET  /api/analyze/{ticker}?period=1y",
@@ -1433,6 +1435,17 @@ def root():
         ],
         "docs": "/docs",
     }
+
+
+DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dashboard.html")
+
+
+@app.get("/dashboard")
+def dashboard():
+    """Halaman dashboard web sederhana (HTML statis + vanilla JS)."""
+    if not os.path.exists(DASHBOARD_PATH):
+        raise HTTPException(404, "File dashboard.html tidak ditemukan.")
+    return FileResponse(DASHBOARD_PATH, media_type="text/html")
 
 
 @app.get("/api/health")
