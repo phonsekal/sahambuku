@@ -29,6 +29,7 @@ import json
 import math
 import os
 import time
+import urllib.parse
 import urllib.request
 from typing import Any, Dict, List, Optional
 
@@ -891,17 +892,24 @@ def fetch_data(ticker: str, period: str) -> pd.DataFrame:
 
     source = "yfinance"
     if df is None or df.empty:
-        fallback = _download_github_csv(ticker)
-        if fallback is not None:
-            df = fallback
-            source = "github-dataset" + (" (yfinance gagal)" if yf_err else "")
-        elif yf_err and ("rate" in yf_err.lower() or "too many" in yf_err.lower()):
-            raise HTTPException(
-                429,
-                detail=f"yfinance sedang rate-limited untuk {ticker} dan fallback data tidak tersedia. "
-                       "Coba lagi beberapa saat kemudian.",
-            )
-        else:
+        # 2) IDX Edge PRO (real-time IDX; aktif jika key di-set)
+        if IDX_EDGE_API_KEYS:
+            df = fetch_idx_history(ticker)
+            if df is not None:
+                source = "idx-edge-pro" + (" (yfinance gagal)" if yf_err else "")
+        # 3) dataset publik GitHub (gratis; data s/d 2025)
+        if df is None or df.empty:
+            fallback = _download_github_csv(ticker)
+            if fallback is not None:
+                df = fallback
+                source = "github-dataset" + (" (yfinance gagal)" if yf_err else "")
+        if df is None or df.empty:
+            if yf_err and ("rate" in yf_err.lower() or "too many" in yf_err.lower()):
+                raise HTTPException(
+                    429,
+                    detail=f"yfinance sedang rate-limited untuk {ticker} dan fallback data tidak tersedia. "
+                           "Coba lagi beberapa saat kemudian.",
+                )
             raise HTTPException(404, detail=(
                 f"Data tidak ditemukan untuk ticker '{ticker}'. Periksa kode saham "
                 "(mis. BBCA.JK, TLKM.JK, AAPL, TSLA)."
@@ -944,9 +952,16 @@ IDX_LIQUID_TICKERS = [
     "MAPA", "GOTO", "PGEO", "MBMA", "AMMN",
 ]
 
-# Broker Summary API eksternal (opsional). Aktif jika BROKER_SUMMARY_API_URL di-set.
-BROKER_API_URL = os.environ.get("BROKER_SUMMARY_API_URL", "").strip().rstrip("/")
-BROKER_API_KEY = os.environ.get("BROKER_SUMMARY_API_KEY", "").strip()
+# --- IDX Edge PRO API (Broker Summary & data real-time IDX) ---
+# Aktif jika IDX_EDGE_API_KEYS di-set (pisahkan beberapa key dengan koma;
+# key dirotasi otomatis untuk membagi kuota harian ~1000 req/key).
+IDX_EDGE_API_URL = os.environ.get("IDX_EDGE_API_URL", "https://stock.arjum.com").strip().rstrip("/")
+IDX_EDGE_API_KEYS = [k.strip() for k in os.environ.get("IDX_EDGE_API_KEYS", "").split(",") if k.strip()]
+_IDX_EDGE_KEY_IDX = 0
+
+IDX_EDGE_CACHE: Dict[str, dict] = {}
+IDX_EDGE_HIST_TTL = 6 * 3600        # data OHLCV dicache 6 jam
+IDX_EDGE_BROKER_TTL = 12 * 3600     # broker summary/akumulasi dicache 12 jam (data harian)
 
 TICKER_CACHE: Dict[str, dict] = {}
 TICKER_CACHE_TTL_SECONDS = 24 * 3600
@@ -1158,67 +1173,154 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
     }
 
 
-def _normalize_bs_rows(rows: Any) -> List[dict]:
-    out = []
-    for r in rows or []:
-        if not isinstance(r, dict):
-            continue
-        out.append({
-            "broker": str(r.get("broker") or r.get("Broker") or r.get("code") or "?"),
-            "volume": float(r.get("volume") or r.get("Volume") or r.get("lot") or 0),
-            "avg_price": float(r.get("avg_price") or r.get("AvgPrice") or r.get("avg") or 0),
-            "value": float(r.get("value") or r.get("Value") or 0) or None,
-        })
-    return out
-
-
-def fetch_broker_summary(ticker: str) -> Optional[dict]:
-    """Ambil Broker Summary dari API eksternal (aktif jika BROKER_SUMMARY_API_URL di-set).
-
-    Kontrak API (GET):
-      {BROKER_SUMMARY_API_URL}/broker-summary/{TICKER}?days=30
-    Respons JSON:
-      {
-        "ticker": "BBCA", "date": "2026-09-09", "last_price": 10100,
-        "buyers":  [{"broker": "RX", "volume": 382000, "avg_price": 10100}],
-        "sellers": [{"broker": "XL", "volume": 100000, "avg_price": 10050}],
-        "history": [{"date": "2026-09-09", "bandar_buy_value": 382000000000}, ...]
-      }
-    "history" bersifat opsional; dipakai untuk deret BandarValue kriteria swing.
-    """
-    if not BROKER_API_URL:
+def _idx_edge_next_key() -> Optional[str]:
+    """Rotasi key API (membagi kuota harian antar key)."""
+    global _IDX_EDGE_KEY_IDX
+    if not IDX_EDGE_API_KEYS:
         return None
-    code = ticker.upper().replace(".JK", "")
-    url = f"{BROKER_API_URL}/broker-summary/{code}?days=30"
+    key = IDX_EDGE_API_KEYS[_IDX_EDGE_KEY_IDX % len(IDX_EDGE_API_KEYS)]
+    _IDX_EDGE_KEY_IDX += 1
+    return key
+
+
+def idx_edge_get(path: str, params: Dict[str, Any], cache_key: str = "",
+                 ttl: int = IDX_EDGE_HIST_TTL) -> Optional[dict]:
+    """GET ke IDX Edge PRO API dengan header X-API-Key, rotasi key, dan cache in-memory."""
+    if not IDX_EDGE_API_KEYS:
+        return None
+    ck = cache_key or f"{path}:{json.dumps(params, sort_keys=True)}"
+    now = time.time()
+    hit = IDX_EDGE_CACHE.get(ck)
+    if hit and now - hit["ts"] < ttl:
+        return hit["data"]
+    key = _idx_edge_next_key()
+    qs = "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
+    url = f"{IDX_EDGE_API_URL}{path}" + (f"?{qs}" if qs else "")
     try:
-        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
-        if BROKER_API_KEY:
-            req.add_header("Authorization", f"Bearer {BROKER_API_KEY}")
-        with urllib.request.urlopen(req, timeout=20) as resp:
+        req = urllib.request.Request(url, headers={"X-API-Key": key, "User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=25) as resp:
             data = json.loads(resp.read().decode("utf-8"))
     except Exception:
         return None
     if not isinstance(data, dict):
         return None
+    IDX_EDGE_CACHE[ck] = {"ts": now, "data": data}
+    return data
 
-    last_price = data.get("last_price") or data.get("lastPrice") or data.get("close")
-    payload = {
-        "last_price": float(last_price) if last_price else 0.0,
-        "buyers": _normalize_bs_rows(data.get("buyers")),
-        "sellers": _normalize_bs_rows(data.get("sellers")),
-    }
-    analysis = analyze_broker_summary(payload)
 
-    history = data.get("history") or []
-    bandar_series: List[float] = []
-    for h in history:
-        if isinstance(h, dict):
-            v = h.get("bandar_buy_value") or h.get("bandarValue") or h.get("value")
-            if v is not None:
-                bandar_series.append(float(v))
-    analysis["bandar_series"] = bandar_series
-    analysis["source"] = BROKER_API_URL
+def fetch_idx_history(ticker: str, limit: int = 200) -> Optional[pd.DataFrame]:
+    """OHLCV real-time IDX dari IDX Edge PRO (/api/history/{code}).
+
+    Kolom tambahan: Value (nilai transaksi harian) dan n_foreign (net foreign).
+    """
+    if ".JK" not in ticker.upper():
+        return None
+    code = ticker.upper().replace(".JK", "")
+    data = idx_edge_get(f"/api/history/{code}", {"frame": "daily", "limit": limit},
+                        cache_key=f"hist:{code}")
+    if not data or not isinstance(data.get("rows"), list) or not data["rows"]:
+        return None
+    rows = []
+    for r in data["rows"]:
+        try:
+            rows.append({
+                "date": pd.Timestamp(r["date"]),
+                "Open": float(r["open"]), "High": float(r["high"]),
+                "Low": float(r["low"]), "Close": float(r["close"]),
+                "Volume": float(r["volume"]),
+                "Value": float(r.get("value") or 0.0),
+                "n_foreign": float(r.get("n_foreign") or 0.0),
+            })
+        except Exception:
+            continue
+    if len(rows) < 30:
+        return None
+    df = pd.DataFrame(rows).set_index("date").sort_index().tail(500)
+    df.attrs["source"] = "idx-edge-pro"
+    return df
+
+
+def fetch_idx_broker_summary(ticker: str) -> Optional[dict]:
+    """Broker Summary dari IDX Edge PRO (/api/broker-summary/{code}).
+
+    Diadaptasi ke analisis buku: buyer/seller per broker (bval/bvol/sval/svol),
+    AVG harga bandar tertimbang, value share Top Buyer, dan skenario idaman.
+    """
+    if ".JK" not in ticker.upper():
+        return None
+    code = ticker.upper().replace(".JK", "")
+    today = time.strftime("%Y-%m-%d")
+    start = (pd.Timestamp(today) - pd.Timedelta(days=14)).strftime("%Y-%m-%d")
+    data = idx_edge_get(f"/api/broker-summary/{code}",
+                        {"start_date": start, "end_date": today, "flow": "all"},
+                        cache_key=f"bs:{code}", ttl=IDX_EDGE_BROKER_TTL)
+    if not data or not isinstance(data.get("brokers"), list) or not data["brokers"]:
+        return None
+
+    buyers, sellers = [], []
+    broker_names = {}
+    for b in data["brokers"]:
+        try:
+            bc = str(b.get("broker_code") or "?")
+            broker_names[bc] = b.get("broker_name") or bc
+            bval = float(b.get("bval") or 0); bvol = float(b.get("bvol") or 0)
+            sval = float(b.get("sval") or 0); svol = float(b.get("svol") or 0)
+            if bval > 0 and bvol > 0:
+                buyers.append({"broker": bc, "volume": bvol, "avg_price": bval / bvol,
+                               "value": bval, "nval": float(b.get("nval") or 0)})
+            if sval > 0 and svol > 0:
+                sellers.append({"broker": bc, "volume": svol, "avg_price": sval / svol,
+                                "value": sval, "nval": float(b.get("nval") or 0)})
+        except Exception:
+            continue
+    if not buyers:
+        return None
+
+    analysis = analyze_broker_summary({"last_price": None, "buyers": buyers, "sellers": sellers})
+    analysis["source"] = "idx-edge-pro"
+    analysis["broker_names"] = broker_names
     return analysis
+
+
+def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
+    """Deret harian nilai akumulasi bandar (/api/broker-accumulation/{code}).
+
+    BandarValue harian = jumlah seluruh net value (nval) broker per tanggal;
+    dipakai untuk kriteria Swing Watchlist buku: BandarValue vs MA10/MA20.
+    """
+    if ".JK" not in ticker.upper():
+        return None
+    code = ticker.upper().replace(".JK", "")
+    data = idx_edge_get(f"/api/broker-accumulation/{code}", {"limit": days},
+                        cache_key=f"acc:{code}", ttl=IDX_EDGE_BROKER_TTL)
+    if not data or not isinstance(data.get("series"), list):
+        return None
+
+    by_date: Dict[str, float] = {}
+    top: Dict[str, dict] = {}
+    for br in data["series"]:
+        bc = str(br.get("broker_code") or "?")
+        for pt in br.get("points") or []:
+            d = str(pt.get("date"))
+            nv = float(pt.get("nval") or 0)
+            by_date[d] = by_date.get(d, 0.0) + nv
+            if bc not in top or abs(nv) > abs(top[bc].get("nval", 0)):
+                top[bc] = {"nval": nv, "cum": float(pt.get("cum_nval") or 0),
+                           "name": br.get("broker_name") or bc}
+    if not by_date:
+        return None
+
+    series = pd.Series({pd.Timestamp(d): v for d, v in by_date.items()}).sort_index()
+    accum = [float(x) for x in series.clip(lower=0).tolist()]
+    dates = [d.strftime("%Y-%m-%d") for d in series.index]
+    top_broker = max(top.items(), key=lambda kv: kv[1]["cum"]) if top else None
+    return {
+        "bandar_value_series": [float(x) for x in series.tolist()],
+        "bandar_accum_series": accum,
+        "dates": dates,
+        "last_bandar_value": float(series.iloc[-1]) if len(series) else 0.0,
+        "top_accumulating_broker": {"broker": top_broker[0], **top_broker[1]} if top_broker else None,
+    }
 
 
 def quick_signal(df: pd.DataFrame) -> str:
@@ -1241,7 +1343,8 @@ def quick_signal(df: pd.DataFrame) -> str:
         return "N/A"
 
 
-def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool) -> dict:
+def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
+          include_bandarmology: bool = True) -> dict:
     matched: List[dict] = []
     scanned = skipped = bandar_used = 0
     for i in range(0, len(tickers), 10):
@@ -1251,6 +1354,10 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool) 
             df = frames.get(tk)
             src = "yfinance"
             if df is None and ".JK" in tk.upper():
+                if IDX_EDGE_API_KEYS:
+                    df = fetch_idx_history(tk)
+                    src = "idx-edge-pro" if df is not None else src
+            if df is None and ".JK" in tk.upper():
                 df = _download_github_csv(tk)
                 src = "github-dataset" if df is not None else src
             if df is None:
@@ -1258,24 +1365,31 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool) 
                 continue
             df.attrs["source"] = src
             scanned += 1
-            bs = None
+
+            # BandarValue (kriteria swing) dari IDX Edge PRO, hanya jika relevan
             bandar_series = None
-            if BROKER_API_URL:
-                bs = fetch_broker_summary(tk)
-                if bs:
-                    bandar_used += 1
-                    bandar_series = bs.get("bandar_series") or None
+            if criteria in ("swing", "all") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+                acc = fetch_idx_accumulation(tk)
+                if acc and acc.get("bandar_accum_series"):
+                    bandar_series = acc["bandar_accum_series"]
+
             result = run_screener(df, criteria, bandar_series)
             item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"]}
             if include_signal:
                 item["signal"] = quick_signal(df)
-            if bs:
-                item["bandarmology"] = {
-                    "status": bs.get("status"),
-                    "scenario": bs.get("scenario"),
-                    "bandar_avg_price": bs.get("bandar_avg_price"),
-                    "top_buyer_value_share_pct": bs.get("top_buyer_value_share_pct"),
-                }
+
+            # Broker Summary hanya untuk saham yang lolos (hemat kuota API)
+            if include_bandarmology and result["eligible"] and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+                bs = fetch_idx_broker_summary(tk)
+                if bs:
+                    bandar_used += 1
+                    item["bandarmology"] = {
+                        "status": bs.get("status"),
+                        "scenario": bs.get("scenario"),
+                        "bandar_avg_price": bs.get("bandar_avg_price"),
+                        "bandar_avg_distance_pct": bs.get("bandar_avg_distance_pct"),
+                        "top_buyer_value_share_pct": bs.get("top_buyer_value_share_pct"),
+                    }
             if result["eligible"]:
                 matched.append(item)
         time.sleep(0.1)
@@ -1363,6 +1477,45 @@ def analyze(
     signal = compute_signal(df, trend, sr_zones, candles, fib, div, cross, vol, lp, dbr)
     rm = risk_management(last_price, sr_zones, signal["action"], float(atr14), risk_amount)
 
+    # --- Bandarmology (IDX Edge PRO, jika key di-set) ---
+    bandarmology = None
+    bandarmology_note = BANDARMOLOGY_NOTE
+    if IDX_EDGE_API_KEYS and ".JK" in ticker.upper():
+        bandarmology = {"source": "IDX Edge PRO"}
+        bs = fetch_idx_broker_summary(ticker)
+        if bs:
+            bandarmology.update({
+                "status": bs.get("status"),
+                "scenario": bs.get("scenario"),
+                "bandar_avg_price": bs.get("bandar_avg_price"),
+                "bandar_avg_distance_pct": bs.get("bandar_avg_distance_pct"),
+                "top_buyer_value_share_pct": bs.get("top_buyer_value_share_pct"),
+                "value_share_significant": bs.get("value_share_significant"),
+                "top_buyers": bs.get("top_buyers", [])[:5],
+                "top_sellers": bs.get("top_sellers", [])[:5],
+                "interpretation": bs.get("interpretation"),
+            })
+        acc = fetch_idx_accumulation(ticker)
+        if acc:
+            bandarmology["bandar_accumulation"] = {
+                "last_bandar_value": num(acc.get("last_bandar_value"), 0),
+                "bandar_value_last_10": [num(x, 0) for x in (acc.get("bandar_value_series") or [])[-10:]],
+                "top_accumulating_broker": acc.get("top_accumulating_broker"),
+                "note": "BandarValue harian = jumlah net value seluruh broker (kriteria swing: vs MA10/MA20).",
+            }
+        if "n_foreign" in df.columns:
+            nf = df["n_foreign"].astype(float)
+            bandarmology["net_foreign"] = {
+                "today": num(nf.iloc[-1], 0),
+                "sum_5d": num(nf.tail(5).sum(), 0),
+                "sum_20d": num(nf.tail(20).sum(), 0),
+                "note": "Net foreign (foreign buy - foreign sell) dari data harian IDX Edge PRO.",
+            }
+        if bandarmology == {"source": "IDX Edge PRO"}:
+            bandarmology = None
+    if bandarmology:
+        bandarmology_note = "Broker Summary, akumulasi bandar & net foreign dari IDX Edge PRO (real-time)."
+
     return {
         "ticker": ticker.upper(),
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
@@ -1403,7 +1556,8 @@ def analyze(
         "screener_hints": screen,
         "signal": signal,
         "risk_management": rm,
-        "bandarmology_note": BANDARMOLOGY_NOTE,
+        "bandarmology": bandarmology,
+        "bandarmology_note": bandarmology_note,
     }
 
 
@@ -1433,6 +1587,7 @@ class ScreenerRequest(BaseModel):
     criteria: str = "all"
     period: str = "3mo"
     include_signal: bool = True
+    include_bandarmology: bool = True
 
 
 @app.get("/api/screener/tickers")
@@ -1455,6 +1610,7 @@ def screener(
     offset: int = Query(0, ge=0),
     period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"),
     include_signal: bool = Query(True),
+    include_bandarmology: bool = Query(True),
 ):
     """Scan saham dengan kriteria screener Coachinvestasi.
 
@@ -1466,7 +1622,7 @@ def screener(
     if not window:
         raise HTTPException(404, "Offset melebihi jumlah ticker.")
 
-    scan = _scan(window, criteria, period, include_signal)
+    scan = _scan(window, criteria, period, include_signal, include_bandarmology)
     return {
         "criteria": criteria,
         "universe": universe,
@@ -1479,8 +1635,10 @@ def screener(
         "next_offset": offset + limit if offset + limit < len(all_tickers) else None,
         "results": scan["results"],
         "bandarmology_note": (
-            "Broker Summary API aktif (BROKER_SUMMARY_API_URL ter-set)." if BROKER_API_URL else
-            "Broker Summary API belum dikonfigurasi (set BROKER_SUMMARY_API_URL); "
+            "Broker Summary & akumulasi bandar aktif dari IDX Edge PRO (kuota ~1000 req/hari/key; "
+            "data dicache 6-12 jam; broker summary hanya diambil untuk saham yang lolos)."
+            if IDX_EDGE_API_KEYS else
+            "Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
             "kriteria swing memakai proksi nilai transaksi."
         ),
         "disclaimer": DISCLAIMER,
@@ -1493,7 +1651,8 @@ def screener_post(payload: ScreenerRequest):
     if not payload.tickers:
         raise HTTPException(422, "List tickers tidak boleh kosong.")
     tickers = [t.upper() if "." in t else f"{t.upper()}.JK" for t in payload.tickers][:100]
-    scan = _scan(tickers, payload.criteria, payload.period, payload.include_signal)
+    scan = _scan(tickers, payload.criteria, payload.period,
+                 payload.include_signal, payload.include_bandarmology)
     return {
         "criteria": payload.criteria,
         "period": payload.period,
@@ -1503,8 +1662,8 @@ def screener_post(payload: ScreenerRequest):
         "bandarmology_checked": scan["bandarmology_checked"],
         "results": scan["results"],
         "bandarmology_note": (
-            "Broker Summary API aktif (BROKER_SUMMARY_API_URL ter-set)." if BROKER_API_URL else
-            "Broker Summary API belum dikonfigurasi (set BROKER_SUMMARY_API_URL); "
+            "Broker Summary & akumulasi bandar aktif dari IDX Edge PRO." if IDX_EDGE_API_KEYS else
+            "Broker Summary API belum dikonfigurasi (set IDX_EDGE_API_KEYS di Vercel); "
             "kriteria swing memakai proksi nilai transaksi."
         ),
         "disclaimer": DISCLAIMER,
