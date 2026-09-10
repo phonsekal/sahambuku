@@ -114,8 +114,10 @@
       <button id="btnScan" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-sky-500/25 transition disabled:opacity-50 disabled:cursor-wait">
         Scan
       </button>
+      <button id="btnKoreksiWatch" onclick="renderKoreksiWatch()" class="border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">🔔 Pantauan Koreksi</button>
     </div>
     <div id="scanInfo" class="text-xs text-slate-400 mb-3"></div>
+    <div id="koreksiWatchPanel" class="mb-3"></div>
     <div id="screenerResult"></div>
 
     <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mt-5 shadow-xl shadow-black/20">
@@ -385,6 +387,8 @@ const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 const fmt = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d, minimumFractionDigits: d});
 const fmtIdr = v => (v === null || v === undefined || isNaN(v)) ? "—" : "Rp" + Number(v).toLocaleString("id-ID", {maximumFractionDigits: 0});
+const fmtMoney = (v, cur) => (v === null || v === undefined || isNaN(v)) ? "—"
+  : ((cur && cur !== "IDR" ? cur + " " : "Rp") + Number(v).toLocaleString("id-ID", {maximumFractionDigits: 0}));
 const pct = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d}) + "%";
 const arrow = v => v > 0 ? "▲" : v < 0 ? "▼" : "•";
 const cls = v => v > 0 ? "text-emerald-400" : v < 0 ? "text-rose-400" : "text-slate-400";
@@ -760,6 +764,9 @@ function renderAnalyze(d) {
     </div>`);
 
   const F = d.fundamentals || {};
+  const yoyCell = v => v == null ? `<span class="text-slate-600">—</span>`
+    : `<span class="tabular font-semibold ${v >= 0 ? "text-emerald-400" : "text-rose-400"}">${v > 0 ? "+" : ""}${fmt(v, 1)}%</span>`;
+  const money = v => fmtMoney(v, F.financial_currency || F.currency);
   h += card("Fundamental (Profil Emiten)", `
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
       ${kv("Nama", F.name ? esc(F.name) : "—")}
@@ -772,6 +779,37 @@ function renderAnalyze(d) {
       ${kv("52 Minggu Terendah", F.fifty_two_week && F.fifty_two_week.low ? fmt(F.fifty_two_week.low, 0) : "—")}
       ${kv("Jarak dari 52w High", F.fifty_two_week && F.fifty_two_week.pct_from_high != null ? pct(F.fifty_two_week.pct_from_high) : "—", (F.fifty_two_week || {}).pct_from_high != null && F.fifty_two_week.pct_from_high > -10 ? "text-emerald-400" : "text-amber-400")}
     </div>
+    ${(F.pe != null || F.eps != null || F.price_to_book != null) ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">Rasio Keuangan${F.data_source ? " · " + esc(F.data_source) : ""}${F.period_end ? " · laporan " + esc(F.period_end) : ""}</div>
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+      ${kv("PE", F.pe != null ? fmt(F.pe, 2) : "—")}
+      ${kv("Forward PE", F.forward_pe != null ? fmt(F.forward_pe, 2) : "—")}
+      ${kv("PBV", F.price_to_book != null ? fmt(F.price_to_book, 2) : "—")}
+      ${kv("Nilai Buku/saham", F.book_value != null ? fmt(F.book_value, 2) : "—")}
+      ${kv("EPS", F.eps != null ? fmt(F.eps, 2) : "—")}
+      ${kv("Forward EPS", F.forward_eps != null ? fmt(F.forward_eps, 2) : "—")}
+      ${kv("ROE", F.roe_pct != null ? pct(F.roe_pct) : "—", F.roe_pct != null && F.roe_pct > 0 ? "text-emerald-400" : "")}
+      ${kv("ROA", F.roa_pct != null ? pct(F.roa_pct) : "—", F.roa_pct != null && F.roa_pct > 0 ? "text-emerald-400" : "")}
+      ${kv("Margin Laba Bersih", F.net_profit_margin_pct != null ? pct(F.net_profit_margin_pct) : "—")}
+      ${kv("Pendapatan", F.revenue != null ? money(F.revenue) : "—")}
+      ${kv("Laba Bersih", F.net_income != null ? money(F.net_income) : "—")}
+      ${kv("Dividend Yield", F.dividend_yield_pct != null ? pct(F.dividend_yield_pct) : "—", F.dividend_yield_pct != null && F.dividend_yield_pct > 0 ? "text-emerald-400" : "")}
+      ${kv("Dividen/saham", F.dividend_per_share != null ? fmt(F.dividend_per_share, 2) : "—")}
+      ${kv("Payout Ratio", F.payout_ratio_pct != null ? pct(F.payout_ratio_pct) : "—")}
+      ${kv("Ex-Dividen Terakhir", F.ex_dividend_date ? esc(F.ex_dividend_date) : "—")}
+    </div>` : ""}
+    ${(F.financials_annual || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">📅 Perbandingan Laporan Tahunan (YoY)</div>
+    <div class="overflow-x-auto mb-3"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Tahun</th><th class="text-right">Pendapatan</th><th class="text-right">Δ YoY</th><th class="text-right">Laba Bersih</th><th class="text-right">Δ YoY</th><th class="text-right">EPS</th></tr></thead>
+    <tbody>${F.financials_annual.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(r.year)}</td><td class="text-right tabular">${r.revenue != null ? money(r.revenue) : "—"}</td><td class="text-right">${yoyCell(r.revenue_yoy_pct)}</td><td class="text-right tabular">${r.net_income != null ? money(r.net_income) : "—"}</td><td class="text-right">${yoyCell(r.net_income_yoy_pct)}</td><td class="text-right tabular">${r.eps != null ? fmt(r.eps, 2) : "—"}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${(F.financials_quarterly || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">🗓 Perbandingan Kuartalan (vs Kuartal Sama Tahun Lalu)</div>
+    <div class="overflow-x-auto mb-3"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Kuartal</th><th class="text-right">Pendapatan</th><th class="text-right">Δ YoY</th><th class="text-right">Laba Bersih</th><th class="text-right">Δ YoY</th><th class="text-right">EPS</th></tr></thead>
+    <tbody>${F.financials_quarterly.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(r.period)}</td><td class="text-right tabular">${r.revenue != null ? money(r.revenue) : "—"}</td><td class="text-right">${yoyCell(r.revenue_yoy_pct)}</td><td class="text-right tabular">${r.net_income != null ? money(r.net_income) : "—"}</td><td class="text-right">${yoyCell(r.net_income_yoy_pct)}</td><td class="text-right tabular">${r.eps != null ? fmt(r.eps, 2) : "—"}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${(F.dividends || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">💰 Riwayat Dividen</div>
+    <div class="overflow-x-auto mb-3"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Ex-Date</th><th class="text-right">Dividen/saham</th><th class="text-right">Tgl Bayar</th></tr></thead>
+    <tbody>${F.dividends.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5">${esc(r.date)}</td><td class="text-right tabular text-emerald-400">${r.amount != null ? fmt(r.amount, 2) : "—"}</td><td class="text-right tabular">${r.payment ? esc(r.payment) : "—"}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${(F.splits || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">🔀 Aksi Korporasi (Stock Split)</div>
+    <div class="overflow-x-auto mb-3"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Tanggal</th><th class="text-right">Rasio</th></tr></thead>
+    <tbody>${F.splits.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5">${esc(r.date)}</td><td class="text-right tabular font-semibold text-sky-400">${esc(r.ratio)}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${F.financial_currency && F.financial_currency !== "IDR" ? `<div class="text-[11px] text-amber-400/90 mb-2">ℹ️ Emiten ini melaporkan laporan keuangannya dalam <b>${esc(F.financial_currency)}</b> (bukan IDR), jadi angka pendapatan/laba memakai mata uang tersebut.</div>` : ""}
     <div class="text-[11px] text-slate-500">${esc(F.note || "")}</div>`);
 
   h += `<div class="grid md:grid-cols-2 gap-4 mb-4">`;
@@ -882,6 +920,65 @@ function setChartInterval(iv) {
 /* =================================================================
    TAB SCREENER
 ================================================================= */
+async function loadKoreksiWatch() {
+  try { const d = await getJSON("/api/koreksi/watch");
+    koreksiWatch = new Set((d.watched || []).map(t => t.toUpperCase()));
+  } catch (e) { /* tanpa sinkronisasi cloud, pantauan tetap bisa dipakai lokal */ }
+}
+
+async function toggleKoreksiWatch(tk, btn) {
+  const has = koreksiWatch.has(tk.toUpperCase());
+  const action = has ? "remove" : "add";
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/koreksi/watch", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticker: tk, action }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    if (action === "add") koreksiWatch.add(tk.toUpperCase()); else koreksiWatch.delete(tk.toUpperCase());
+    btn.className = action === "add"
+      ? "text-[10px] px-2 py-1 rounded-lg border font-bold border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+      : "text-[10px] px-2 py-1 rounded-lg border font-bold border-sky-500/40 bg-sky-500/10 text-sky-400";
+    btn.textContent = action === "add" ? "✓ Dipantau" : "➕ Pantau";
+    toast(action === "add" ? `${stripJK(tk)} masuk pantauan koreksi — Telegram akan memberi tahu saat konfirmasi reversal.` : `${stripJK(tk)} dihapus dari pantauan.`, "info");
+  } catch (e) {
+    toast(`Gagal ${action === "add" ? "menambah" : "menghapus"} pantauan: ${e.message}`, "sl");
+  } finally { btn.disabled = false; }
+}
+
+async function renderKoreksiWatch() {
+  const el = $("#koreksiWatchPanel");
+  el.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-amber-400 rounded-full animate-spin align-middle mr-2"></span>Memuat pantauan…`;
+  try {
+    const d = await getJSON("/api/koreksi/watch");
+    const rows = d.results || [];
+    if (!rows.length) {
+      el.innerHTML = `<div class="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3">🔔 Pantauan koreksi kosong. Di hasil scan <b class="text-slate-300">🛒 Beli Koreksi</b>, klik <b class="text-sky-400">➕ Pantau</b> pada saham yang ingin dipantau — Telegram akan memberi tahu saat sinyal berubah SELL → BUY (konfirmasi reversal) atau harga menyentuh zona support.</div>`;
+      return;
+    }
+    const reversal = a => (a.signal === "BUY" || a.signal === "STRONG BUY")
+      ? `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold">🔄 Reversal!</span>` : "";
+    el.innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-amber-500/30 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><div class="text-[11px] font-bold uppercase tracking-wider text-amber-400/90 px-4 pt-3 pb-1">🔔 Pantauan Beli Koreksi — tunggu konfirmasi reversal sebelum entry</div>
+      <table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
+        <th class="text-left px-4 py-2">Saham</th><th class="text-right px-3">Harga</th><th class="text-left px-3">Sinyal</th><th class="text-center px-3">🎯 Kualitas</th>
+        <th class="text-right px-3">Support</th><th class="text-center px-3">Status</th><th class="px-3"></th>
+      </tr></thead><tbody>
+      ${rows.map(a => `<tr class="border-b border-slate-800/60">
+        <td class="px-4 py-2.5 font-bold">${esc(stripJK(a.ticker))}</td>
+        <td class="px-3 text-right tabular">${a.ok ? fmt(a.price) : "—"}</td>
+        <td class="px-3">${a.ok ? sigBadge(a.signal, true) : '<span class="text-slate-600">gagal</span>'}</td>
+        <td class="px-3 text-center tabular">${a.ok && a.score != null ? `<b class="${a.score >= 70 ? "text-emerald-400" : "text-amber-400"}">${a.score}</b>` : "—"}</td>
+        <td class="px-3 text-right tabular text-sky-400">${a.ok && a.nearest_support ? fmt(a.nearest_support) : "—"}</td>
+        <td class="px-3 text-center">${a.ok ? reversal(a) : ""}</td>
+        <td class="px-3 text-right"><button onclick="toggleKoreksiWatch('${esc(a.ticker)}', this)" class="text-[10px] px-2 py-1 rounded-lg border border-rose-500/40 bg-rose-500/10 text-rose-400 font-bold">✕ Hapus</button></td>
+      </tr>`).join("")}
+      </tbody></table></div>`;
+  } catch (e) {
+    el.innerHTML = `<div class="text-xs text-rose-400 bg-rose-500/10 border border-rose-500/30 rounded-xl px-4 py-3">Gagal memuat pantauan: ${esc(e.message)}</div>`;
+  }
+}
+
 async function scan() {
   const btn = $("#btnScan");
   const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
@@ -891,6 +988,7 @@ async function scan() {
   $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai saham… (bisa butuh beberapa detik)`;
   $("#screenerResult").innerHTML = "";
   try {
+    await loadKoreksiWatch();
     renderScan(await getJSON(`/api/screener?${q}`));
   } catch (e) {
     $("#screenerResult").innerHTML = errorBox(e.message);
@@ -928,6 +1026,7 @@ function renderScan(d) {
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
       ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
+      ${isKoreksi ? `<th class="text-center px-3" title="Pantau: Telegram memberi tahu saat konfirmasi reversal (SELL→BUY)">🔔</th>` : ""}
       <th class="text-center px-3" title="Konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">✓ Buku</th>
       <th class="text-center px-3" title="Skor komposit kualitas beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari">Likuiditas</th>
@@ -943,6 +1042,7 @@ function renderScan(d) {
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
+      ${isKoreksi ? `<td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>` : ""}
       <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
       <td class="px-3 text-center">${buyScoreChip(r.buy_score)}</td>
       <td class="px-3">${liqChip(r.liquidity_grade)}</td>
@@ -1142,6 +1242,7 @@ const _pNorm = normalizeHoldings(load("ci_portfolio", []));
 let porto = _pNorm.out;
 if (_pNorm.changed) save("ci_portfolio", porto);
 let portoQuotes = {};   // ticker -> data analyze
+let koreksiWatch = new Set();   // ticker yang dipantau utk konfirmasi reversal (kandidat beli koreksi)
 
 function renderPortoSummary() {
   let cost = 0, value = 0, tpHit = 0, slHit = 0;

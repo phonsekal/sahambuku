@@ -2261,17 +2261,18 @@ FMP_TTL = 24 * 3600  # fundamental berubah per kuartal -> cache 1 hari cukup
 
 
 def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Optional[dict]:
-    """GET ke Financial Modeling Prep (FMP). None bila key belum di-set / gagal.
+    """GET ke Financial Modeling Prep (FMP) API 'stable' (v3 legacy sudah nonaktif).
 
-    FMP memakai format simbol IDX 'BBCA.JK' dan menyediakan rasio, laporan
-    laba-rugi, dan quote (PE, EPS, ROE, revenue, PBV, dividen)."""
+    None bila key belum di-set / gagal / simbol di luar cakupan paket (mis. IDX .JK
+    butuh paket berbayar FMP). Endpoint baru: /stable/quote, /stable/ratios,
+    /stable/key-metrics, /stable/income-statement, /stable/dividends, /stable/splits."""
     if not FMP_API_KEY:
         return None
     now = time.time()
     hit = FMP_CACHE.get(path)
     if hit and now - hit["ts"] < FMP_TTL:
         return hit["data"]
-    url = f"https://financialmodelingprep.com/api/v3/{path}?apikey={FMP_API_KEY}"
+    url = f"https://financialmodelingprep.com/stable/{path}?apikey={FMP_API_KEY}"
     if params:
         url += "&" + "&".join(f"{k}={urllib.parse.quote(str(v))}" for k, v in params.items())
     try:
@@ -2286,35 +2287,481 @@ def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Optional[dic
     return data
 
 
-def _fetch_fmp_fundamentals(code: str) -> Optional[dict]:
-    """PE/EPS/ROE/revenue/PBV/dividen dari FMP (diaktifkan dengan FMP_API_KEY)."""
-    if not FMP_API_KEY or not code:
+def _fetch_fmp_fundamentals(sym: str) -> Optional[dict]:
+    """PE/PBV/ROE/EPS/revenue/laba + YoY + dividen + split dari FMP (FMP_API_KEY).
+
+    sym = simbol apa adanya (mis. 'AAPL'). Paket FMP yang terpasang tidak
+    mencakup bursa IDX (.JK) sehingga saham Indonesia diambil dari Yahoo.
+    """
+    if not FMP_API_KEY or not sym:
         return None
-    sym = f"{code}.JK"
     out: Dict[str, Any] = {}
-    quote = _fmp_get(f"quote/{sym}")
+    quote = _fmp_get("quote", {"symbol": sym})
     if isinstance(quote, list) and quote:
         q = quote[0]
-        for k in ("pe", "forwardPE", "eps", "marketCap", "dividendYield", "priceToBook", "sharesOutstanding"):
+        for k in ("marketCap", "name", "price", "yearHigh", "yearLow"):
             if q.get(k) is not None:
                 out[k] = q.get(k)
-        if q.get("name"):
-            out["name"] = str(q["name"])
-    ratios = _fmp_get(f"ratios/{sym}", {"limit": 1})
+    ratios = _fmp_get("ratios", {"symbol": sym, "period": "annual", "limit": 1})
     if isinstance(ratios, list) and ratios:
         r = ratios[0]
-        for k in ("peRatio", "priceToBookRatio", "returnOnEquity", "returnOnAssets",
-                  "dividendYield", "debtToEquity", "currentRatio"):
+        for k in ("priceToEarningsRatio", "priceToBookRatio", "dividendYieldPercentage",
+                  "dividendYield", "dividendPerShare", "currentRatio", "debtToEquityRatio",
+                  "netProfitMargin"):
             if r.get(k) is not None:
                 out.setdefault(k, r.get(k))
-    inc = _fmp_get(f"income-statement/{sym}", {"limit": 1})
-    if isinstance(inc, list) and inc:
-        i = inc[0]
+    km = _fmp_get("key-metrics", {"symbol": sym, "period": "annual", "limit": 1})
+    if isinstance(km, list) and km:
+        if km[0].get("returnOnEquity") is not None:
+            out["returnOnEquity"] = km[0]["returnOnEquity"]
+
+    # --- Perbandingan laporan laba-rugi YoY (tahunan & kuartalan) ---
+    def _pct(cur, prev_val) -> Optional[float]:
+        try:
+            if cur is None or not prev_val:
+                return None
+            return float((float(cur) / float(prev_val) - 1) * 100)
+        except Exception:
+            return None
+
+    inc_ann = _fmp_get("income-statement", {"symbol": sym, "period": "annual", "limit": 3})
+    if isinstance(inc_ann, list) and inc_ann:
+        # nilai laporan terakhir untuk rasio ringkas (EPS, revenue, laba, periode)
+        top = inc_ann[0]
         for k in ("revenue", "netIncome", "eps", "grossProfit", "operatingIncome"):
-            if i.get(k) is not None:
-                out.setdefault(k, i.get(k))
-        if i.get("date"):
-            out["period_end"] = str(i["date"])[:10]
+            if top.get(k) is not None:
+                out.setdefault(k, top.get(k))
+        if top.get("date"):
+            out["period_end"] = str(top["date"])[:10]
+        ann = []
+        for i, row in enumerate(inc_ann):
+            prev = inc_ann[i + 1] if i + 1 < len(inc_ann) else None
+            rev, ni, e, g = row.get("revenue"), row.get("netIncome"), row.get("eps"), row.get("grossProfit")
+            ann.append({
+                "year": str(row.get("calendarYear") or str(row.get("date", ""))[:4]),
+                "period": str(row.get("date", ""))[:10],
+                "revenue": rev, "net_income": ni, "eps": e,
+                "gross_margin_pct": num((g / rev * 100), 1) if g is not None and rev else None,
+                "revenue_yoy_pct": num(_pct(rev, prev.get("revenue")), 1) if prev else None,
+                "net_income_yoy_pct": num(_pct(ni, prev.get("netIncome")), 1) if prev else None,
+            })
+        out["financials_annual"] = ann
+
+    inc_q = _fmp_get("income-statement", {"symbol": sym, "period": "quarter", "limit": 8})
+    if isinstance(inc_q, list) and inc_q:
+        qtr = []
+        for i, row in enumerate(inc_q):
+            prev = inc_q[i + 4] if i + 4 < len(inc_q) else None  # kuartal sama tahun lalu
+            rev, ni, e = row.get("revenue"), row.get("netIncome"), row.get("eps")
+            fy = str(row.get("fiscalYear") or str(row.get("date", ""))[:4])
+            fp = str(row.get("period") or "")
+            if not fp and row.get("date"):
+                fp = "Q" + str((pd.Timestamp(row["date"]).month - 1) // 3 + 1)
+            qtr.append({
+                "period": f"{fy}-{fp}",
+                "revenue": rev, "net_income": ni, "eps": e,
+                "revenue_yoy_pct": num(_pct(rev, prev.get("revenue")), 1) if prev else None,
+                "net_income_yoy_pct": num(_pct(ni, prev.get("netIncome")), 1) if prev else None,
+            })
+        out["financials_quarterly"] = qtr
+
+    # --- Riwayat dividen ---
+    div = _fmp_get("dividends", {"symbol": sym, "limit": 12})
+    if isinstance(div, list) and div:
+        out["dividends"] = [
+            {"date": str(x.get("date", ""))[:10], "amount": x.get("dividend"),
+             "adj": x.get("adjDividend"),
+             "payment": str(x.get("paymentDate", ""))[:10] or None}
+            for x in div[:12]
+        ]
+
+    # --- Aksi korporasi: stock split ---
+    split = _fmp_get("splits", {"symbol": sym, "limit": 12})
+    if isinstance(split, list) and split:
+        out["splits"] = [
+            {"date": str(x.get("date", ""))[:10],
+             "ratio": f"{x.get('numerator')}:{x.get('denominator')}"}
+            for x in split[:12]
+        ]
+    return out or None
+
+
+# ---------------------------------------------------------------------------
+# 12b. FUNDAMENTAL & AKSI KORPORASI (Yahoo Finance + FMP)
+# ---------------------------------------------------------------------------
+# Sumber data:
+#   * Yahoo Finance (quoteSummary + fundamentals-timeseries + chart events)
+#     -> MENCANGKUP saham IDX (.JK): PE, PBV, EPS, ROE, margin, dividen,
+#        perbandingan laporan YoY tahunan/kuartalan, dan aksi korporasi
+#        (stock split / reverse split).
+#   * Financial Modeling Prep (FMP_API_KEY) -> pelengkap; paket FMP yang
+#     terpasang TIDAK mencakup bursa Indonesia, jadi rasio IDX diambil dari
+#     Yahoo. FMP tetap dipakai bila simbol di luar IDX (mis. saham AS).
+
+YF_FUND_CACHE: Dict[str, dict] = {}
+YF_FUND_TTL = 6 * 3600  # laporan keuangan berubah per kuartal -> cache 6 jam
+_YAHOO_HEADERS = {"User-Agent": _YAHOO_UA, "Accept": "application/json,text/plain,*/*"}
+_YF_SESSION_LOCK = threading.Lock()
+_YF_SESSION: Dict[str, Any] = {"session": None, "crumb": "", "ts": 0.0}
+
+
+def _yoy_pct(cur: Any, prev_val: Any) -> Optional[float]:
+    """Perubahan relatif (%) terhadap periode pembanding; None bila tak lengkap."""
+    try:
+        if cur is None or not prev_val:
+            return None
+        return (float(cur) / float(prev_val) - 1) * 100
+    except (TypeError, ValueError, ZeroDivisionError):
+        return None
+
+
+def _epoch_date(epoch: Any) -> Optional[str]:
+    """Epoch detik -> 'YYYY-MM-DD' (UTC, sesuai konvensi Yahoo)."""
+    try:
+        return time.strftime("%Y-%m-%d", time.gmtime(float(epoch)))
+    except (TypeError, ValueError, OSError):
+        return None
+
+
+def _yahoo_session():
+    """Session curl_cffi + crumb Yahoo (wajib utk quoteSummary & fundamentals).
+
+    Kredensial dipakai ulang 30 menit agar tidak berulang meminta crumb
+    (Yahoo membatasi permintaan crumb per IP).
+    """
+    try:
+        from curl_cffi import requests as cr
+    except Exception:
+        return None, ""
+    now = time.time()
+    with _YF_SESSION_LOCK:
+        sess = _YF_SESSION.get("session")
+        crumb = str(_YF_SESSION.get("crumb") or "")
+        if sess is not None and crumb and now - float(_YF_SESSION.get("ts") or 0) < 1800:
+            return sess, crumb
+        try:
+            sess = cr.Session(impersonate="chrome")
+            try:
+                sess.get("https://fc.yahoo.com", timeout=8, headers=_YAHOO_HEADERS)
+            except Exception:
+                pass
+            r = sess.get("https://query1.finance.yahoo.com/v1/test/getcrumb",
+                         timeout=10, headers=_YAHOO_HEADERS)
+            crumb = (r.text or "").strip()
+            if r.status_code != 200 or not crumb or "Too Many" in crumb:
+                return None, ""
+        except Exception:
+            return None, ""
+        _YF_SESSION.update({"session": sess, "crumb": crumb, "ts": now})
+        return sess, crumb
+
+
+def _yahoo_api(url: str) -> Optional[dict]:
+    """GET JSON dari Yahoo memakai session + crumb (None bila gagal/dibatasi)."""
+    sess, crumb = _yahoo_session()
+    if sess is None or not crumb:
+        return None
+    full = url + ("&" if "?" in url else "?") + "crumb=" + urllib.parse.quote(crumb)
+    try:
+        r = sess.get(full, timeout=15, headers=_YAHOO_HEADERS)
+        if r.status_code != 200:
+            return None
+        return r.json()
+    except Exception:
+        return None
+
+
+def _yahoo_quote_summary(ticker: str, modules: str) -> dict:
+    """quoteSummary Yahoo (rasio, key statistics, laporan ringkas, kalender)."""
+    j = _yahoo_api(f"https://query1.finance.yahoo.com/v10/finance/quoteSummary/"
+                   f"{urllib.parse.quote(ticker)}?modules={modules}")
+    res = ((j or {}).get("quoteSummary") or {}).get("result") or []
+    return res[0] if res and isinstance(res[0], dict) else {}
+
+
+def _yahoo_timeseries(ticker: str, types: List[str], light: bool = False) -> Dict[str, list]:
+    """Time series fundamental Yahoo -> {tipe: [(tanggal, nilai), ...]} urut naik."""
+    now = int(time.time())
+    span = 2 * 365 if light else 8 * 365
+    j = _yahoo_api("https://query1.finance.yahoo.com/ws/fundamentals-timeseries/v1/finance/"
+                   f"timeseries/{urllib.parse.quote(ticker)}?symbol={urllib.parse.quote(ticker)}"
+                   f"&type={','.join(types)}&period1={now - span * 86400}&period2={now}")
+    res = ((j or {}).get("timeseries") or {}).get("result") or []
+    out: Dict[str, list] = {}
+    for item in res:
+        if not isinstance(item, dict):
+            continue
+        keys = (item.get("meta") or {}).get("type") or []
+        key = keys[0] if keys else ""
+        if not key:
+            continue
+        rows: List[tuple] = []
+        for x in item.get(key) or []:
+            if not isinstance(x, dict):
+                continue
+            val = x.get("reportedValue")
+            if isinstance(val, dict):
+                val = val.get("raw")
+            if x.get("asOfDate") and val is not None:
+                try:
+                    rows.append((str(x["asOfDate"])[:10], float(val)))
+                except (TypeError, ValueError):
+                    continue
+        rows.sort(key=lambda p: p[0])
+        out[key] = rows
+    return out
+
+
+def _yahoo_events(ticker: str) -> dict:
+    """Riwayat dividen & aksi korporasi (stock split) dari chart events Yahoo."""
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{urllib.parse.quote(ticker)}"
+           "?range=10y&interval=1mo&events=div,splits")
+    try:
+        from curl_cffi import requests as cr
+        r = cr.get(url, impersonate="chrome", timeout=12, headers=_YAHOO_HEADERS)
+        if r.status_code != 200:
+            return {}
+        j = r.json()
+    except Exception:
+        return {}
+    res = (j.get("chart") or {}).get("result") or []
+    return (res[0].get("events") or {}) if res else {}
+
+
+def _qs_num(src: Any, key: str) -> Optional[float]:
+    """Ambil angka dari quoteSummary ({'raw': x}) / dict biasa."""
+    v = src.get(key) if isinstance(src, dict) else None
+    if isinstance(v, dict):
+        v = v.get("raw")
+    try:
+        return float(v) if v is not None else None
+    except (TypeError, ValueError):
+        return None
+
+
+def _fetch_yahoo_fundamentals(ticker: str, light: bool = False) -> Optional[dict]:
+    """Fundamental emiten dari Yahoo Finance (mencakup saham IDX '.JK').
+
+    light=True -> hanya rasio ringkas (1 request) untuk endpoint massal seperti
+    /api/quotes; light=False -> sekaligus laporan YoY tahunan & kuartalan,
+    riwayat dividen, dan aksi korporasi.
+    """
+    if not ticker:
+        return None
+    key_tk = ticker.upper()
+    hit = YF_FUND_CACHE.get(key_tk)
+    if hit and time.time() - hit["ts"] < YF_FUND_TTL:
+        return hit["data"]
+
+    mods = "price,summaryDetail,defaultKeyStatistics,financialData"
+    if not light:
+        mods += ",incomeStatementHistory,incomeStatementHistoryQuarterly"
+    types = ["annualTotalRevenue", "annualNetIncome", "annualDilutedEPS", "annualBasicEPS",
+             "quarterlyTotalRevenue", "quarterlyNetIncome", "quarterlyDilutedEPS", "quarterlyBasicEPS"]
+
+    with ThreadPoolExecutor(max_workers=3) as ex:
+        f_qs = ex.submit(_yahoo_quote_summary, key_tk, mods)
+        f_ts = ex.submit(_yahoo_timeseries, key_tk, types, light)
+        f_ev = None if light else ex.submit(_yahoo_events, key_tk)
+        qs = f_qs.result()
+        ts = f_ts.result()
+        ev = f_ev.result() if f_ev else {}
+
+    if not qs:
+        YF_FUND_CACHE[key_tk] = {"ts": time.time(), "data": None}
+        return None
+
+    sd = qs.get("summaryDetail") or {}
+    ks = qs.get("defaultKeyStatistics") or {}
+    fd = qs.get("financialData") or {}
+    pr = qs.get("price") or {}
+    out: Dict[str, Any] = {}
+
+    name = pr.get("longName") or pr.get("shortName")
+    if name:
+        out["name"] = str(name)
+    for src_key, out_key in (("marketCap", "marketCap"), ("sharesOutstanding", "sharesOutstanding")):
+        val = _qs_num(pr, src_key) or _qs_num(ks, src_key)
+        if val:
+            out[out_key] = val
+
+    # Mata uang: sebagian emiten IDX melaporkan dalam USD (mis. AMMN) sehingga
+    # PBV/book value bawaan Yahoo bisa tidak sekonsisten harga (jadi salah).
+    quote_ccy = str(pr.get("currency") or "")
+    fin_ccy = str(fd.get("financialCurrency") or "")
+    same_ccy = bool(quote_ccy and fin_ccy and quote_ccy == fin_ccy)
+    if quote_ccy:
+        out["currency"] = quote_ccy
+    if fin_ccy:
+        out["financialCurrency"] = fin_ccy
+    px = _qs_num(pr, "regularMarketPrice") or _qs_num(fd, "currentPrice")
+    book = _qs_num(ks, "bookValue")
+    if book is not None and same_ccy and book > 0:
+        out["bookValue"] = book
+    pbv = (px / book) if (same_ccy and book and px) else _qs_num(ks, "priceToBook")
+    if pbv is not None and 0 < pbv <= 200:
+        out["priceToBookRatio"] = pbv
+
+    # --- Rasio keuangan utama (PE, EPS, ROE/ROA, margin) ---
+    ratios = (
+        (_qs_num(sd, "trailingPE") or _qs_num(ks, "trailingPE"), "priceToEarningsRatio"),
+        (_qs_num(ks, "forwardPE") or _qs_num(sd, "forwardPE"), "forwardPE"),
+        (_qs_num(ks, "trailingEps"), "eps"),
+        (_qs_num(ks, "forwardEps"), "forwardEps"),
+        (_qs_num(fd, "returnOnEquity") or _qs_num(ks, "returnOnEquity"), "returnOnEquity"),
+        (_qs_num(fd, "returnOnAssets"), "returnOnAssets"),
+        (_qs_num(fd, "profitMargins") or _qs_num(ks, "profitMargins"), "netProfitMargin"),
+        (_qs_num(fd, "totalRevenue"), "revenue"),
+    )
+    for val, out_key in ratios:
+        if val is not None:
+            out[out_key] = val
+
+    # --- Dividen ---
+    dy = _qs_num(sd, "dividendYield")
+    if dy is not None:
+        out["dividendYieldPercentage"] = dy * 100
+    dr = _qs_num(sd, "dividendRate")
+    if dr is not None:
+        out["dividendPerShare"] = dr
+    po = _qs_num(sd, "payoutRatio")
+    if po is not None:
+        out["payoutRatioPercentage"] = po * 100
+    five = _qs_num(sd, "fiveYearAvgDividendYield")
+    if five is not None:
+        out["fiveYearAvgDividendYieldPercentage"] = five
+    exd = _epoch_date(_qs_num(sd, "exDividendDate"))
+    if exd:
+        out["exDividendDate"] = exd
+
+    if light:
+        YF_FUND_CACHE[key_tk] = {"ts": time.time(), "data": out or None}
+        return out or None
+
+    # --- Susun laporan laba-rugi per tahun & per kuartal ---
+    def _by_period(keys: List[str], quarterly: bool) -> Dict[Any, float]:
+        for k in keys:
+            vals = ts.get(k) or []
+            if not vals:
+                continue
+            mapped: Dict[Any, float] = {}
+            for date, val in vals:
+                try:
+                    yr = int(date[:4])
+                    if quarterly:
+                        mapped[(yr, (int(date[5:7]) - 1) // 3 + 1)] = val
+                    else:
+                        mapped[yr] = val
+                except (TypeError, ValueError):
+                    continue
+            if mapped:
+                return mapped
+        return {}
+
+    rev_a = _by_period(["annualTotalRevenue"], False)
+    ni_a = _by_period(["annualNetIncome"], False)
+    eps_a = _by_period(["annualDilutedEPS", "annualBasicEPS"], False)
+    rev_q = _by_period(["quarterlyTotalRevenue"], True)
+    ni_q = _by_period(["quarterlyNetIncome"], True)
+    eps_q = _by_period(["quarterlyDilutedEPS", "quarterlyBasicEPS"], True)
+
+    # Cadangan bila timeseries dibatasi: pakai laporan ringkas quoteSummary.
+    if not rev_a:
+        for row in (qs.get("incomeStatementHistory") or {}).get("incomeStatementHistory") or []:
+            yr = _epoch_date(_qs_num(row, "endDate"))
+            if not yr:
+                continue
+            y = int(yr[:4])
+            r_, n_ = _qs_num(row, "totalRevenue"), _qs_num(row, "netIncome")
+            if r_ is not None:
+                rev_a[y] = r_
+            if n_ is not None:
+                ni_a[y] = n_
+    if not rev_q:
+        for row in (qs.get("incomeStatementHistoryQuarterly") or {}).get("incomeStatementHistory") or []:
+            d = _epoch_date(_qs_num(row, "endDate"))
+            if not d:
+                continue
+            kq = (int(d[:4]), (int(d[5:7]) - 1) // 3 + 1)
+            r_, n_ = _qs_num(row, "totalRevenue"), _qs_num(row, "netIncome")
+            if r_ is not None:
+                rev_q[kq] = r_
+            if n_ is not None:
+                ni_q[kq] = n_
+
+    years = sorted(set(rev_a) | set(ni_a) | set(eps_a), reverse=True)
+    ann = []
+    for yr in years:
+        prev = yr - 1
+        ann.append({
+            "year": str(yr),
+            "period": f"{yr}-12-31",
+            "revenue": rev_a.get(yr), "net_income": ni_a.get(yr), "eps": eps_a.get(yr),
+            "gross_margin_pct": None,
+            "revenue_yoy_pct": num(_yoy_pct(rev_a.get(yr), rev_a.get(prev)), 1) if prev in rev_a else None,
+            "net_income_yoy_pct": num(_yoy_pct(ni_a.get(yr), ni_a.get(prev)), 1) if prev in ni_a else None,
+        })
+    if ann:
+        out["financials_annual"] = ann
+
+    quarters = sorted(set(rev_q) | set(ni_q) | set(eps_q), reverse=True)[:8]
+    qtr = []
+    for (yr, q) in quarters:
+        prev = (yr - 1, q)
+        qtr.append({
+            "period": f"{yr}-Q{q}",
+            "revenue": rev_q.get((yr, q)), "net_income": ni_q.get((yr, q)), "eps": eps_q.get((yr, q)),
+            "revenue_yoy_pct": num(_yoy_pct(rev_q.get((yr, q)), rev_q.get(prev)), 1) if prev in rev_q else None,
+            "net_income_yoy_pct": num(_yoy_pct(ni_q.get((yr, q)), ni_q.get(prev)), 1) if prev in ni_q else None,
+        })
+    if qtr:
+        out["financials_quarterly"] = qtr
+
+    # Laba bersih 12 bulan terakhir = jumlah 4 kuartal berurutan (cadangan: tahunan).
+    def _prev_q(p: tuple) -> tuple:
+        return (p[0] - 1, 4) if p[1] == 1 else (p[0], p[1] - 1)
+
+    last4 = quarters[:4]
+    contiguous = (len(last4) == 4 and all(k in ni_q for k in last4)
+                  and all(last4[i + 1] == _prev_q(last4[i]) for i in range(3)))
+    if contiguous:
+        out["netIncome"] = sum(ni_q[k] for k in last4)
+    elif years and ni_a.get(years[0]) is not None:
+        out["netIncome"] = ni_a[years[0]]
+
+    # Periode laporan terakhir yang tersedia (akhir kuartal/tahun fiskal).
+    q_end = {1: "03-31", 2: "06-30", 3: "09-30", 4: "12-31"}
+    if quarters:
+        out["period_end"] = f"{quarters[0][0]}-{q_end.get(quarters[0][1], '12-31')}"
+    elif years:
+        out["period_end"] = f"{years[0]}-12-31"
+
+    # --- Riwayat dividen (10 tahun) ---
+    divs = sorted((ev.get("dividends") or {}).values(),
+                  key=lambda x: x.get("date") or 0, reverse=True)
+    rows = []
+    for x in divs[:12]:
+        d = _epoch_date(x.get("date"))
+        if d and x.get("amount") is not None:
+            rows.append({"date": d, "amount": num(x.get("amount"), 2),
+                         "adj": num(x.get("amount"), 2), "payment": None})
+    if rows:
+        out["dividends"] = rows
+
+    # --- Aksi korporasi: stock split / reverse split ---
+    sps = sorted((ev.get("splits") or {}).values(),
+                 key=lambda x: x.get("date") or 0, reverse=True)
+    rows = []
+    for x in sps[:12]:
+        d = _epoch_date(x.get("date"))
+        if not d:
+            continue
+        ratio = x.get("splitRatio") or f"{x.get('numerator')}:{x.get('denominator')}"
+        rows.append({"date": d, "ratio": str(ratio)})
+    if rows:
+        out["splits"] = rows
+
+    YF_FUND_CACHE[key_tk] = {"ts": time.time(), "data": out or None}
     return out or None
 
 
@@ -2382,13 +2829,15 @@ def _load_sector_map() -> Dict[str, str]:
         return _IDX_SECTOR_CACHE
 
 
-def fetch_fundamentals(ticker: str, last_price: Optional[float] = None) -> dict:
-    """Informasi fundamental emiten IDX (profil + sektor + kapitalisasi pasar).
+def fetch_fundamentals(ticker: str, last_price: Optional[float] = None,
+                        light: bool = False) -> dict:
+    """Fundamental emiten (profil + sektor + rasio + laporan + aksi korporasi).
 
-    Sumber: dataset publik IDX (profil & sektor, bukan laporan keuangan) +
-    rentang 52 minggu dari Yahoo. PE/EPS/ROE tidak tersedia dari API yang
-    terpasang (IDX Edge PRO membatasi 8 endpoint market-data; yfinance quote
-    diblokir) — dicatat jujur di 'note'.
+    Sumber: dataset publik IDX (profil & sektor), Yahoo Finance (rasio keuangan,
+    perbandingan laporan YoY tahunan/kuartalan, riwayat dividen, stock split),
+    dan Financial Modeling Prep sebagai pelengkap untuk bursa di luar IDX.
+    light=True: hanya rasio ringkas (tanpa laporan & aksi korporasi) untuk
+    endpoint massal seperti /api/quotes.
     """
     code = ticker.upper().replace(".JK", "")
     profiles = _load_company_profiles()
@@ -2417,15 +2866,40 @@ def fetch_fundamentals(ticker: str, last_price: Optional[float] = None) -> dict:
     if w52["high"] and last_price:
         pct_from_high = (last_price / float(w52["high"]) - 1) * 100
 
-    # --- Rasio keuangan dari FMP (aktif saat FMP_API_KEY di-set) ---
-    fmp = _fetch_fmp_fundamentals(code) or {}
-    if fmp.get("name"):
+    # --- Fundamental: Yahoo Finance (utama, mencakup IDX) + FMP (pelengkap) ---
+    # Kode tanpa titik diperlakukan sebagai emiten IDX bila ada di dataset IDX
+    # (kode seperti 'BBCA' juga dipakai instrumen lain di bursa asing).
+    sym_yf = ticker.upper()
+    if "." not in sym_yf and (code in profiles or code in sectors):
+        sym_yf = f"{code}.JK"
+    yf_fund = _fetch_yahoo_fundamentals(sym_yf, light=light) or {}
+    if not yf_fund and "." not in sym_yf:
+        yf_fund = _fetch_yahoo_fundamentals(f"{code}.JK", light=light) or {}
+    # Paket FMP yang terpasang tidak mencakup bursa IDX (.JK) sehingga FMP
+    # hanya dicoba untuk simbol di bursa lain (mis. saham AS).
+    fmp = {} if ".JK" in ticker.upper() else (_fetch_fmp_fundamentals(ticker.upper()) or {})
+
+    if yf_fund.get("name"):
+        name = yf_fund["name"]
+    elif fmp.get("name"):
         name = fmp["name"]
-    if fmp.get("marketCap"):
-        market_cap = float(fmp["marketCap"])
-    if fmp.get("sharesOutstanding"):
-        shares = float(fmp["sharesOutstanding"])
-    has_fmp = bool(fmp)
+    for src in (yf_fund, fmp):
+        if src.get("marketCap"):
+            market_cap = float(src["marketCap"])
+            break
+    for src in (yf_fund, fmp):
+        if src.get("sharesOutstanding"):
+            shares = float(src["sharesOutstanding"])
+            break
+
+    def pick(*keys: str):
+        """Nilai pertama yang tersedia: Yahoo diutamakan, lalu FMP."""
+        for src in (yf_fund, fmp):
+            for k in keys:
+                if src.get(k) is not None:
+                    return src[k]
+        return None
+
     out = {
         "code": code,
         "name": name or None,
@@ -2440,27 +2914,54 @@ def fetch_fundamentals(ticker: str, last_price: Optional[float] = None) -> dict:
             "pct_from_high": num(pct_from_high, 1) if pct_from_high is not None else None,
         },
     }
-    if has_fmp:
-        out.update({
-            "pe": num(fmp["pe"], 2) if fmp.get("pe") is not None else None,
-            "forward_pe": num(fmp["forwardPE"], 2) if fmp.get("forwardPE") is not None else None,
-            "price_to_book": num(fmp.get("priceToBook", fmp.get("priceToBookRatio")), 2)
-                             if fmp.get("priceToBook", fmp.get("priceToBookRatio")) is not None else None,
-            "roe_pct": num(fmp.get("returnOnEquity", 0) * 100, 1) if fmp.get("returnOnEquity") is not None else None,
-            "eps": num(fmp["eps"], 2) if fmp.get("eps") is not None else None,
-            "revenue": num(fmp["revenue"], 0) if fmp.get("revenue") is not None else None,
-            "net_income": num(fmp["netIncome"], 0) if fmp.get("netIncome") is not None else None,
-            "dividend_yield_pct": num(fmp.get("dividendYield", 0) * 100, 2)
-                                  if fmp.get("dividendYield") is not None else None,
-            "period_end": fmp.get("period_end"),
-        })
-        out["note"] = ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo; rasio "
-                        "keuangan (PE, EPS, ROE, revenue, PBV, dividen) dari Financial Modeling "
-                        "Prep (FMP), periode laporan terakhir " + str(fmp.get("period_end") or "—") + ".")
+
+    dy_raw = pick("dividendYieldPercentage")
+    if dy_raw is None:
+        dy = pick("dividendYield")
+        dy_raw = float(dy) * 100 if dy is not None else None
+    roe, roa = pick("returnOnEquity"), pick("returnOnAssets")
+    npm = pick("netProfitMargin")
+    out.update({
+        "pe": num(pick("priceToEarningsRatio"), 2),
+        "forward_pe": num(pick("forwardPE"), 2),
+        "price_to_book": num(pick("priceToBookRatio"), 2),
+        "book_value": num(pick("bookValue"), 2),
+        "roe_pct": num(float(roe) * 100, 1) if roe is not None else None,
+        "roa_pct": num(float(roa) * 100, 1) if roa is not None else None,
+        "net_profit_margin_pct": num(float(npm) * 100, 1) if npm is not None else None,
+        "eps": num(pick("eps"), 2),
+        "forward_eps": num(pick("forwardEps"), 2),
+        "revenue": num(pick("revenue"), 0),
+        "net_income": num(pick("netIncome"), 0),
+        "payout_ratio_pct": num(pick("payoutRatioPercentage"), 1),
+        "dividend_yield_pct": num(dy_raw, 2) if dy_raw is not None else None,
+        "dividend_per_share": num(pick("dividendPerShare"), 2),
+        "ex_dividend_date": pick("exDividendDate"),
+        "currency": pick("currency"),
+        "financial_currency": pick("financialCurrency"),
+        "period_end": pick("period_end"),
+        "financials_annual": pick("financials_annual") or [],
+        "financials_quarterly": pick("financials_quarterly") or [],
+        "dividends": pick("dividends") or [],
+        "splits": pick("splits") or [],
+    })
+
+    sources = []
+    if yf_fund:
+        sources.append("Yahoo Finance")
+    if fmp:
+        sources.append("Financial Modeling Prep (FMP)")
+    out["data_source"] = " + ".join(sources) or None
+    if sources:
+        out["note"] = ("Profil, sektor & kapitalisasi pasar dari dataset publik IDX + Yahoo. "
+                        "Rasio keuangan (PE, PBV, EPS, ROE/ROA), perbandingan laporan "
+                        "YoY tahunan & kuartalan, riwayat dividen, serta aksi korporasi "
+                        "(stock split) dari " + " + ".join(sources)
+                        + ", periode laporan terakhir " + str(out.get("period_end") or "—") + ".")
     else:
-        out["note"] = ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo; bukan "
-                       "laporan keuangan. PE/EPS/ROE belum tersedia — pasang FMP_API_KEY "
-                       "(financialmodelingprep.com, gratis) agar rasio keuangan muncul.")
+        out["note"] = ("Profil & kapitalisasi pasar dari dataset publik IDX + Yahoo. "
+                       "Rasio keuangan sedang tidak tersedia (sumber fundamental "
+                       "dibatasi) — coba beberapa saat lagi.")
     return out
 
 
@@ -3258,7 +3759,7 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         },
         "weekly": weekly,
         "market_regime": regime,
-        "fundamentals": fetch_fundamentals(ticker, last_price),
+        "fundamentals": fetch_fundamentals(ticker, last_price, light=light),
     }
 
 
@@ -3314,6 +3815,11 @@ class SyncPayload(BaseModel):
 class AlertsRequest(BaseModel):
     key: Optional[str] = None
     portfolio: Optional[List[dict]] = None
+
+
+class KoreksiWatchRequest(BaseModel):
+    ticker: str
+    action: str = "add"  # add | remove
 
 
 @app.get("/api/sync")
@@ -3398,6 +3904,140 @@ def portfolio_alerts(payload: AlertsRequest):
         return {"checked": 0, "alerts": [], "note": "Tidak ada posisi untuk diperiksa."}
     alerts = _portfolio_alerts(items)
     return {"checked": len(items), "alerts": alerts, "disclaimer": DISCLAIMER}
+
+
+KOREKSI_WATCH_KEY = "ci:koreksi_watch"
+
+
+def _koreksi_watch_load() -> List[str]:
+    """Daftar ticker yang dipantau utk konfirmasi reversal (kandidat beli koreksi)."""
+    if not SYNC_ENABLED:
+        return []
+    parsed = _unwrap_json(_upstash_get(KOREKSI_WATCH_KEY), [])
+    out: List[str] = []
+    for t in (parsed if isinstance(parsed, list) else []):
+        if isinstance(t, str) and t.strip():
+            out.append(t.strip().upper())
+    return out[:100]
+
+
+def _koreksi_watch_save(lst: List[str]) -> bool:
+    if not SYNC_ENABLED:
+        return False
+    return _upstash_set(KOREKSI_WATCH_KEY, json.dumps(lst[:100]))
+
+
+@app.post("/api/koreksi/watch")
+def koreksi_watch(payload: KoreksiWatchRequest):
+    """Tambah/hapus ticker ke pantauan konfirmasi reversal (kandidat beli koreksi)."""
+    if not SYNC_ENABLED:
+        raise HTTPException(502, "Penyimpanan cloud belum dikonfigurasi (UPSTASH_REDIS_REST_URL/TOKEN).")
+    tk = payload.ticker.strip().upper()
+    if not tk:
+        raise HTTPException(422, "Ticker wajib diisi.")
+    lst = _koreksi_watch_load()
+    action = (payload.action or "add").lower()
+    if action == "remove":
+        lst = [t for t in lst if t != tk]
+    elif tk not in lst:
+        lst.append(tk)
+    ok = _koreksi_watch_save(lst)
+    if not ok:
+        raise HTTPException(502, "Gagal menyimpan pantauan. Coba lagi.")
+    return {"ok": True, "action": action, "ticker": tk, "watched": lst}
+
+
+@app.get("/api/koreksi/watch")
+def koreksi_watch_list(period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$")):
+    """Status live saham dalam pantauan koreksi: sinyal, skor kualitas, support terdekat."""
+    lst = _koreksi_watch_load()
+    if not lst:
+        return {"watched": [], "results": [], "sync_enabled": SYNC_ENABLED}
+
+    def one(tk: str) -> dict:
+        try:
+            d = _analyze_core(tk, period, 5_000_000, light=True)
+            price = float(d["market"]["last_price"])
+            sr = (d.get("support_resistance") or {}).get("zones") or []
+            sup = [z["price"] for z in sr if z["type"] == "support" and z["price"] < price]
+            return {
+                "ticker": tk, "ok": True,
+                "price": num(price, 2),
+                "signal": (d.get("signal") or {}).get("action"),
+                "score": (d.get("buy_score") or {}).get("score"),
+                "nearest_support": num(max(sup), 2) if sup else None,
+                "support_distance_pct": num((price / max(sup) - 1) * 100, 1) if sup else None,
+            }
+        except Exception:
+            return {"ticker": tk, "ok": False}
+
+    with ThreadPoolExecutor(max_workers=min(6, len(lst))) as ex:
+        results = list(ex.map(one, lst))
+    return {"watched": lst, "results": results, "sync_enabled": SYNC_ENABLED}
+
+
+@app.get("/api/cron/koreksi")
+def cron_koreksi(request: Request, secret: str = Query("")):
+    """Cron: cek saham dalam pantauan kandidat beli koreksi; kirim Telegram saat
+    (1) konfirmasi reversal (sinyal berubah SELL -> BUY/STRONG BUY) atau
+    (2) harga memasuki zona entry support (masih fase koreksi).
+    Dedupe sekali per tipe per hari; sinyal terakhir disimpan utk deteksi perubahan."""
+    auth = request.headers.get("authorization", "")
+    bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
+    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
+        raise HTTPException(403, "Forbidden")
+    if not SYNC_ENABLED:
+        return {"skipped": True, "reason": "Penyimpanan cloud belum dikonfigurasi."}
+    lst = _koreksi_watch_load()
+    if not lst:
+        return {"checked": 0, "telegram_sent": 0, "watched": 0,
+                "note": "Pantauan koreksi kosong — tambahkan kandidat lewat dashboard."}
+
+    sent = 0
+    checked = 0
+    today = time.strftime("%Y-%m-%d")
+    for tk in lst[:50]:
+        try:
+            d = _analyze_core(tk, "3mo", 5_000_000, light=True)
+        except Exception:
+            continue
+        checked += 1
+        sig = (d.get("signal") or {}).get("action", "")
+        score = (d.get("buy_score") or {}).get("score") or 0
+        price = float(d["market"]["last_price"])
+        sr = (d.get("support_resistance") or {}).get("zones") or []
+        sup = [z["price"] for z in sr if z["type"] == "support" and z["price"] < price]
+        nearest_sup = max(sup) if sup else None
+
+        state_key = f"ci:koreksi_state:{tk}"
+        prev = str(_upstash_get(state_key) or "")
+
+        # (1) Konfirmasi reversal: sebelumnya SELL/STRONG SELL, sekarang BUY/STRONG BUY.
+        if prev in ("SELL", "STRONG SELL") and sig in ("BUY", "STRONG BUY"):
+            dedupe = f"ci:notif:koreksi:{tk}:REVERSAL:{today}"
+            if not _upstash_get(dedupe):
+                msg = (f"🔄 KONFIRMASI REVERSAL: {strip_suffix(tk)}\n"
+                       f"Sinyal berubah {prev} → {sig} · kualitas {num(score, 0)}\n"
+                       f"Harga {num(price, 2)} — verifikasi volume & breakout AVG bandar sebelum entry.")
+                if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                    _upstash_set(dedupe, "1", ttl=86400)
+                    sent += 1
+        # (2) Harga memasuki zona entry (support), masih fase koreksi.
+        elif nearest_sup and price <= nearest_sup * 1.02 and sig in ("SELL", "STRONG SELL", "HOLD"):
+            dedupe = f"ci:notif:koreksi:{tk}:SUPPORT:{today}"
+            if not _upstash_get(dedupe):
+                msg = (f"🎯 {strip_suffix(tk)} mendekati zona entry: support {num(nearest_sup, 2)} "
+                       f"(harga {num(price, 2)})\nKualitas {num(score, 0)} · sinyal {sig} — tunggu konfirmasi reversal.")
+                if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                    _upstash_set(dedupe, "1", ttl=86400)
+                    sent += 1
+
+        if sig != prev:
+            _upstash_set(state_key, sig, ttl=86400 * 3)
+
+    return {"checked": checked, "telegram_sent": sent, "watched": len(lst),
+            "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+            "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
 
 @app.get("/api/cron/alerts")

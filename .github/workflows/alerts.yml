@@ -29,3 +29,19 @@ jobs:
             exit 1
           fi
           echo "Selesai."
+
+      - name: Panggil endpoint /api/cron/koreksi
+        run: |
+          set -euo pipefail
+          echo "Memeriksa pantauan beli koreksi pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 120 -o resp_koreksi.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/koreksi")
+          echo "HTTP $code"
+          cat resp_koreksi.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint koreksi membalas HTTP $code"
+            exit 1
+          fi
+          echo "Selesai."
