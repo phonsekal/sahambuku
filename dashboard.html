@@ -4,154 +4,162 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>CoachInvestasi Dashboard — Analisis Saham</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: {
+      extend: {
+        fontFamily: { sans: ['ui-sans-serif', 'system-ui', '-apple-system', 'Segoe UI', 'Roboto', 'sans-serif'] },
+      },
+    },
+  };
+</script>
 <style>
-  :root {
-    --bg: #0b1220; --panel: #111a2c; --panel2: #0e1626; --border: #1e2a40;
-    --text: #e2e8f0; --muted: #8fa3bf; --green: #22c55e; --red: #ef4444;
-    --yellow: #f59e0b; --blue: #38bdf8; --purple: #a78bfa;
-  }
-  * { box-sizing: border-box; margin: 0; padding: 0; }
-  body { background: var(--bg); color: var(--text); font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; min-height: 100vh; }
-  .wrap { max-width: 1150px; margin: 0 auto; padding: 20px 16px 60px; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 20px; }
-  header h1 { font-size: 20px; font-weight: 800; letter-spacing: .3px; }
-  header h1 span { color: var(--blue); }
-  .badge { font-size: 11px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted); }
-  .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-  .tab { background: var(--panel); border: 1px solid var(--border); color: var(--muted); padding: 8px 18px; border-radius: 10px; cursor: pointer; font-size: 13px; font-weight: 600; }
-  .tab.active { color: var(--blue); border-color: var(--blue); }
-  .controls { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; margin-bottom: 16px; }
-  input, select, button {
-    background: var(--panel); border: 1px solid var(--border); color: var(--text);
-    padding: 9px 12px; border-radius: 10px; font-size: 14px; outline: none;
-  }
-  input:focus, select:focus { border-color: var(--blue); }
-  button.primary { background: var(--blue); color: #04121f; font-weight: 700; cursor: pointer; border: none; }
-  button.primary:hover { filter: brightness(1.1); }
-  button.primary:disabled { opacity: .5; cursor: wait; }
-  label.fld { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
-  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 14px; padding: 16px; margin-bottom: 14px; }
-  .card h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin-bottom: 12px; }
-  .grid { display: grid; gap: 12px; }
-  .g2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-  .g4 { grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); }
-  .kv { background: var(--panel2); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; }
-  .kv .k { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
-  .kv .v { font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
-  .bigprice { font-size: 30px; font-weight: 800; }
-  .up { color: var(--green); } .down { color: var(--red); } .flat { color: var(--muted); }
-  .signal { display: inline-block; font-size: 13px; font-weight: 800; padding: 6px 16px; border-radius: 10px; letter-spacing: .5px; }
-  .sig-BUY, .sig-STRONG_BUY { background: rgba(34,197,94,.15); color: var(--green); border: 1px solid var(--green); }
-  .sig-SELL, .sig-STRONG_SELL { background: rgba(239,68,68,.15); color: var(--red); border: 1px solid var(--red); }
-  .sig-HOLD { background: rgba(245,158,11,.12); color: var(--yellow); border: 1px solid var(--yellow); }
-  .src { font-size: 11px; color: var(--purple); }
-  table { width: 100%; border-collapse: collapse; font-size: 13px; }
-  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
-  th { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; }
-  .chip { display: inline-block; font-size: 11px; padding: 3px 9px; border-radius: 999px; border: 1px solid var(--border); margin: 2px 4px 2px 0; background: var(--panel2); }
-  .chip.bull { color: var(--green); border-color: var(--green); }
-  .chip.bear { color: var(--red); border-color: var(--red); }
-  ul.reasons { list-style: none; }
-  ul.reasons li { padding: 5px 0 5px 18px; position: relative; font-size: 13px; color: var(--text); }
-  ul.reasons li::before { content: "▸"; position: absolute; left: 0; color: var(--blue); }
-  .note { font-size: 12px; color: var(--muted); line-height: 1.5; }
-  .disclaimer { font-size: 11px; color: var(--muted); text-align: center; margin-top: 26px; line-height: 1.6; }
-  .error { background: rgba(239,68,68,.1); border: 1px solid var(--red); color: var(--red); padding: 12px 16px; border-radius: 10px; font-size: 13px; }
-  .spinner { display: inline-block; width: 16px; height: 16px; border: 2px solid var(--border); border-top-color: var(--blue); border-radius: 50%; animation: spin .7s linear infinite; vertical-align: -3px; margin-right: 8px; }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  .muted { color: var(--muted); }
-  .rowflex { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-  .hide { display: none; }
-  @media (max-width: 640px) { .bigprice { font-size: 24px; } .controls > * { flex: 1 1 100%; } }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #0f172a; }
+  ::-webkit-scrollbar-thumb { background: #334155; border-radius: 8px; }
+  .tabular { font-variant-numeric: tabular-nums; }
 </style>
 </head>
-<body>
-<div class="wrap">
-  <header>
-    <h1>Coach<span>Investasi</span> Dashboard</h1>
-    <span class="badge" id="apiStatus">cek API…</span>
+<body class="bg-slate-950 text-slate-200 min-h-screen antialiased">
+
+<div class="max-w-6xl mx-auto px-4 py-6 pb-16">
+
+  <!-- ======= HEADER ======= -->
+  <header class="flex items-center justify-between flex-wrap gap-3 mb-6">
+    <div class="flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center font-black text-slate-950 text-lg shadow-lg shadow-sky-500/20">CI</div>
+      <div>
+        <h1 class="text-xl font-extrabold tracking-tight">Coach<span class="text-sky-400">Investasi</span> <span class="text-slate-400 font-semibold text-base">Dashboard</span></h1>
+        <p class="text-xs text-slate-500">Technical Analysis + Bandarmology — 2025/2026</p>
+      </div>
+    </div>
+    <span id="apiStatus" class="text-xs px-3 py-1.5 rounded-full border border-slate-700 bg-slate-900 text-slate-400">cek API…</span>
   </header>
 
-  <div class="tabs">
-    <button class="tab active" data-tab="analyze">📊 Analisis Saham</button>
-    <button class="tab" data-tab="screener">🔍 Screener</button>
+  <!-- ======= TABS ======= -->
+  <div class="flex gap-2 mb-5">
+    <button data-tab="analyze" class="tab tab-active px-4 py-2 rounded-xl text-sm font-semibold transition">
+      📊 Analisis Saham
+    </button>
+    <button data-tab="screener" class="tab px-4 py-2 rounded-xl text-sm font-semibold transition">
+      🔍 Screener
+    </button>
   </div>
 
-  <!-- ============ TAB ANALISIS ============ -->
+  <!-- ======= TAB ANALISIS ======= -->
   <section id="tab-analyze">
-    <div class="controls">
-      <input id="ticker" placeholder="Kode saham, mis. BBCA.JK / TLKM / AAPL" value="BBCA.JK" style="width:220px">
-      <select id="period">
+    <div class="flex flex-wrap gap-3 items-center mb-5">
+      <input id="ticker" value="BBCA.JK" placeholder="Kode saham, mis. BBCA.JK / TLKM / AAPL"
+        class="w-56 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-500">
+      <select id="period" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="3mo">3 Bulan</option>
         <option value="6mo">6 Bulan</option>
         <option value="1y" selected>1 Tahun</option>
         <option value="2y">2 Tahun</option>
         <option value="5y">5 Tahun</option>
       </select>
-      <button class="primary" id="btnAnalyze">Analisis</button>
-      <span class="note" id="analyzeHint"></span>
+      <button id="btnAnalyze" class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl px-5 py-2.5 text-sm transition disabled:opacity-50 disabled:cursor-wait">
+        Analisis
+      </button>
+      <span id="analyzeHint" class="text-xs text-slate-500"></span>
     </div>
     <div id="analyzeResult"></div>
   </section>
 
-  <!-- ============ TAB SCREENER ============ -->
-  <section id="tab-screener" class="hide">
-    <div class="controls">
-      <select id="scUniverse">
+  <!-- ======= TAB SCREENER ======= -->
+  <section id="tab-screener" class="hidden">
+    <div class="flex flex-wrap gap-3 items-center mb-4">
+      <select id="scUniverse" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="liquid" selected>Liquid (LQ45)</option>
         <option value="all">Semua (951 saham)</option>
       </select>
-      <select id="scCriteria">
+      <select id="scCriteria" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="all" selected>Semua kriteria</option>
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
       </select>
-      <select id="scLimit">
+      <select id="scLimit" class="bg-slate-900 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="5">5 saham</option>
         <option value="10" selected>10 saham</option>
         <option value="20">20 saham</option>
         <option value="50">50 saham</option>
       </select>
-      <label class="fld"><input type="checkbox" id="scBandar" checked> + Bandarmology</label>
-      <button class="primary" id="btnScan">Scan</button>
+      <label class="flex items-center gap-2 text-xs text-slate-400">
+        <input type="checkbox" id="scBandar" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> + Bandarmology
+      </label>
+      <button id="btnScan" class="bg-sky-500 hover:bg-sky-400 text-slate-950 font-bold rounded-xl px-5 py-2.5 text-sm transition disabled:opacity-50 disabled:cursor-wait">
+        Scan
+      </button>
     </div>
-    <div id="scanInfo" class="note" style="margin-bottom:10px"></div>
+    <div id="scanInfo" class="text-xs text-slate-400 mb-3"></div>
     <div id="screenerResult"></div>
   </section>
 
-  <div class="disclaimer">
-    Hasil ini murni edukasi berdasarkan e-book "Technical Analysis & Bandarmology Coach Investasi 2025-2026".
+  <!-- ======= FOOTER ======= -->
+  <footer class="mt-10 text-center text-[11px] text-slate-600 leading-relaxed">
+    Hasil ini murni edukasi berdasarkan e-book "Technical Analysis &amp; Bandarmology Coach Investasi 2025-2026".<br>
     BUKAN saran beli/jual. Selalu lakukan riset mandiri (DYOR).
-  </div>
+  </footer>
 </div>
 
 <script>
 const $ = s => document.querySelector(s);
-const fmt = (v, d=2) => v === null || v === undefined || isNaN(v) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d, minimumFractionDigits: d});
-const fmtIdr = v => v === null || v === undefined || isNaN(v) ? "—" : "Rp" + Number(v).toLocaleString("id-ID", {maximumFractionDigits: 0});
-const pct = (v, d=2) => v === null || v === undefined || isNaN(v) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d}) + "%";
-const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
-const clsPct = v => v > 0 ? "up" : v < 0 ? "down" : "flat";
-const arrow = v => v > 0 ? "▲" : v < 0 ? "▼" : "•";
 
-function sigBadge(a) { return `<span class="signal sig-${esc(a)}">${esc(a)}</span>`; }
-function srcTag(s) { return s ? `<span class="src">· ${esc(s)}</span>` : ""; }
+/* ---------- helper ---------- */
+const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+const fmt = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d, minimumFractionDigits: d});
+const fmtIdr = v => (v === null || v === undefined || isNaN(v)) ? "—" : "Rp" + Number(v).toLocaleString("id-ID", {maximumFractionDigits: 0});
+const pct = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d}) + "%";
+const arrow = v => v > 0 ? "▲" : v < 0 ? "▼" : "•";
+const cls = v => v > 0 ? "text-emerald-400" : v < 0 ? "text-rose-400" : "text-slate-400";
+
+/** fetch JSON dengan penanganan error yang benar (respons non-JSON -> pesan jelas) */
+async function getJSON(url) {
+  const r = await fetch(url);
+  const ct = r.headers.get("content-type") || "";
+  if (!ct.includes("application/json")) {
+    const text = await r.text().catch(() => "");
+    throw new Error(`Server merespons bukan JSON (HTTP ${r.status}). ${text.slice(0, 180)}`);
+  }
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+  return d;
+}
+
+function sigBadge(a) {
+  const map = {
+    "STRONG BUY": "bg-emerald-500/15 text-emerald-400 border-emerald-500/40",
+    "BUY": "bg-emerald-500/15 text-emerald-400 border-emerald-500/40",
+    "HOLD": "bg-amber-500/15 text-amber-400 border-amber-500/40",
+    "SELL": "bg-rose-500/15 text-rose-400 border-rose-500/40",
+    "STRONG SELL": "bg-rose-500/15 text-rose-400 border-rose-500/40",
+  };
+  return `<span class="inline-block px-3 py-1.5 rounded-lg text-sm font-extrabold border ${map[a] || "bg-slate-800 text-slate-300 border-slate-600"}">${esc(a)}</span>`;
+}
+const card = (title, inner) =>
+  `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+     <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">${title}</h2>${inner}
+   </div>`;
+const kv = (k, v, extra = "") =>
+  `<div class="bg-slate-800/50 border border-slate-700/60 rounded-xl px-3.5 py-2.5">
+     <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">${esc(k)}</div>
+     <div class="text-lg font-bold tabular ${extra}">${v}</div>
+   </div>`;
+const spinner = txt => `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-sm text-slate-400"><span class="inline-block w-4 h-4 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>${txt}</div>`;
+const errorBox = msg => `<div class="bg-rose-500/10 border border-rose-500/50 rounded-2xl p-5 text-sm text-rose-300">⚠ ${esc(msg)}</div>`;
 
 /* ---------- ANALISIS ---------- */
 async function analyze() {
   const btn = $("#btnAnalyze"), ticker = $("#ticker").value.trim().toUpperCase(), period = $("#period").value;
   if (!ticker) return;
   btn.disabled = true; btn.textContent = "Memuat…";
-  $("#analyzeResult").innerHTML = `<div class="card"><span class="spinner"></span>Menganalisis <b>${esc(ticker)}</b>… (data diambil dari yfinance / IDX Edge / dataset)</div>`;
+  $("#analyzeResult").innerHTML = spinner(`Menganalisis <b class="text-slate-200">${esc(ticker)}</b>… (yfinance / IDX Edge / dataset)`);
   try {
-    const r = await fetch(`/api/analyze/${encodeURIComponent(ticker)}?period=${period}`);
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || "Gagal mengambil data (" + r.status + ")");
-    $("#analyzeHint").textContent = "";
-    renderAnalyze(d);
+    renderAnalyze(await getJSON(`/api/analyze/${encodeURIComponent(ticker)}?period=${period}`));
   } catch (e) {
-    $("#analyzeResult").innerHTML = `<div class="error">⚠ ${esc(e.message)}</div>`;
+    $("#analyzeResult").innerHTML = errorBox(e.message);
   } finally {
     btn.disabled = false; btn.textContent = "Analisis";
   }
@@ -159,134 +167,142 @@ async function analyze() {
 
 function renderAnalyze(d) {
   const m = d.market, s = d.signal, b = d.bandarmology || {};
-  const up = m.change_pct > 0;
-  let html = "";
+  let h = "";
 
-  // harga + sinyal
-  html += `<div class="card">
-    <div class="rowflex" style="justify-content:space-between">
-      <div>
-        <div style="font-size:14px;color:var(--muted)">${esc(m.date)} ${srcTag(m.source)}</div>
-        <div class="bigprice ${clsPct(m.change_pct)}">${fmt(m.last_price)} <span style="font-size:15px">${arrow(m.change_pct)} ${pct(m.change_pct)}</span></div>
-      </div>
-      <div style="text-align:right">${sigBadge(s.action)}
-        <div class="muted" style="font-size:12px;margin-top:6px">skor ${fmt(s.score)} · kekuatan ${esc(s.strength)}</div>
-      </div>
+  // header harga + sinyal
+  h += `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 mb-4 flex flex-wrap items-center justify-between gap-4">
+    <div>
+      <div class="text-xs text-slate-500 mb-1">${esc(m.date)} ${m.source ? `<span class="text-violet-400">· ${esc(m.source)}</span>` : ""}</div>
+      <div class="text-4xl font-extrabold tabular ${cls(m.change_pct)}">${fmt(m.last_price)}
+        <span class="text-base font-semibold">${arrow(m.change_pct)} ${pct(m.change_pct)}</span></div>
+      ${m.note ? `<div class="text-xs text-amber-400/80 mt-2">⚠ ${esc(m.note)}</div>` : ""}
     </div>
-    ${m.note ? `<div class="note" style="margin-top:8px">⚠ ${esc(m.note)}</div>` : ""}
+    <div class="text-right">
+      ${sigBadge(s.action)}
+      <div class="text-xs text-slate-500 mt-2">skor <b class="text-slate-300">${fmt(s.score)}</b> · kekuatan ${esc(s.strength)}</div>
+    </div>
   </div>`;
 
   // alasan
-  html += `<div class="card"><h2>Alasan Sinyal</h2><ul class="reasons">${s.reasons.map(x => `<li>${esc(x)}</li>`).join("")}</ul></div>`;
+  h += card("Alasan Sinyal",
+    `<ul class="space-y-1.5">${s.reasons.map(x => `<li class="flex gap-2 text-sm"><span class="text-sky-400 shrink-0">▸</span><span>${esc(x)}</span></li>`).join("") || `<li class="text-slate-500 text-sm">—</li>`}</ul>`);
 
   // indikator
   const I = d.indicators;
-  html += `<div class="card"><h2>Indikator</h2><div class="grid g4">
-    ${kv("RSI (14)", fmt(I.rsi14), rsiCls(I.rsi14))}
-    ${kv("SMA 20", fmt(I.sma20))} ${kv("SMA 50", fmt(I.sma50))} ${kv("SMA 200", fmt(I.sma200))}
-    ${kv("EMA 20", fmt(I.ema20))} ${kv("ATR (14)", fmt(I.atr14))}
-    ${kv("MACD", fmt(I.macd.line, 3))} ${kv("Sinyal MACD", fmt(I.macd.signal, 3))}
-    ${kv("Histogram", fmt(I.macd.histogram, 3))}
-    ${kv("Volume vs MA20", fmt(I.volume.ratio_to_ma20) + "×", I.volume.spike ? "up" : "")}
-  </div></div>`;
+  h += card("Indikator",
+    `<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+      ${kv("RSI (14)", fmt(I.rsi14), I.rsi14 >= 70 ? "text-rose-400" : I.rsi14 <= 30 ? "text-emerald-400" : "")}
+      ${kv("SMA 20", fmt(I.sma20))} ${kv("SMA 50", fmt(I.sma50))} ${kv("SMA 200", fmt(I.sma200))}
+      ${kv("EMA 20", fmt(I.ema20))} ${kv("ATR (14)", fmt(I.atr14))}
+      ${kv("MACD", fmt(I.macd.line, 3))} ${kv("Sinyal MACD", fmt(I.macd.signal, 3))}
+      ${kv("Histogram", fmt(I.macd.histogram, 3), I.macd.histogram >= 0 ? "text-emerald-400" : "text-rose-400")}
+      ${kv("Volume vs MA20", fmt(I.volume.ratio_to_ma20) + "×", I.volume.spike ? "text-emerald-400" : "")}
+    </div>`);
 
-  // tren + pola candlestick + pola khusus
-  html += `<div class="grid g2">
-    <div class="card"><h2>Tren (Dow Theory)</h2>
-      <div class="kv" style="margin-bottom:8px"><div class="k">Arah</div><div class="v">${esc(d.trend.direction)}</div></div>
-      <div class="kv"><div class="k">Pola</div><div class="v" style="font-size:13px">${esc(d.trend.dow_pattern)}</div></div>
-      <div class="note" style="margin-top:8px">${esc(d.trend.ma_alignment)}</div>
+  // tren + candlestick
+  h += `<div class="grid md:grid-cols-2 gap-4 mb-4">`;
+  h += card("Tren (Dow Theory)", `
+    <div class="flex items-center justify-between mb-3">
+      <span class="text-sm capitalize font-semibold ${d.trend.direction === "uptrend" ? "text-emerald-400" : d.trend.direction === "downtrend" ? "text-rose-400" : "text-slate-400"}">${esc(d.trend.direction)}</span>
+      <span class="text-xs text-slate-500">${esc(d.trend.ma_alignment)}</span>
     </div>
-    <div class="card"><h2>Candlestick &amp; Divergensi</h2>
-      <div>${(d.candlestick.patterns.length ? d.candlestick.patterns.map(p => `<span class="chip ${p.type === "bullish" ? "bull" : p.type === "bearish" ? "bear" : ""}">${esc(p.pattern)}</span>`).join("") : `<span class="muted">Tidak ada pola terdeteksi</span>`)}</div>
-      ${d.rsi_divergence.bullish ? `<div class="chip bull" style="margin-top:8px">Bullish Divergence RSI</div>` : ""}
-      ${d.rsi_divergence.bearish ? `<div class="chip bear" style="margin-top:8px">Bearish Divergence RSI</div>` : ""}
-      <div class="note" style="margin-top:8px">Candle terakhir: ${esc(d.candlestick.last_candle.color)} · ${pct(d.candlestick.last_candle.change_pct)}</div>
+    <div class="text-xs text-slate-500">Pola: <b class="text-slate-300">${esc(d.trend.dow_pattern)}</b></div>
+    <div class="text-xs text-slate-500 mt-1">Swing High: ${d.trend.last_swing_highs.map(x => `<b class="text-slate-300">${fmt(x)}</b>`).join(" → ")}</div>
+    <div class="text-xs text-slate-500 mt-1">Swing Low: ${d.trend.last_swing_lows.map(x => `<b class="text-slate-300">${fmt(x)}</b>`).join(" → ")}</div>`);
+  h += card("Candlestick & Divergensi", `
+    <div class="flex flex-wrap gap-1.5 mb-3">
+      ${d.candlestick.patterns.map(p =>
+        `<span class="text-[11px] px-2.5 py-1 rounded-full border ${
+          p.type === "bullish" ? "text-emerald-400 border-emerald-500/40 bg-emerald-500/10" :
+          p.type === "bearish" ? "text-rose-400 border-rose-500/40 bg-rose-500/10" :
+          "text-slate-400 border-slate-600 bg-slate-800/50"}">${esc(p.pattern)}</span>`).join("") || `<span class="text-slate-500 text-sm">Tidak ada pola</span>`}
     </div>
-  </div>`;
+    ${d.rsi_divergence.bullish ? `<div class="text-xs text-emerald-400 mb-1">▲ Bullish Divergence RSI — ${esc(d.rsi_divergence.description)}</div>` : ""}
+    ${d.rsi_divergence.bearish ? `<div class="text-xs text-rose-400 mb-1">▼ Bearish Divergence RSI — ${esc(d.rsi_divergence.description)}</div>` : ""}
+    <div class="text-xs text-slate-500 mt-2">Candle terakhir: <b class="${d.candlestick.last_candle.color.includes("green") ? "text-emerald-400" : "text-rose-400"}">${esc(d.candlestick.last_candle.color)}</b> · ${pct(d.candlestick.last_candle.change_pct)}</div>`);
+  h += `</div>`;
 
   // S&R + Fibonacci
-  html += `<div class="grid g2">
-    <div class="card"><h2>Support &amp; Resistance</h2>
-      <table><tr><th>Level</th><th>Tipe</th><th>Sentuhan</th><th>Kekuatan</th></tr>
-      ${d.support_resistance.zones.map(z => `<tr><td>${fmt(z.price)}</td><td>${z.type === "support" ? `<span class="up">Support</span>` : `<span class="down">Resistance</span>`}</td><td>${z.touches}</td><td>${fmt(z.strength, 1)}</td></tr>`).join("") || `<tr><td colspan="4" class="muted">Belum ada zona</td></tr>`}
-      </table>
-      <div class="note" style="margin-top:8px">${esc(d.support_resistance.note)}</div>
-    </div>
-    <div class="card"><h2>Fibonacci (${esc((d.fibonacci.direction || "—").toUpperCase())})</h2>
-      <table><tr><th>Rasio</th><th>Harga</th></tr>
-      ${(d.fibonacci.levels || []).map(lv => `<tr><td>${fmt(lv.ratio * 100, 1)}%</td><td>${fmt(lv.price)}</td></tr>`).join("")}
-      </table>
-      ${d.fibonacci.nearest_level ? `<div class="note" style="margin-top:8px">Terdekat: ${fmt(d.fibonacci.nearest_level.ratio * 100, 1)}% @ ${fmt(d.fibonacci.nearest_level.price)} (${pct(d.fibonacci.nearest_level.distance_pct)})</div>` : ""}
-    </div>
-  </div>`;
+  h += `<div class="grid md:grid-cols-2 gap-4 mb-4">`;
+  h += card("Support & Resistance",
+    `<div class="overflow-x-auto"><table class="w-full text-sm">
+      <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-2">Level</th><th class="text-left">Tipe</th><th class="text-right">Sentuhan</th><th class="text-right">Kekuatan</th></tr></thead>
+      <tbody>${d.support_resistance.zones.map(z => `<tr class="border-b border-slate-800/60"><td class="py-2 font-semibold tabular">${fmt(z.price)}</td><td>${z.type === "support" ? `<span class="text-emerald-400">Support</span>` : `<span class="text-rose-400">Resistance</span>`}</td><td class="text-right tabular">${z.touches}</td><td class="text-right tabular">${fmt(z.strength, 1)}</td></tr>`).join("") || `<tr><td colspan="4" class="py-2 text-slate-500">Belum ada zona</td></tr>`}</tbody>
+    </table></div>
+    <div class="text-[11px] text-slate-500 mt-2">${esc(d.support_resistance.note)}</div>`);
+  const fib = d.fibonacci || {};
+  h += card(`Fibonacci ${fib.direction ? `(${esc(fib.direction.toUpperCase())})` : ""}`,
+    `<div class="overflow-x-auto"><table class="w-full text-sm">
+      <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-2">Rasio</th><th class="text-right">Harga</th></tr></thead>
+      <tbody>${(fib.levels || []).map(lv => `<tr class="border-b border-slate-800/60"><td class="py-2">${fmt(lv.ratio * 100, 1)}%</td><td class="text-right tabular font-semibold">${fmt(lv.price)}</td></tr>`).join("")}</tbody>
+    </table></div>
+    ${fib.nearest_level ? `<div class="text-[11px] text-slate-500 mt-2">Terdekat: <b class="text-sky-400">${fmt(fib.nearest_level.ratio * 100, 1)}% @ ${fmt(fib.nearest_level.price)}</b> (${pct(fib.nearest_level.distance_pct)})</div>` : ""}`);
+  h += `</div>`;
 
   // pola khusus + risk management
   const lp = d.special_patterns.launch_pad, dbr = d.special_patterns.drop_base_rally;
-  html += `<div class="grid g2">
-    <div class="card"><h2>Pola Khusus Coach</h2>
-      <div class="kv" style="margin-bottom:8px"><div class="k">The Launch Pad</div><div class="v" style="font-size:13px;color:${lp.detected ? "var(--green)" : "var(--muted)"}">${lp.phase === "breakout" ? "🔥 Breakout terkonfirmasi" : lp.phase === "forming" ? "⏳ Base terbentuk" : "—"}</div></div>
-      <div class="kv"><div class="k">Drop Base Rally</div><div class="v" style="font-size:13px;color:${dbr.detected ? "var(--green)" : "var(--muted)"}">${dbr.detected ? "✅ Terdeteksi" : "—"}</div></div>
+  h += `<div class="grid md:grid-cols-2 gap-4 mb-4">`;
+  h += card("Pola Khusus Coach", `
+    <div class="flex items-center justify-between py-2 border-b border-slate-800/60">
+      <span class="text-sm">The Launch Pad</span>
+      <span class="text-sm font-semibold ${lp.detected ? "text-emerald-400" : "text-slate-500"}">${lp.phase === "breakout" ? "🔥 Breakout terkonfirmasi" : lp.phase === "forming" ? "⏳ Base terbentuk" : "—"}</span>
     </div>
-    <div class="card"><h2>Risk Management (Bab 8)</h2>
-      <div class="grid g4">
-        ${kv("Entry", fmt(d.risk_management.entry))}
-        ${kv("Stop Loss", fmt(d.risk_management.stop_loss), "down")}
-        ${kv("Take Profit", fmt(d.risk_management.take_profit), "up")}
-        ${kv("RRR", fmt(d.risk_management.risk_reward_ratio), (d.risk_management.risk_reward_ratio||0) >= 2 ? "up" : (d.risk_management.risk_reward_ratio||0) < 1 ? "down" : "")}
-      </div>
-      <div class="note" style="margin-top:8px">Maks posisi: <b>${fmtIdr(d.risk_management.max_position_idr)}</b> (contoh risk Rp5.000.000)</div>
+    <div class="flex items-center justify-between py-2">
+      <span class="text-sm">Drop Base Rally</span>
+      <span class="text-sm font-semibold ${dbr.detected ? "text-emerald-400" : "text-slate-500"}">${dbr.detected ? "✅ Terdeteksi" : "—"}</span>
+    </div>`);
+  h += card("Risk Management (Bab 8)",
+    `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
+      ${kv("Entry", fmt(d.risk_management.entry))}
+      ${kv("Stop Loss", fmt(d.risk_management.stop_loss), "text-rose-400")}
+      ${kv("Take Profit", fmt(d.risk_management.take_profit), "text-emerald-400")}
+      ${kv("RRR", fmt(d.risk_management.risk_reward_ratio), (d.risk_management.risk_reward_ratio || 0) >= 2 ? "text-emerald-400" : (d.risk_management.risk_reward_ratio || 0) < 1 ? "text-rose-400" : "")}
     </div>
-  </div>`;
+    <div class="text-xs text-slate-500">Maks posisi (contoh risk Rp5.000.000): <b class="text-slate-300">${fmtIdr(d.risk_management.max_position_idr)}</b></div>`);
+  h += `</div>`;
 
   // bandarmology
   if (b.status) {
-    html += `<div class="card"><h2>Bandarmology (IDX Edge PRO)</h2>
-      <div class="grid g4" style="margin-bottom:12px">
-        ${kv("Status", esc(b.status), b.status.includes("ACC") ? "up" : b.status.includes("DIS") ? "down" : "")}
+    h += `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-5 mb-4">
+      <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-3">Bandarmology (IDX Edge PRO)</h2>
+      <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-4">
+        ${kv("Status", esc(b.status), b.status.includes("ACC") ? "text-emerald-400" : b.status.includes("DIS") ? "text-rose-400" : "")}
         ${kv("AVG Bandar", fmt(b.bandar_avg_price))}
-        ${kv("Jarak AVG", pct(b.bandar_avg_distance_pct), Math.abs(b.bandar_avg_distance_pct||0) < 3 ? "up" : "down")}
-        ${kv("Share Top Buyer", pct(b.top_buyer_value_share_pct), b.value_share_significant ? "up" : "")}
+        ${kv("Jarak AVG", pct(b.bandar_avg_distance_pct), Math.abs(b.bandar_avg_distance_pct || 0) < 3 ? "text-emerald-400" : "text-amber-400")}
+        ${kv("Share Top Buyer", pct(b.top_buyer_value_share_pct), b.value_share_significant ? "text-emerald-400" : "")}
       </div>
-      ${b.net_foreign ? `<div class="note" style="margin-bottom:10px">Net Foreign: hari ini <b class="${b.net_foreign.today > 0 ? "up" : "down"}">${fmtIdr(b.net_foreign.today)}</b> · 5 hari <b class="${b.net_foreign.sum_5d > 0 ? "up" : "down"}">${fmtIdr(b.net_foreign.sum_5d)}</b> · 20 hari <b class="${b.net_foreign.sum_20d > 0 ? "up" : "down"}">${fmtIdr(b.net_foreign.sum_20d)}</b></div>` : ""}
-      ${b.bandar_accumulation ? `<div class="note" style="margin-bottom:10px">Akumulasi bandar terakhir: <b>${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.top_accumulating_broker ? ` · Top: ${esc(b.bandar_accumulation.top_accumulating_broker.broker)} (${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})` : ""}</div>` : ""}
-      <div class="grid g2">
-        <div><h2 style="font-size:11px">Top Buyers</h2><table><tr><th>Broker</th><th>Harga</th><th>Nilai</th></tr>
-        ${(b.top_buyers||[]).map(t => `<tr><td>${esc(t.broker)}</td><td>${fmt(t.avg_price)}</td><td>${fmtIdr(t.value)}</td></tr>`).join("")}</table></div>
-        <div><h2 style="font-size:11px">Top Sellers</h2><table><tr><th>Broker</th><th>Harga</th><th>Nilai</th></tr>
-        ${(b.top_sellers||[]).map(t => `<tr><td>${esc(t.broker)}</td><td>${fmt(t.avg_price)}</td><td>${fmtIdr(t.value)}</td></tr>`).join("")}</table></div>
+      ${b.net_foreign ? `<div class="text-xs text-slate-400 mb-3">Net Foreign: hari ini <b class="${b.net_foreign.today > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.today)}</b> · 5 hari <b class="${b.net_foreign.sum_5d > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.sum_5d)}</b> · 20 hari <b class="${b.net_foreign.sum_20d > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.sum_20d)}</b></div>` : ""}
+      ${b.bandar_accumulation ? `<div class="text-xs text-slate-400 mb-4">Akumulasi bandar terakhir: <b class="tabular text-slate-200">${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.top_accumulating_broker ? ` · Top: <b>${esc(b.bandar_accumulation.top_accumulating_broker.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})</span>` : ""}</div>` : ""}
+      <div class="grid md:grid-cols-2 gap-4">
+        <div><h3 class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Top Buyers</h3>
+          <table class="w-full text-sm"><thead><tr class="text-slate-500 text-xs border-b border-slate-700/60"><th class="text-left py-1.5">Broker</th><th class="text-right">Harga</th><th class="text-right">Nilai</th></tr></thead>
+          <tbody>${(b.top_buyers || []).map(t => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(t.broker)}</td><td class="text-right tabular">${fmt(t.avg_price)}</td><td class="text-right tabular text-emerald-400">${fmtIdr(t.value)}</td></tr>`).join("")}</tbody></table></div>
+        <div><h3 class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Top Sellers</h3>
+          <table class="w-full text-sm"><thead><tr class="text-slate-500 text-xs border-b border-slate-700/60"><th class="text-left py-1.5">Broker</th><th class="text-right">Harga</th><th class="text-right">Nilai</th></tr></thead>
+          <tbody>${(b.top_sellers || []).map(t => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(t.broker)}</td><td class="text-right tabular">${fmt(t.avg_price)}</td><td class="text-right tabular text-rose-400">${fmtIdr(t.value)}</td></tr>`).join("")}</tbody></table></div>
       </div>
-      <div class="note" style="margin-top:10px">${esc(b.scenario)}</div>
+      <div class="text-xs text-slate-500 mt-4">${esc(b.scenario)}</div>
     </div>`;
   } else {
-    html += `<div class="card"><h2>Bandarmology</h2><div class="note">${esc(d.bandarmology_note)}</div></div>`;
+    h += card("Bandarmology", `<div class="text-xs text-slate-500">${esc(d.bandarmology_note)}</div>`);
   }
 
-  $("#analyzeResult").innerHTML = html;
+  $("#analyzeResult").innerHTML = h;
 }
-
-function kv(k, v, cls = "") { return `<div class="kv"><div class="k">${esc(k)}</div><div class="v ${cls}">${v}</div></div>`; }
-function rsiCls(r) { if (r === null || r === undefined || isNaN(r)) return ""; return r >= 70 ? "down" : r <= 30 ? "up" : ""; }
 
 /* ---------- SCREENER ---------- */
 async function scan() {
   const btn = $("#btnScan");
-  const q = new URLSearchParams({
-    criteria: $("#scCriteria").value,
-    universe: $("#scUniverse").value,
-    limit: $("#scLimit").value,
-    include_bandarmology: $("#scBandar").checked
-  });
+  const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
+    limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked });
   btn.disabled = true; btn.textContent = "Scanning…";
-  $("#scanInfo").innerHTML = `<span class="spinner"></span>Memindai saham… (bisa butuh beberapa detik)`;
+  $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai saham… (bisa butuh beberapa detik)`;
   $("#screenerResult").innerHTML = "";
   try {
-    const r = await fetch(`/api/screener?${q}`);
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || "Gagal (" + r.status + ")");
-    renderScan(d);
+    renderScan(await getJSON(`/api/screener?${q}`));
   } catch (e) {
-    $("#screenerResult").innerHTML = `<div class="error">⚠ ${esc(e.message)}</div>`;
+    $("#screenerResult").innerHTML = errorBox(e.message);
+    $("#scanInfo").innerHTML = "";
   } finally {
     btn.disabled = false; btn.textContent = "Scan";
   }
@@ -294,66 +310,76 @@ async function scan() {
 
 function renderScan(d) {
   $("#scanInfo").innerHTML =
-    `Dipindai <b>${d.scanned}</b> saham · dilewati <b>${d.skipped}</b> · bandarmology dicek <b>${d.bandarmology_checked}</b> · total universe <b>${d.total_tickers}</b>` +
-    (d.next_offset ? ` · <button class="tab" onclick="scanMore(${d.next_offset})" style="padding:3px 10px">Lanjut halaman berikutnya (offset ${d.next_offset})</button>` : "") +
-    `<div style="margin-top:4px">${esc(d.bandarmology_note)}</div>`;
+    `Dipindai <b class="text-slate-200">${d.scanned}</b> saham · dilewati <b class="text-slate-200">${d.skipped}</b> · bandarmology dicek <b class="text-slate-200">${d.bandarmology_checked}</b> · total universe <b class="text-slate-200">${d.total_tickers}</b>` +
+    (d.next_offset ? ` · <button onclick="scanMore(${d.next_offset})" class="text-sky-400 hover:underline font-semibold">Lanjut offset ${d.next_offset} →</button>` : "") +
+    `<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
+
   if (!d.results.length) {
-    $("#screenerResult").innerHTML = `<div class="card"><div class="note">Tidak ada saham yang lolos kriteria pada halaman ini.</div></div>`;
+    $("#screenerResult").innerHTML = `<div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">Tidak ada saham yang lolos kriteria pada halaman ini.</div>`;
     return;
   }
-  let h = `<div class="card"><table><tr><th>Ticker</th><th>Harga</th><th>Perubahan</th><th>Value</th><th>Vol/MA20</th><th>Sinyal</th><th>Kriteria</th><th>Sumber</th><th>Bandar</th></tr>`;
+  let h = `<div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-x-auto"><table class="w-full text-sm min-w-[760px]">
+    <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
+      <th class="text-left px-4 py-3">Ticker</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
+      <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
+      <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
+    </tr></thead><tbody>`;
   for (const r of d.results) {
-    h += `<tr>
-      <td><b>${esc(r.ticker)}</b></td>
-      <td>${fmt(r.price)}</td>
-      <td class="${clsPct(r.day_return_pct)}">${pct(r.day_return_pct)}</td>
-      <td>${fmtIdr(r.estimated_value_idr)}</td>
-      <td>${fmt(r.volume_ratio_to_ma20)}×</td>
-      <td>${r.signal ? sigBadge(r.signal) : "—"}</td>
-      <td>${r.criteria_met.map(c => `<span class="chip bull">${esc(c)}</span>`).join("")}</td>
-      <td class="src">${esc(r.source || "—")}</td>
-      <td>${r.bandarmology ? `<span class="${r.bandarmology.status.includes("ACC") ? "up" : r.bandarmology.status.includes("DIS") ? "down" : "muted"}">${esc(r.bandarmology.status.split(" ")[0])}</span>` : "—"}</td>
+    h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
+      <td class="px-4 py-3 font-bold">${esc(r.ticker)}</td>
+      <td class="px-3 text-right tabular">${fmt(r.price)}</td>
+      <td class="px-3 text-right tabular ${cls(r.day_return_pct)}">${pct(r.day_return_pct)}</td>
+      <td class="px-3 text-right tabular text-slate-400">${fmtIdr(r.estimated_value_idr)}</td>
+      <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
+      <td class="px-3">${r.signal ? sigBadge(r.signal) : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}</td>
+      <td class="px-3 text-xs text-violet-400">${esc(r.source || "—")}</td>
+      <td class="px-3 text-xs">${r.bandarmology
+        ? `<span class="${r.bandarmology.status.includes("ACC") ? "text-emerald-400" : r.bandarmology.status.includes("DIS") ? "text-rose-400" : "text-slate-400"}">${esc(r.bandarmology.status.split(" ")[0])}</span>`
+        : '<span class="text-slate-600">—</span>'}</td>
     </tr>`;
   }
-  h += `</table></div>`;
+  h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
 }
 
-let scanOffset = 0;
 async function scanMore(offset) {
-  scanOffset = offset;
-  const q = new URLSearchParams({
-    criteria: $("#scCriteria").value,
-    universe: $("#scUniverse").value,
-    limit: $("#scLimit").value,
-    offset: offset,
-    include_bandarmology: $("#scBandar").checked
-  });
-  $("#scanInfo").innerHTML = `<span class="spinner"></span>Memindai halaman berikutnya (offset ${offset})…`;
+  const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
+    limit: $("#scLimit").value, offset: offset, include_bandarmology: $("#scBandar").checked });
+  $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
   try {
-    const r = await fetch(`/api/screener?${q}`);
-    const d = await r.json();
-    if (!r.ok) throw new Error(d.detail || "Gagal (" + r.status + ")");
-    renderScan(d);
+    renderScan(await getJSON(`/api/screener?${q}`));
   } catch (e) {
-    $("#screenerResult").innerHTML = `<div class="error">⚠ ${esc(e.message)}</div>`;
+    $("#screenerResult").innerHTML = errorBox(e.message);
+    $("#scanInfo").innerHTML = "";
   }
 }
 
 /* ---------- init ---------- */
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
-  document.querySelectorAll(".tab").forEach(x => x.classList.remove("active"));
-  t.classList.add("active");
-  $("#tab-analyze").classList.toggle("hide", t.dataset.tab !== "analyze");
-  $("#tab-screener").classList.toggle("hide", t.dataset.tab !== "screener");
+  document.querySelectorAll(".tab").forEach(x => {
+    x.classList.toggle("tab-active", x === t);
+    x.classList.toggle("bg-sky-500", x === t);
+    x.classList.toggle("text-slate-950", x === t);
+    x.classList.toggle("font-bold", x === t);
+    x.classList.toggle("text-slate-400", x !== t);
+  });
+  $("#tab-analyze").classList.toggle("hidden", t.dataset.tab !== "analyze");
+  $("#tab-screener").classList.toggle("hidden", t.dataset.tab !== "screener");
 }));
 $("#btnAnalyze").addEventListener("click", analyze);
 $("#ticker").addEventListener("keydown", e => { if (e.key === "Enter") analyze(); });
 $("#btnScan").addEventListener("click", scan);
 
-fetch("/api/health").then(r => r.json()).then(d => {
-  $("#apiStatus").textContent = "API: " + d.status;
-}).catch(() => { $("#apiStatus").textContent = "API: offline"; });
+getJSON("/api/health").then(d => {
+  const el = $("#apiStatus");
+  el.textContent = "API: " + d.status;
+  el.className = "text-xs px-3 py-1.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400";
+}).catch(() => {
+  const el = $("#apiStatus");
+  el.textContent = "API: offline";
+  el.className = "text-xs px-3 py-1.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-400";
+});
 
 analyze();
 </script>

@@ -31,6 +31,7 @@ import os
 import time
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional
 
 import numpy as np
@@ -1344,56 +1345,83 @@ def quick_signal(df: pd.DataFrame) -> str:
         return "N/A"
 
 
+def _get_ticker_data(tk: str, period: str):
+    """Data OHLCV per ticker:
+    1) IDX Edge PRO (real-time IDX; menghindari yfinance yang menggantung di
+       server karena Yahoo memblokir IP datacenter),
+    2) yfinance (untuk ticker non-IDX / bila IDX Edge tidak dikonfigurasi),
+    3) dataset publik GitHub.
+    """
+    if ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+        df = fetch_idx_history(tk)
+        if df is not None:
+            return df, "idx-edge-pro"
+    df = _download_batch([tk], period).get(tk)
+    if df is not None:
+        return df, "yfinance"
+    if ".JK" in tk.upper():
+        df = _download_github_csv(tk)
+        if df is not None:
+            return df, "github-dataset"
+    return None, None
+
+
+def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
+                 include_bandarmology: bool):
+    """Proses 1 ticker (dijalankan paralel via ThreadPoolExecutor)."""
+    df, src = _get_ticker_data(tk, period)
+    if df is None:
+        return {"tk": tk, "skipped": True}
+
+    bandar_series = None
+    if criteria in ("swing", "all") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+        acc = fetch_idx_accumulation(tk)
+        if acc and acc.get("bandar_accum_series"):
+            bandar_series = acc["bandar_accum_series"]
+
+    result = run_screener(df, criteria, bandar_series)
+    item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"]}
+    if include_signal:
+        item["signal"] = quick_signal(df)
+
+    bandar_used = 0
+    if include_bandarmology and result["eligible"] and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+        bs = fetch_idx_broker_summary(tk)
+        if bs:
+            bandar_used = 1
+            item["bandarmology"] = {
+                "status": bs.get("status"),
+                "scenario": bs.get("scenario"),
+                "bandar_avg_price": bs.get("bandar_avg_price"),
+                "bandar_avg_distance_pct": bs.get("bandar_avg_distance_pct"),
+                "top_buyer_value_share_pct": bs.get("top_buyer_value_share_pct"),
+            }
+
+    return {"tk": tk, "skipped": False, "item": item,
+            "eligible": bool(result["eligible"]), "bandar_used": bandar_used}
+
+
 def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
           include_bandarmology: bool = True) -> dict:
     matched: List[dict] = []
     scanned = skipped = bandar_used = 0
-    for i in range(0, len(tickers), 10):
-        chunk = tickers[i:i + 10]
-        frames = _download_batch(chunk, period)
-        for tk in chunk:
-            df = frames.get(tk)
-            src = "yfinance"
-            if df is None and ".JK" in tk.upper():
-                if IDX_EDGE_API_KEYS:
-                    df = fetch_idx_history(tk)
-                    src = "idx-edge-pro" if df is not None else src
-            if df is None and ".JK" in tk.upper():
-                df = _download_github_csv(tk)
-                src = "github-dataset" if df is not None else src
-            if df is None:
+    workers = min(8, max(1, len(tickers)))
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        futures = [ex.submit(_scan_worker, tk, criteria, period,
+                             include_signal, include_bandarmology) for tk in tickers]
+        for f in futures:
+            try:
+                out = f.result()
+            except Exception:
                 skipped += 1
                 continue
-            df.attrs["source"] = src
+            if out.get("skipped"):
+                skipped += 1
+                continue
             scanned += 1
-
-            # BandarValue (kriteria swing) dari IDX Edge PRO, hanya jika relevan
-            bandar_series = None
-            if criteria in ("swing", "all") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
-                acc = fetch_idx_accumulation(tk)
-                if acc and acc.get("bandar_accum_series"):
-                    bandar_series = acc["bandar_accum_series"]
-
-            result = run_screener(df, criteria, bandar_series)
-            item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"]}
-            if include_signal:
-                item["signal"] = quick_signal(df)
-
-            # Broker Summary hanya untuk saham yang lolos (hemat kuota API)
-            if include_bandarmology and result["eligible"] and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
-                bs = fetch_idx_broker_summary(tk)
-                if bs:
-                    bandar_used += 1
-                    item["bandarmology"] = {
-                        "status": bs.get("status"),
-                        "scenario": bs.get("scenario"),
-                        "bandar_avg_price": bs.get("bandar_avg_price"),
-                        "bandar_avg_distance_pct": bs.get("bandar_avg_distance_pct"),
-                        "top_buyer_value_share_pct": bs.get("top_buyer_value_share_pct"),
-                    }
-            if result["eligible"]:
-                matched.append(item)
-        time.sleep(0.1)
+            bandar_used += out.get("bandar_used", 0)
+            if out.get("eligible"):
+                matched.append(out["item"])
     return {
         "scanned": scanned,
         "skipped": skipped,
