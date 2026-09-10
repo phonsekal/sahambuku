@@ -1112,13 +1112,18 @@ async function syncPull() {
 }
 
 async function syncPush() {
-  if (!syncEnabled) return;
+  // Selalu kirim ke server (tidak menunggu status cloud dimuat dulu, agar posisi
+  // yang ditambahkan cepat tidak tertinggal hanya di localStorage). Server yang
+  // memutuskan apakah cloud aktif.
   try {
-    await fetch(`/api/sync?key=${encodeURIComponent(getSyncKey())}`, {
+    const r = await fetch(`/api/sync?key=${encodeURIComponent(getSyncKey())}`, {
       method: "PUT", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ portfolio: porto, watchlist: watch }),
     });
-    setSyncStatus("Tersinkron ✓", true);
+    let d = null;
+    try { d = await r.json(); } catch (e) {}
+    if (d && d.ok) { syncEnabled = true; setSyncStatus("Tersinkron ✓", true); }
+    else { syncEnabled = false; setSyncStatus("lokal saja (penyimpanan cloud belum aktif)", false); }
   } catch (e) { setSyncStatus("gagal menyimpan ke cloud", false); }
 }
 
