@@ -1100,17 +1100,23 @@ def analyze_broker_summary(payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def fetch_data(ticker: str, period: str) -> pd.DataFrame:
+def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> pd.DataFrame:
     """Unduh OHLCV dengan fallback berantai:
     1) yfinance (real-time, dibatasi timeout) -> 2) IDX Edge PRO -> 3) dataset GitHub IDX.
     Kode tanpa titik (mis. TLKM) otomatis dicoba dengan suffix .JK bila gagal.
     Sumber akhir dicatat di df.attrs['source'].
+
+    yf_timeout: batas waktu khusus utk yfinance (None = YFINANCE_TIMEOUT global).
+    Jalur backtest/matriks memakai timeout lebih pendek karena di Vercel yfinance
+    hampir selalu diblokir; menunggu 25 dtk per ticker membuat matriks LQ45
+    melewati batas durasi function (504).
     """
     key = (ticker.upper(), period)
     now = time.time()
     hit = CACHE.get(key)
     if hit and now - hit["ts"] < CACHE_TTL_SECONDS:
         return hit["df"]
+    yf_timeout = yf_timeout if yf_timeout is not None else YFINANCE_TIMEOUT
 
     def _attempt(tk: str):
         """Coba satu varian ticker; kembalikan (df, source, yf_err)."""
@@ -1119,7 +1125,7 @@ def fetch_data(ticker: str, period: str) -> pd.DataFrame:
             df = _call_with_timeout(
                 lambda: yf.download(tk, period=period, interval="1d",
                                     auto_adjust=True, progress=False, threads=False),
-                YFINANCE_TIMEOUT,
+                yf_timeout,
             )
             if df is None:
                 yf_err = "yfinance timeout / tidak ada data"
@@ -1516,7 +1522,7 @@ def _fetch_backtest_history(ticker: str, years: int) -> Optional[pd.DataFrame]:
     data terbaru (yfinance/IDX Edge menang pada tanggal yang tumpang tindih).
     """
     try:
-        df = fetch_data(ticker, "5y")
+        df = fetch_data(ticker, "5y", yf_timeout=BACKTEST_YF_TIMEOUT)
     except Exception:
         return None
     if len(df) >= years * 260:
@@ -1991,6 +1997,10 @@ def _call_with_timeout(fn, timeout: float, *args, **kwargs):
 
 
 YFINANCE_TIMEOUT = 25
+# Jalur backtest/matriks: di Vercel yfinance hampir selalu diblokir/rate-limit,
+# jadi menunggu timeout global (25 dtk) per ticker adalah pemborosan besar.
+# Timeout pendek -> cepat pindah ke fallback (IDX Edge/GitHub).
+BACKTEST_YF_TIMEOUT = 8
 LIVE_QUOTE_TIMEOUT = 10
 
 # Intraday (5m) dari Yahoo via curl_cffi (impersonasi browser) — jalur ini lolos
@@ -2537,6 +2547,14 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     }
 
 
+def _backtest_one_safe(*args, **kwargs) -> Optional[dict]:
+    """Wrapper aman utk _backtest_one: ticker bermasalah dilewati, bukan crash seluruh backtest."""
+    try:
+        return _backtest_one(*args, **kwargs)
+    except Exception:
+        return None
+
+
 def _backtest_one(ticker: str, criteria: str, years: int,
                   confirm: bool = True, regime: bool = True, bb_confirm: bool = True,
                   div_vol: bool = True, weekly: bool = True, costs: bool = True,
@@ -2695,6 +2713,19 @@ def _backtest_one(ticker: str, criteria: str, years: int,
 
 
 MATRIX_KEYS = ("confirm", "regime", "bb", "div", "weekly")
+
+
+def _matrix_one_safe(tk: str, criteria: str, years: int,
+                     ihsg_align: Optional[pd.DataFrame] = None) -> Optional[dict]:
+    """Wrapper aman: satu ticker bermasalah tidak boleh meng-gagalkan seluruh matriks.
+
+    Di Vercel data fallback (IDX Edge/GitHub) bisa punya format berbeda per ticker
+    sehingga satu ticker bisa memicu exception di kalkulasi. Ticker yang gagal
+    dilewati (None), sisanya tetap diproses — mencegah HTTP 500 seluruh endpoint."""
+    try:
+        return _matrix_one(tk, criteria, years, ihsg_align)
+    except Exception:
+        return None
 
 
 def _matrix_one(tk: str, criteria: str, years: int,
@@ -2863,7 +2894,7 @@ def _backtest_matrix(tickers: List[str], criteria: str, years: int,
                for combo in all_keys}
         checked = 0
         with ThreadPoolExecutor(max_workers=8) as ex:
-            for one in ex.map(lambda tk: _matrix_one(tk, crit, years, ihsg_align), tickers):
+            for one in ex.map(lambda tk: _matrix_one_safe(tk, crit, years, ihsg_align), tickers):
                 if one is None:
                     continue
                 checked += 1
@@ -3394,8 +3425,8 @@ def backtest(
             ihsg_align = None
     results: List[dict] = []
     with ThreadPoolExecutor(max_workers=8) as ex:
-        for r in ex.map(lambda t: _backtest_one(t, criteria, years, confirm, regime, bb_confirm,
-                                                div_vol, weekly, costs, ihsg_align), tickers):
+        for r in ex.map(lambda t: _backtest_one_safe(t, criteria, years, confirm, regime, bb_confirm,
+                                                     div_vol, weekly, costs, ihsg_align), tickers):
             if r and r.get("trades", 0) > 0:
                 results.append(r)
     tot_trades = sum(r["trades"] for r in results)
