@@ -3550,8 +3550,13 @@ def health():
 
 
 def _analyze_core(ticker: str, period: str, risk_amount: float,
-                  light: bool = False) -> dict:
-    """Analisis lengkap 1 saham. light=True -> tanpa bandarmology (hemat kuota IDX Edge)."""
+                  light: bool = False, fund_level: str = "full") -> dict:
+    """Analisis lengkap 1 saham.
+
+    light=True -> tanpa bandarmology (hemat kuota IDX Edge).
+    fund_level -> 'full' (rasio + laporan YoY + dividen + aksi korporasi),
+    'ringkas' (hanya rasio, 1 permintaan), atau 'off' (tanpa fundamental).
+    """
     df = fetch_data(ticker, period)
     close = df["Close"]
     last_price = float(close.iloc[-1])
@@ -3759,7 +3764,9 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         },
         "weekly": weekly,
         "market_regime": regime,
-        "fundamentals": fetch_fundamentals(ticker, last_price, light=light),
+        "fundamentals": (None if fund_level == "off"
+                         else fetch_fundamentals(ticker, last_price,
+                                                 light=fund_level == "ringkas")),
     }
 
 
@@ -3777,15 +3784,22 @@ def quotes(
     tickers: str = Query(..., description="Kode saham dipisah koma, maks 15. Contoh: BBCA,TLKM,BBRI"),
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
     with_bandar: bool = Query(False, description="Sertakan Broker Summary (memakai kuota IDX Edge)"),
+    fundamentals: str = Query("full", pattern="^(full|ringkas|off)$",
+                              description="Kedalaman fundamental: full|ringkas|off"),
 ):
-    """Kutipan + sinyal + TP/SL untuk portofolio/watchlist (paralel, hemat kuota)."""
+    """Kutipan + sinyal + TP/SL untuk portofolio/watchlist (paralel, hemat kuota).
+
+    fundamentals=full menyertakan rasio, perbandingan laporan YoY tahunan &
+    kuartalan, riwayat dividen, dan aksi korporasi tiap posisi.
+    """
     codes = [c.strip().upper() for c in tickers.split(",") if c.strip()][:15]
     if not codes:
         raise HTTPException(422, "Parameter tickers tidak boleh kosong.")
 
     def one(code: str) -> dict:
         try:
-            d = _analyze_core(code, period, 5_000_000, light=not with_bandar)
+            d = _analyze_core(code, period, 5_000_000, light=not with_bandar,
+                              fund_level=fundamentals)
             return {"ticker": code, "ok": True, "data": d}
         except HTTPException as exc:
             return {"ticker": code, "ok": False, "error": str(exc.detail)[:150]}
@@ -3853,7 +3867,7 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
         if not tk:
             return []
         try:
-            d = _analyze_core(tk, "3mo", 5_000_000, light=True)
+            d = _analyze_core(tk, "3mo", 5_000_000, light=True, fund_level="off")
         except Exception:
             return []
         price = d["market"]["last_price"]
@@ -3956,7 +3970,7 @@ def koreksi_watch_list(period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"))
 
     def one(tk: str) -> dict:
         try:
-            d = _analyze_core(tk, period, 5_000_000, light=True)
+            d = _analyze_core(tk, period, 5_000_000, light=True, fund_level="off")
             price = float(d["market"]["last_price"])
             sr = (d.get("support_resistance") or {}).get("zones") or []
             sup = [z["price"] for z in sr if z["type"] == "support" and z["price"] < price]
@@ -3998,7 +4012,7 @@ def cron_koreksi(request: Request, secret: str = Query("")):
     today = time.strftime("%Y-%m-%d")
     for tk in lst[:50]:
         try:
-            d = _analyze_core(tk, "3mo", 5_000_000, light=True)
+            d = _analyze_core(tk, "3mo", 5_000_000, light=True, fund_level="off")
         except Exception:
             continue
         checked += 1
