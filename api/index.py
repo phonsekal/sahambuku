@@ -2617,6 +2617,44 @@ def _qs_num(src: Any, key: str) -> Optional[float]:
         return None
 
 
+def _classify_dividends(rows: List[dict]) -> List[dict]:
+    """Tandai tiap dividen: Final (tahunan) atau Interim.
+
+    Yahoo tidak menyediakan jenis dividen, jadi dipakai konvensi IDX:
+      * dividen FINAL (tahunan) disetujui RUPS dan dibayar Jan-Jun; karena itu
+        ex-date Jan-Jun diatribusikan ke tahun buku sebelumnya;
+      * dividen INTERIM dibayar di dalam tahun berjalan (Jul-Des) — jadi setiap
+        ex-date Jul-Des pasti interim;
+      * bila pada Jan-Jun ada beberapa pembayaran, nominal terbesar = final.
+    Hasilnya perkiraan berbasis pola, bukan data resmi jenis dividen.
+    """
+    for r in rows:
+        d = str(r.get("date") or "")
+        try:
+            y, m = int(d[:4]), int(d[5:7])
+        except (TypeError, ValueError):
+            r["fiscal_year"] = None
+            r["type"] = None
+            continue
+        r["fiscal_year"] = y - 1 if m <= 6 else y
+        r["type"] = "Final (tahunan)" if m <= 6 else "Interim"
+
+    # Final hanya boleh satu per tahun buku: di antara kandidat Jan-Jun, ambil
+    # nominal terbesar sebagai final, sisanya interim.
+    finals: Dict[int, List[dict]] = {}
+    for r in rows:
+        if r.get("type") == "Final (tahunan)" and r.get("fiscal_year"):
+            finals.setdefault(r["fiscal_year"], []).append(r)
+    for items in finals.values():
+        if len(items) < 2:
+            continue
+        top = max(items, key=lambda x: (x.get("amount") or 0.0, x.get("date") or ""))
+        for r in items:
+            if r is not top:
+                r["type"] = "Interim"
+    return rows
+
+
 def _fetch_yahoo_fundamentals(ticker: str, light: bool = False) -> Optional[dict]:
     """Fundamental emiten dari Yahoo Finance (mencakup saham IDX '.JK').
 
@@ -2824,7 +2862,7 @@ def _fetch_yahoo_fundamentals(ticker: str, light: bool = False) -> Optional[dict
             rows.append({"date": d, "amount": num(x.get("amount"), 2),
                          "adj": num(x.get("amount"), 2), "payment": None})
     if rows:
-        out["dividends"] = rows
+        out["dividends"] = _classify_dividends(rows)
 
     # --- Aksi korporasi: stock split / reverse split ---
     sps = sorted((ev.get("splits") or {}).values(),
@@ -3580,9 +3618,22 @@ app.add_middleware(
 
 @app.get("/")
 def root():
+    """Alamat utama langsung membuka dashboard (tidak perlu /dashboard).
+
+    Bila dashboard.html tidak ada (mis. deploy API saja), kembalikan daftar
+    endpoint JSON agar alamat utama tetap berguna.
+    """
+    if os.path.exists(DASHBOARD_PATH):
+        return FileResponse(DASHBOARD_PATH, media_type="text/html")
+    return api_info()
+
+
+@app.get("/api/info")
+def api_info():
+    """Daftar endpoint API (versi JSON dari halaman utama)."""
     return {
         "service": "dedesaputra_invst Strategy API",
-        "dashboard": "/dashboard",
+        "dashboard": "/",
         "endpoints": [
             "GET  /api/health",
             "GET  /api/analyze/{ticker}?period=1y",
@@ -3599,6 +3650,12 @@ def root():
         ],
         "docs": "/docs",
     }
+
+
+@app.get("/dashboard")
+def dashboard_alias():
+    """Alias lama: /dashboard -> halaman utama."""
+    return root()
 
 
 DASHBOARD_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "dashboard.html")
@@ -3652,6 +3709,141 @@ def health(fmp_check: bool = Query(False, description="Uji kunci FMP ke API-nya"
     if fmp_check:
         out["fmp_check"] = _fmp_selfcheck()
     return out
+
+
+def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: List[dict],
+                      fib: dict, weekly: dict, bandarmology: Optional[dict],
+                      regime: Optional[dict], rm: Optional[dict], ind: dict,
+                      liquidity_grade: Optional[str] = None, data_date: str = "") -> dict:
+    """Panduan aksi: apa yang harus ditunggu dan di harga berapa.
+
+    Bukan ajakan beli/jual. Isinya syarat konfirmasi yang bisa dicek sendiri,
+    memakai level hasil hitungan terakhir (SMA, Support/Resistance, Fibonacci,
+    Bollinger, AVG bandar) supaya jelas kapan rencana ini valid atau batal.
+    """
+    def _rp(v: Any, nd: int = 0) -> str:
+        return f"{float(v):,.{nd}f}".replace(",", ".") if isinstance(v, (int, float)) else "—"
+
+    zones = sr_zones or []
+    res = [z for z in zones if z.get("price") and z["price"] > last_price and z.get("type") == "resistance"]
+    sup = [z for z in zones if z.get("price") and z["price"] < last_price and z.get("type") == "support"]
+    res_above = min(res, key=lambda z: z["price"]) if res else None
+    sup_below = max(sup, key=lambda z: z["price"]) if sup else None
+    lv_res = res_above["price"] if res_above else None
+    lv_sup = sup_below["price"] if sup_below else None
+
+    s20, s50 = ind.get("sma20"), ind.get("sma50")
+    rsi = ind.get("rsi14")
+    hist = (ind.get("macd") or {}).get("histogram")
+    vol_ratio = (ind.get("volume") or {}).get("ratio_to_ma20")
+    bb = ind.get("bollinger") or {}
+    atr14 = ind.get("atr14")
+    bavg = (bandarmology or {}).get("bandar_avg_price")
+    bstatus = (bandarmology or {}).get("status")
+    fib_level = (fib or {}).get("nearest_level") or {}
+    lv_fib = fib_level.get("price")
+    opsi_mingguan = f"harga {_rp(weekly.get('close'))} vs SMA20 mingguan {_rp(weekly.get('sma20'))}"
+
+    aksi = str(action or "HOLD").upper()
+    steps: List[dict] = []
+
+    def step(syarat: str, sekarang: str, level: Optional[float] = None, wajib: bool = False) -> None:
+        steps.append({"syarat": syarat, "sekarang": sekarang,
+                      "level": num(level, 2) if level else None, "wajib": bool(wajib)})
+
+    vol_txt = f"{vol_ratio:.2f}× MA20" if isinstance(vol_ratio, (int, float)) else "—"
+    if "SELL" in aksi:
+        kesimpulan = ("Belum waktunya entry. Sinyal masih jual — tunggu pembalikan tren "
+                      "terkonfirmasi lebih dulu, jangan menebak dasar (bottom fishing).")
+        step("MACD memotong garis sinyal ke atas (histogram berubah positif)",
+             f"histogram {_rp(hist, 3)}", None, True)
+        step("Harga ditutup kembali di atas SMA20",
+             f"harga {_rp(last_price)} vs SMA20 {_rp(s20)}", s20, True)
+        step("Volume saat harga naik minimal 1,5× rata-rata 20 hari", vol_txt)
+        step("RSI(14) kembali di atas 50", _rp(rsi, 1), 50.0)
+        if lv_res:
+            step("Breakout menutup di atas resistance terdekat (area ini jadi support baru)",
+                 f"harga {_rp(last_price)} vs resistance {_rp(lv_res)}", lv_res)
+        if bavg:
+            step(f"Harga bertahan/rebound di AVG bandar ({bstatus or 'ACC/DIS'})",
+                 f"AVG bandar {_rp(bavg)}", bavg)
+    elif "BUY" in aksi:
+        kesimpulan = ("Momentum beli aktif — entry boleh bertahap selama syarat konfirmasi "
+                      "masih terpenuhi; jangan kejar harga di atas band atas.")
+        step("Harga bertahan di atas SMA20", f"harga {_rp(last_price)} vs SMA20 {_rp(s20)}", s20, True)
+        step("Volume minimal 1,5× rata-rata 20 hari saat menembus level", vol_txt, None, True)
+        step("RSI(14) masih sehat (di bawah 70, tidak overbought)", _rp(rsi, 1), 70.0)
+        if lv_sup:
+            step("Koreksi sehat tidak menembus support terdekat (batas toleransi)",
+                 f"support {_rp(lv_sup)}", lv_sup, True)
+        if bavg:
+            step("Harga masih di area AVG bandar (titik masuk bandar)", f"AVG bandar {_rp(bavg)}", bavg)
+    else:
+        kesimpulan = ("Sinyal netral — belum ada alasan kuat untuk masuk. Tunggu salah satu "
+                      "skenario: breakout dengan volume, atau pantulan di support.")
+        step("Skenario 1 — breakout menutup di atas resistance dengan volume ≥1,5× MA20",
+             f"resistance {_rp(lv_res)} (harga sekarang {_rp(last_price)})", lv_res, True)
+        step("Skenario 2 — pantulan di support dengan candle bullish + RSI naik",
+             f"support {_rp(lv_sup)}", lv_sup)
+        step("MACD di atas garis sinyal (konfirmasi momentum)", f"histogram {_rp(hist, 3)}")
+        step("Tren mingguan searah (close di atas SMA20 mingguan)", opsi_mingguan)
+
+    if lv_sup:
+        zona = {"low": num(sup_below["band"][0] if sup_below.get("band") else lv_sup, 2),
+                "high": num(sup_below["band"][1] if sup_below.get("band") else lv_sup, 2)}
+        zona["catatan"] = ("Area pantulan (zona support). Tunggu candle konfirmasi di area ini; "
+                           "close di bawahnya = rencana batal.")
+    else:
+        zona = {"low": num(lv_fib, 2), "high": num(lv_fib, 2),
+                "catatan": "Belum ada zona support yang jelas; gunakan Fibonacci terdekat sebagai acuan."}
+
+    sl = (rm or {}).get("stop_loss") or (last_price - 2 * atr14 if isinstance(atr14, (int, float)) and atr14 > 0 else None)
+    tp = (rm or {}).get("take_profit")
+
+    konflik: List[str] = []
+    if weekly:
+        if weekly.get("up") and "SELL" in aksi:
+            konflik.append("Tren mingguan masih naik — sinyal jual harian bisa hanya koreksi sehat; "
+                           "konfirmasi dulu di chart mingguan.")
+        if (not weekly.get("up")) and "BUY" in aksi:
+            konflik.append("Melawan arus mingguan: tren mingguan masih turun.")
+    if regime and str(regime.get("trend")) == "bear":
+        konflik.append("IHSG di bawah MA200 (pasar bear) — filter regime menahan sinyal beli dan "
+                       "peluang sinyal palsu naik.")
+    if bstatus and str(bstatus).upper().startswith("ACC") and "SELL" in aksi:
+        konflik.append(f"Bandar masih akumulasi (AVG {_rp(bavg)}) — koreksi bisa jadi kesempatan, "
+                       "tapi tetap tunggu konfirmasi reversal sebelum entry.")
+    if bstatus and str(bstatus).upper().startswith("DIS") and "BUY" in aksi:
+        konflik.append("Bandar sedang distribusi (DIS) — risiko jual bandar, perketat stop loss.")
+    if bb.get("squeeze"):
+        konflik.append("Bollinger menyempit (squeeze) — potensi breakout; tunggu arah keluar band "
+                       f"({_rp(bb.get('lower'))}–{_rp(bb.get('upper'))}).")
+    if liquidity_grade and str(liquidity_grade).lower().startswith(("kurang", "tipis")):
+        konflik.append("Likuiditas tipis — pakai order kecil dan hati-hati spread lebar.")
+
+    return {
+        "kesimpulan": kesimpulan,
+        "langkah": steps,
+        "zona_entry": zona,
+        "pembatalan": ({"level": num(sl, 2), "catatan": "Rencana batal bila harga ditutup di bawah level ini "
+                                                          "(stop loss / 2× ATR)."} if sl else None),
+        "target": ({"tp1": num(tp, 2), "catatan": "Take profit dari resistance/Fibonacci berikutnya "
+                                                   "(manajemen risiko Bab 8)."} if tp else None),
+        "level_referensi": {
+            "resistance_terdekat": num(lv_res, 2),
+            "support_terdekat": num(lv_sup, 2),
+            "sma20": num(s20, 2), "sma50": num(s50, 2),
+            "fib_terdekat": num(lv_fib, 2),
+            "avg_bandar": num(bavg, 2),
+            "bb_atas": num(bb.get("upper"), 2), "bb_bawah": num(bb.get("lower"), 2),
+        },
+        "konflik": konflik,
+        "data_date": data_date,
+        "catatan": ("Level dihitung dari data harian s/d " + (data_date or "—") +
+                    ". Bila sumber data berganti (mis. yfinance -> IDX Edge), angkanya bisa "
+                    "bergeser sedikit — cek label sumber di header analisis."),
+        "disclaimer": DISCLAIMER,
+    }
 
 
 def _analyze_core(ticker: str, period: str, risk_amount: float,
@@ -3798,6 +3990,25 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     }
     regime = _ihsg_regime()
     liquidity = _liquidity_metrics(df)
+    data_date = str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1])
+
+    # Panduan aksi: syarat konfirmasi + level harga nyata (tunggu apa, di harga berapa).
+    action_plan = None
+    if not data_warning:
+        action_plan = build_action_plan(
+            last_price=last_price, action=signal.get("action", "HOLD"), trend=trend,
+            sr_zones=sr_zones, fib=fib, weekly=weekly, bandarmology=bandarmology,
+            regime=regime, rm=rm,
+            ind={
+                "sma20": num(s20, 2), "sma50": num(s50, 2), "sma200": num(s200, 2),
+                "rsi14": num(r14, 2), "atr14": num(atr14, 2),
+                "macd": {"histogram": num(hist.iloc[-1], 4)},
+                "volume": vol,
+                "bollinger": {"upper": num(bb_up_v, 2), "lower": num(bb_lo_v, 2),
+                              "squeeze": bb_squeeze},
+            },
+            liquidity_grade=liquidity.get("grade"), data_date=data_date,
+        )
 
     return {
         "ticker": ticker.upper(),
@@ -3857,6 +4068,7 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "special_patterns": {"launch_pad": lp, "drop_base_rally": dbr},
         "screener_hints": screen,
         "signal": signal,
+        "action_plan": action_plan,
         "buy_score": compute_buy_score(df, bandarmology if not light else None),
         "risk_management": rm,
         "bandarmology": bandarmology,
