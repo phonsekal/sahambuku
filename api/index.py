@@ -1514,27 +1514,55 @@ def _telegram_action_plan(ap: Optional[dict], max_steps: int = 3) -> str:
     kes = str(ap.get("kesimpulan") or "").strip()
     if kes:
         lines.append(kes)
+
+    # Setup swing + harga trigger pasti (pullback vs breakout).
+    setup = ap.get("setup") or {}
+    if setup.get("jenis"):
+        trg = setup.get("trigger") or {}
+        lv = f" @ {_rp_id(trg.get('level'))}" if trg.get("level") not in (None, "") else ""
+        lines.append(f"🧩 Setup: {setup['jenis']}{lv}")
+        if trg.get("syarat"):
+            lines.append(f"   {trg['syarat']}")
+
     steps = ap.get("langkah") or []
     wajib = [s for s in steps if s.get("wajib")] or steps
     for k in wajib[:max_steps]:
         lv = f" @ {_rp_id(k.get('level'))}" if k.get("level") not in (None, "") else ""
         tag = " (wajib)" if k.get("wajib") else ""
         lines.append(f"• {k.get('syarat')}{lv}{tag}")
+
     zona = ap.get("zona_entry") or {}
     if zona.get("low") not in (None, ""):
         z = _rp_id(zona["low"])
         if zona.get("high") not in (None, "") and zona["high"] != zona["low"]:
             z += "–" + _rp_id(zona["high"])
         lines.append(f"🎯 Zona pantau/entry: {z}")
+
     tail = []
     tp = ap.get("target") or {}
     bat = ap.get("pembatalan") or {}
     if tp.get("tp1") not in (None, ""):
-        tail.append(f"✅ TP {_rp_id(tp['tp1'])}")
+        s = f"✅ TP1 {_rp_id(tp['tp1'])}"
+        if tp.get("tp2") not in (None, ""):
+            s += f", TP2 {_rp_id(tp['tp2'])}"
+        tail.append(s)
     if bat.get("level") not in (None, ""):
-        tail.append(f"🛑 Batal < {_rp_id(bat['level'])}")
+        tail.append(f"🛑 SL {_rp_id(bat['level'])}")
     if tail:
         lines.append(" · ".join(tail))
+
+    kel = ap.get("kelayakan") or {}
+    if kel.get("rrr") not in (None, ""):
+        rrr_txt = f"⚖️ RRR 1:{_rp_id(kel['rrr'])}"
+        rrr_txt += " ✓ layak" if kel.get("layak") else " ✗ di bawah 1:2"
+        if ap.get("time_stop_hari"):
+            rrr_txt += f" · ⏳ batas {ap['time_stop_hari']} hari"
+        lines.append(rrr_txt)
+
+    tm = ap.get("timing") or {}
+    if tm.get("skor") not in (None, ""):
+        lines.append(f"⏱ Timing masuk: {_rp_id(tm['skor'])}/100 ({tm.get('label', '')})")
+
     konf = ap.get("konflik") or []
     if konf:
         lines.append(f"⚠ {konf[0]}")
@@ -1751,6 +1779,35 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
         met.append("BSJP (Beli Sore Jual Pagi)")
     checks["bsjp"] = bsjp
 
+    # --- Setup harga swing (bukan hanya BandarValue/nilai transaksi) ---
+    # Swing sebaiknya hanya diambil saat HARGA menunjukkan setup: pullback sehat ke
+    # SMA20 dalam tren naik, atau breakout dengan volume. Tanpa ini, screener bisa
+    # memunculkan saham yang harganya justru menempel resistance.
+    try:
+        _close_s = df["Close"].astype(float)
+        _vol_s = df["Volume"].astype(float)
+        _last_s = float(_close_s.iloc[-1])
+        _s20_s = float(sma(_close_s, 20).iloc[-1]) if len(df) >= 20 else None
+        _s50_s = float(sma(_close_s, 50).iloc[-1]) if len(df) >= 50 else None
+        _rsi_s = float(rsi(_close_s, 14).iloc[-1]) if len(df) >= 15 else None
+        _vma_s = float(sma(_vol_s, 20).iloc[-1]) if len(df) >= 20 else None
+        _trend_up = bool(_s20_s and _s50_s and _last_s > _s20_s > _s50_s)
+        _pullback = bool(_trend_up and _s20_s and abs(_last_s / _s20_s - 1) <= 0.03
+                         and _rsi_s is not None and 35 <= _rsi_s <= 68)
+        _breakout = bool(_s20_s and _last_s >= _s20_s and _vma_s
+                         and float(_vol_s.iloc[-1]) >= 1.5 * _vma_s
+                         and (_s50_s is None or _s20_s > _s50_s))
+        price_setup = {
+            "trend_up": _trend_up, "pullback": _pullback, "breakout": _breakout,
+            "ok": bool(_pullback or _breakout),
+            "note": ("Setup harga swing: pullback sehat ke SMA20 dalam tren naik, atau breakout "
+                     "dengan volume ≥1,5× MA20."),
+        }
+    except Exception:
+        price_setup = {"trend_up": False, "pullback": False, "breakout": False, "ok": False,
+                       "note": "Setup harga swing tidak dapat dihitung."}
+    checks["price_setup"] = price_setup
+
     # --- Swing Trade Watchlist (butuh BandarValue; tanpa API gunakan proksi) ---
     swing: dict = {}
     if bandar_values and len(bandar_values) >= 21:
@@ -1766,9 +1823,10 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
             "bandar_ma10_gt_ma20": bool(bv_ma10 > bv_ma20),
             "note": "Kriteria BandarValue memakai data Broker Summary API.",
         }
-        swing["eligible"] = all(swing[k] for k in
-                                 ("bandar_value_gt_ma20", "value_ma20_ge_10b",
-                                  "prev_bandar_le_now", "bandar_ma10_gt_ma20"))
+        swing["eligible"] = bool(all(swing[k] for k in
+                                     ("bandar_value_gt_ma20", "value_ma20_ge_10b",
+                                      "prev_bandar_le_now", "bandar_ma10_gt_ma20"))
+                                 and price_setup["ok"])
         if swing["eligible"]:
             met.append("SWING")
     else:
@@ -1782,9 +1840,10 @@ def run_screener(df: pd.DataFrame, criteria: str = "all",
             "value_ma10_gt_ma20": bool(vma10 > vma20),
             "note": "Proksi tanpa data Broker Summary (BandarValue tidak tersedia via yfinance).",
         }
-        swing["eligible"] = all(swing[k] for k in
-                                 ("value_gt_ma20", "value_ma20_ge_10b",
-                                  "prev_value_le_now", "value_ma10_gt_ma20"))
+        swing["eligible"] = bool(all(swing[k] for k in
+                                     ("value_gt_ma20", "value_ma20_ge_10b",
+                                      "prev_value_le_now", "value_ma10_gt_ma20"))
+                                 and price_setup["ok"])
         if swing["eligible"]:
             met.append("SWING (proksi)")
     checks["swing"] = swing
@@ -3219,10 +3278,15 @@ def _scan_action_plan(df: pd.DataFrame, action: str,
         # Ringkas payload scan: hanya yang penting untuk keputusan.
         return {
             "kesimpulan": out.get("kesimpulan"),
+            "setup": out.get("setup"),
+            "timing": out.get("timing"),
             "langkah": (out.get("langkah") or [])[:5],
             "zona_entry": out.get("zona_entry"),
             "pembatalan": out.get("pembatalan"),
             "target": out.get("target"),
+            "trailing": out.get("trailing"),
+            "time_stop_hari": out.get("time_stop_hari"),
+            "kelayakan": out.get("kelayakan"),
             "level_referensi": out.get("level_referensi"),
             "konflik": out.get("konflik") or [],
             "data_date": out.get("data_date"),
@@ -3370,6 +3434,105 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     }
 
 
+def _structural_levels(low: pd.Series, high: pd.Series, sup_window: int = 20,
+                       res_window: int = 120):
+    """Support/resistance bergulir untuk backtest (rolling low/high, digeser 1 bar).
+
+    Digeser 1 bar supaya level pada bar i hanya memakai data s/d bar i-1 (tanpa
+    look-ahead). Dipakai sebagai pengganti find_sr_zones yang terlalu mahal bila
+    dihitung per bar.
+
+    Resistance memakai jendela lebih panjang (default 120 bar ≈ 6 bulan): high
+    20-bar terlalu dekat di tren naik sehingga gerbang RRR≥2 menjadi terlalu ketat
+    dan hampir semua trade terbuang. Support tetap 20 bar (level terdekat).
+    """
+    sup = low.rolling(sup_window, min_periods=5).min().shift(1)
+    res = high.rolling(res_window, min_periods=20).max().shift(1)
+    return sup, res
+
+
+def _simulate_trade(i: int, n: int, entry: float, atr_v: float,
+                    low: pd.Series, high: pd.Series, close: pd.Series, max_hold: int, *,
+                    plan_mode: bool = True,
+                    sup_s: Optional[pd.Series] = None, res_s: Optional[pd.Series] = None,
+                    rr_min: float = 2.0, trail_mult: float = 2.0,
+                    cost_pct: float = 0.003) -> dict:
+    """Simulasi 1 trade; menyamakan exit backtest dengan rencana aksi nyata.
+
+    plan_mode=True (default, selaras analisis):
+      * SL struktural = support terdekat - 0,3×ATR (dibatasi maks 3×ATR);
+      * TP di resistance terdekat + 0,3×ATR;
+      * gerbang RRR: trade DILEWATI bila ruang ke resistance < rr_min;
+      * setelah profit mencapai 1R, SL digeser ke break-even;
+      * lalu trailing stop trail_mult×ATR dari puncak.
+    plan_mode=False (mode lama): SL 2×ATR tetap, TP 2R tetap.
+    Mengembalikan {"skip": True, ...} bila tak layak, atau r/alasan/sl/tp/risk/rrr.
+    """
+    atr_v = float(atr_v) if atr_v and not np.isnan(atr_v) and atr_v > 0 else entry * 0.02
+    res = None
+    sup = None
+    try:
+        if res_s is not None and not pd.isna(res_s.iloc[i]):
+            res = float(res_s.iloc[i])
+        if sup_s is not None and not pd.isna(sup_s.iloc[i]):
+            sup = float(sup_s.iloc[i])
+    except Exception:
+        res = sup = None
+
+    if plan_mode:
+        sl = (sup - 0.3 * atr_v) if sup else (entry - 2 * atr_v)
+        if entry - sl > 3 * atr_v:
+            sl = entry - 2 * atr_v  # stop terlalu lebar -> batasi
+        if sl >= entry:
+            sl = entry - 2 * atr_v
+        risk = entry - sl
+        if risk <= 0:
+            return {"skip": True, "alasan": "risk<=0"}
+        if res is not None:
+            room = res + 0.3 * atr_v - entry
+            if room <= 0:
+                return {"skip": True, "alasan": "harga di/atas resistance"}
+            if room / risk < rr_min:
+                return {"skip": True, "alasan": f"RRR {room / risk:.2f} < {rr_min:g}"}
+            tp = res + 0.3 * atr_v
+        else:
+            tp = entry + rr_min * risk
+    else:
+        risk = max(atr_v * 2, entry * 0.005)
+        sl, tp = entry - risk, entry + 2 * risk
+
+    cost_r = (entry * cost_pct) / risk
+    stop = sl
+    peak = entry
+    be_done = False
+    reason = "timeout"
+    exit_price = None
+    for j in range(i + 1, min(i + 1 + max_hold, n)):
+        hi = float(high.iloc[j])
+        lo = float(low.iloc[j])
+        if hi > peak:
+            peak = hi
+        if lo <= stop:
+            reason = "sl"
+            exit_price = stop
+            break
+        if hi >= tp:
+            reason = "tp"
+            exit_price = tp
+            break
+        if plan_mode:
+            if not be_done and peak >= entry + risk:
+                stop = max(stop, entry)
+                be_done = True
+            if be_done:
+                stop = max(stop, peak - trail_mult * atr_v)
+    if exit_price is None:
+        exit_price = float(close.iloc[min(i + max_hold, n - 1)])
+    r = (exit_price - entry) / risk - cost_r
+    return {"r": r, "alasan": reason, "sl": sl, "tp": tp, "risk": risk,
+            "rrr": (tp - entry) / risk if risk > 0 else None, "be": be_done}
+
+
 def _backtest_one_safe(*args, **kwargs) -> Optional[dict]:
     """Wrapper aman utk _backtest_one: ticker bermasalah dilewati, bukan crash seluruh backtest."""
     try:
@@ -3382,7 +3545,9 @@ def _backtest_one(ticker: str, criteria: str, years: int,
                   confirm: bool = True, regime: bool = True, bb_confirm: bool = True,
                   div_vol: bool = True, weekly: bool = True, costs: bool = True,
                   ihsg_align: Optional[pd.DataFrame] = None,
-                  cost_pct: float = 0.003) -> Optional[dict]:
+                  cost_pct: float = 0.003,
+                  plan_mode: bool = True, rr_min: float = 2.0,
+                  trail_mult: float = 2.0) -> Optional[dict]:
     """Backtest 1 ticker: sinyal di harga tutup -> SL 2xATR, TP 2R (RRR 1:2, Bab 8).
     scalping/bsjp: hold maks 5 hari; swing/buy: 20 hari. Timeout keluar di harga
     tutup hari terakhir hold (dihitung terpisah dari win/loss).
@@ -3486,41 +3651,31 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         return {"ticker": ticker, "trades": 0}
 
     max_hold = 5 if criteria in ("scalping", "bsjp") else 20
-    wins = losses = timeouts = 0
+    # Mode plan (SL struktural + gerbang RRR + BE + trailing) hanya untuk swing/buy.
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp"))
+    sup_s, res_s = _structural_levels(low, high, 20) if plan_eff else (None, None)
+    wins = losses = timeouts = skipped = 0
     r_sum = 0.0
     for i in triggers:
         entry = float(close.iloc[i])
         a = float(atr_s.iloc[i])
-        atr_v = a if not np.isnan(a) else entry * 0.02
-        risk = max(atr_v * 2, entry * 0.005)
-        sl, tp = entry - risk, entry + 2 * risk
-        cost_r = (entry * cost_pct) / risk if costs else 0.0
-        outcome = None
-        exit_j = None
-        for j in range(i + 1, min(i + 1 + max_hold, n)):
-            if float(low.iloc[j]) <= sl:
-                outcome = -1.0
-                exit_j = j
-                break
-            if float(high.iloc[j]) >= tp:
-                outcome = 2.0
-                exit_j = j
-                break
-        if outcome is None:
-            # Timeout: keluar di harga tutup hari hold terakhir. Tetap dihitung
-            # TERPISAH dari win/loss (seperti sebelumnya) agar win rate tidak
-            # terinflasi oleh exit timeout yang kebetulan kecil positif; kontribusi
-            # R-nya (dikurangi biaya) tetap masuk ke rata-rata R per trade.
-            exit_j = min(i + max_hold, n - 1)
-            exit_r = (float(close.iloc[exit_j]) - entry) / risk
-            timeouts += 1
-            r_sum += exit_r - cost_r
+        out = _simulate_trade(
+            i, n, entry, a, low, high, close, max_hold,
+            plan_mode=plan_eff, sup_s=sup_s, res_s=res_s, rr_min=rr_min,
+            trail_mult=trail_mult, cost_pct=(cost_pct if costs else 0.0),
+        )
+        if out.get("skip"):
+            skipped += 1
             continue
-        if outcome > 0:
+        # Timeout tetap dihitung TERPISAH dari win/loss agar win rate tidak
+        # terinflasi; kontribusi R-nya tetap masuk rata-rata R per trade.
+        if out["alasan"] == "timeout":
+            timeouts += 1
+        elif out["r"] > 0:
             wins += 1
         else:
             losses += 1
-        r_sum += outcome - cost_r
+        r_sum += out["r"]
     total = wins + losses + timeouts
     decided = wins + losses
     return {
@@ -3529,6 +3684,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         "wins": wins,
         "losses": losses,
         "timeouts": timeouts,
+        "skipped_rrr": skipped,
         "win_rate_pct": num(wins / decided * 100, 1) if decided else None,
         "avg_r": num(r_sum / total, 2) if total else None,
         "max_hold_days": max_hold,
@@ -3552,7 +3708,9 @@ def _matrix_one_safe(tk: str, criteria: str, years: int,
 
 
 def _matrix_one(tk: str, criteria: str, years: int,
-                ihsg_align: Optional[pd.DataFrame] = None) -> Optional[dict]:
+                ihsg_align: Optional[pd.DataFrame] = None,
+                plan_mode: bool = True, rr_min: float = 2.0,
+                trail_mult: float = 2.0) -> Optional[dict]:
     """Matriks 32 kombinasi utk 1 ticker (dipanggil paralel per ticker).
 
     Data diambil sekali lalu 32 kombinasi dievaluasi dari deret yang sama.
@@ -3590,6 +3748,8 @@ def _matrix_one(tk: str, criteria: str, years: int,
 
     n = len(sub)
     max_hold = 5 if criteria in ("scalping", "bsjp") else 20
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp"))
+    sup_s, res_s = _structural_levels(low, high, 20) if plan_eff else (None, None)
     combos = list(itertools.product((True, False), repeat=5))
     out: Dict[str, dict] = {}
     for combo in combos:
@@ -3632,33 +3792,27 @@ def _matrix_one(tk: str, criteria: str, years: int,
                 triggers.append(i)
         if not triggers:
             continue
-        a = {"trades": 0, "wins": 0, "losses": 0, "timeouts": 0, "r": 0.0}
+        a = {"trades": 0, "wins": 0, "losses": 0, "timeouts": 0, "skipped": 0, "r": 0.0}
         for i in triggers:
             entry = float(close.iloc[i])
             atr_v = float(atr_s.iloc[i])
             if np.isnan(atr_v):
                 atr_v = entry * 0.02
-            risk = max(atr_v * 2, entry * 0.005)
-            sl, tp = entry - risk, entry + 2 * risk
-            cost_r = (entry * 0.003) / risk
-            outcome = None
-            for j in range(i + 1, min(i + 1 + max_hold, n)):
-                if float(low.iloc[j]) <= sl:
-                    outcome = -1.0
-                    break
-                if float(high.iloc[j]) >= tp:
-                    outcome = 2.0
-                    break
-            if outcome is None:
-                exit_r = (float(close.iloc[min(i + max_hold, n - 1)]) - entry) / risk
+            sim = _simulate_trade(
+                i, n, entry, atr_v, low, high, close, max_hold,
+                plan_mode=plan_eff, sup_s=sup_s, res_s=res_s, rr_min=rr_min,
+                trail_mult=trail_mult, cost_pct=0.003,
+            )
+            if sim.get("skip"):
+                a["skipped"] += 1
+                continue
+            if sim["alasan"] == "timeout":
                 a["timeouts"] += 1
-                a["r"] += exit_r - cost_r
+            elif sim["r"] > 0:
+                a["wins"] += 1
             else:
-                if outcome > 0:
-                    a["wins"] += 1
-                else:
-                    a["losses"] += 1
-                a["r"] += outcome - cost_r
+                a["losses"] += 1
+            a["r"] += sim["r"]
             a["trades"] += 1
         out[ck] = a
     return out if out else None
@@ -3676,6 +3830,7 @@ def _matrix_finish(agg: Dict[str, dict]) -> dict:
             "wins": a["wins"],
             "losses": a["losses"],
             "timeouts": a["timeouts"],
+            "skipped": a.get("skipped", 0),
             "win_rate_pct": num(a["wins"] / decided * 100, 1) if decided else None,
             "avg_r": num(a["r"] / a["trades"], 2) if a["trades"] else None,
         })
@@ -3698,7 +3853,9 @@ def _matrix_finish(agg: Dict[str, dict]) -> dict:
 
 
 def _backtest_matrix(tickers: List[str], criteria: str, years: int,
-                     ihsg_align: Optional[pd.DataFrame] = None) -> dict:
+                     ihsg_align: Optional[pd.DataFrame] = None,
+                     plan_mode: bool = True, rr_min: float = 2.0,
+                     trail_mult: float = 2.0) -> dict:
     """Matriks 32 kombinasi filter, PARALEL per ticker (fix timeout 504).
 
     criteria='all' menghitung 4 kriteria sekaligus (swing, scalping, bsjp, buy);
@@ -3713,11 +3870,12 @@ def _backtest_matrix(tickers: List[str], criteria: str, years: int,
     checked_total = 0
     for crit in criteria_list:
         agg = {("-".join("1" if c else "0" for c in combo)): {"trades": 0, "wins": 0, "losses": 0,
-                                                              "timeouts": 0, "r": 0.0}
+                                                              "timeouts": 0, "skipped": 0, "r": 0.0}
                for combo in all_keys}
         checked = 0
         with ThreadPoolExecutor(max_workers=8) as ex:
-            for one in ex.map(lambda tk: _matrix_one_safe(tk, crit, years, ihsg_align), tickers):
+            for one in ex.map(lambda tk: _matrix_one_safe(tk, crit, years, ihsg_align,
+                                                          plan_mode, rr_min, trail_mult), tickers):
                 if one is None:
                     continue
                 checked += 1
@@ -3727,6 +3885,7 @@ def _backtest_matrix(tickers: List[str], criteria: str, years: int,
                     d["wins"] += a["wins"]
                     d["losses"] += a["losses"]
                     d["timeouts"] += a["timeouts"]
+                    d["skipped"] += a.get("skipped", 0)
                     d["r"] += a["r"]
         checked_total = checked
         fin = _matrix_finish(agg)
@@ -3965,6 +4124,84 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
     sl = (rm or {}).get("stop_loss") or (last_price - 2 * atr14 if isinstance(atr14, (int, float)) and atr14 > 0 else None)
     tp = (rm or {}).get("take_profit")
 
+    # --- Level plan swing: SL struktural, TP bertingkat, gerbang RRR, trailing ---
+    atr_v = float(atr14) if isinstance(atr14, (int, float)) and atr14 and atr14 > 0 else last_price * 0.02
+    res_list = sorted([z["price"] for z in res if z.get("price")], key=lambda x: x)
+    tp1 = (res_list[0] + 0.3 * atr_v) if res_list else (tp or last_price + 2 * atr_v)
+    tp2 = (res_list[1] + 0.3 * atr_v) if len(res_list) > 1 else (tp1 + 1.5 * atr_v)
+    sl_v = sl if isinstance(sl, (int, float)) else (last_price - 2 * atr_v)
+    risk_v = last_price - sl_v
+    reward_v = tp1 - last_price
+    rrr = (reward_v / risk_v) if risk_v > 0 else None
+    layak = bool(rrr is not None and rrr >= 2.0)
+
+    # --- Setup swing: pullback di tren naik vs breakout ---
+    rsi_ok = isinstance(rsi, (int, float)) and 35 <= rsi <= 68
+    trend_up = bool(trend.get("direction") == "uptrend" or
+                    (isinstance(s20, (int, float)) and isinstance(s50, (int, float)) and last_price > s20 > s50))
+    dist_s20 = abs(last_price / s20 - 1) * 100 if isinstance(s20, (int, float)) and s20 else None
+    dist_sup = ((last_price - lv_sup) / last_price * 100) if lv_sup else None
+    dist_res = ((lv_res - last_price) / last_price * 100) if lv_res else None
+    vol_ok = isinstance(vol_ratio, (int, float)) and vol_ratio >= 1.5
+    near_pull = ((dist_s20 is not None and dist_s20 <= 3.0)
+                 or (dist_sup is not None and dist_sup <= 3.0))
+    bb_upper = bb.get("upper")
+    overbought = isinstance(bb_upper, (int, float)) and last_price > bb_upper
+
+    if trend_up and near_pull and rsi_ok and not overbought:
+        setup = {"jenis": "Pullback di tren naik", "kualitas": "terbaik",
+                 "deskripsi": ("Harga mundur sehat ke area SMA20/support dalam tren naik — ini titik masuk "
+                               "swing dengan peluang terbaik. Beli saat muncul kekuatan kembali, bukan saat "
+                               "harga masih jatuh."),
+                 "trigger": {
+                     "level": num(max([v for v in (s20, lv_sup) if isinstance(v, (int, float))] or [last_price]), 2),
+                     "syarat": ("Close kembali di atas level ini (di atas SMA20/zona support) DENGAN candle "
+                                "bullish (hammer/engulfing) dan volume ≥1,5× MA20"),
+                     "sekarang": f"harga {_rp(last_price)} · RSI {_rp(rsi, 1)} · volume {vol_txt}"}}
+    elif lv_res and dist_res is not None and dist_res <= 2.0 and (vol_ok or bb.get("squeeze")) and not overbought:
+        setup = {"jenis": "Breakout", "kualitas": "bagus",
+                 "deskripsi": ("Harga menekan resistance dengan tenaga. Entry agresif saat close menembus "
+                               "resistance; entry lebih aman saat pullback pertama ke level breakout."),
+                 "trigger": {
+                     "level": num(lv_res, 2),
+                     "syarat": "Close DI ATAS resistance ini dengan volume ≥1,5× MA20 (bukan sekadar menyentuh)",
+                     "sekarang": f"harga {_rp(last_price)} vs resistance {_rp(lv_res)} · volume {vol_txt}"}}
+    else:
+        setup = {"jenis": "Tunggu (belum ada setup)", "kualitas": "belum",
+                 "deskripsi": ("Belum ada setup pullback maupun breakout yang rapi. Menunggu lebih baik "
+                               "daripada memaksa entry."),
+                 "trigger": {
+                     "level": num((lv_res if lv_res else tp1), 2),
+                     "syarat": ("Pullback ke SMA20/support (cari pantulan), ATAU close menembus resistance "
+                                "dengan volume ≥1,5× MA20"),
+                     "sekarang": f"harga {_rp(last_price)} · RSI {_rp(rsi, 1)}"}}
+    setup["layak_entry"] = bool(layak and setup["jenis"] != "Tunggu (belum ada setup)")
+
+    # --- Timing score: seberapa tepat WAKTUNYA masuk (0-100) ---
+    t_parts: Dict[str, float] = {}
+    p_s20 = 0.0
+    if dist_s20 is not None:
+        p_s20 = 25.0 if dist_s20 <= 2 else (18.0 if dist_s20 <= 4 else (8.0 if dist_s20 <= 7 else 0.0))
+    t_parts["Dekat SMA20 (pullback sehat)"] = p_s20
+    p_rsi = (20.0 if (isinstance(rsi, (int, float)) and 40 <= rsi <= 60) else
+             (12.0 if (isinstance(rsi, (int, float)) and ((30 <= rsi < 40) or (60 < rsi <= 70))) else 0.0))
+    t_parts["RSI zona sehat (40-60)"] = p_rsi
+    p_ma = (20.0 if (isinstance(s20, (int, float)) and isinstance(s50, (int, float)) and last_price > s20 > s50) else
+            (10.0 if (isinstance(s20, (int, float)) and last_price > s20) else 0.0))
+    t_parts["Struktur MA naik (harga>SMA20>SMA50)"] = p_ma
+    p_macd = 20.0 if (isinstance(hist, (int, float)) and hist > 0) else 0.0
+    t_parts["MACD histogram positif"] = p_macd
+    p_vol = 15.0 if vol_ok else (8.0 if isinstance(vol_ratio, (int, float)) and vol_ratio >= 1.0 else 0.0)
+    t_parts["Volume mendukung (≥MA20)"] = p_vol
+    timing_score = min(100.0, p_s20 + p_rsi + p_ma + p_macd + p_vol)
+    timing = {
+        "skor": num(timing_score, 0),
+        "label": ("WAKTU BAIK" if timing_score >= 70 else "CUKUP" if timing_score >= 45 else "BELUM TEPAT"),
+        "komponen": t_parts,
+        "catatan": ("Timing menilai ketepatan WAKTU masuk (bukan kualitas saham): posisi harga vs SMA20, RSI, "
+                    "struktur MA, MACD, dan volume. Skor tinggi + setup valid = titik masuk terbaik."),
+    }
+
     konflik: List[str] = []
     if weekly:
         if weekly.get("up") and "SELL" in aksi:
@@ -3985,15 +4222,39 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
                        f"({_rp(bb.get('lower'))}–{_rp(bb.get('upper'))}).")
     if liquidity_grade and str(liquidity_grade).lower().startswith(("kurang", "tipis")):
         konflik.append("Likuiditas tipis — pakai order kecil dan hati-hati spread lebar.")
+    # Gerbang RRR: ruang ke resistance harus minimal 1:2 dari risiko.
+    if rrr is not None and not layak:
+        konflik.append(f"RRR hanya 1:{_rp(rrr, 2)} (< 1:2) — ruang ke resistance terlalu dekat. Tunggu harga "
+                       "koreksi ke support agar rasio membaik, atau lewati trade ini.")
+    elif rrr is None:
+        konflik.append("RRR tidak dapat dihitung (stop loss belum valid) — jangan entry sebelum SL jelas.")
 
     return {
         "kesimpulan": kesimpulan,
         "langkah": steps,
+        "setup": setup,
+        "timing": timing,
         "zona_entry": zona,
-        "pembatalan": ({"level": num(sl, 2), "catatan": "Rencana batal bila harga ditutup di bawah level ini "
-                                                          "(stop loss / 2× ATR)."} if sl else None),
-        "target": ({"tp1": num(tp, 2), "catatan": "Take profit dari resistance/Fibonacci berikutnya "
-                                                   "(manajemen risiko Bab 8)."} if tp else None),
+        "pembatalan": ({
+            "level": num(sl_v, 2),
+            "catatan": ("Rencana batal bila harga ditutup di bawah level ini (SL di bawah "
+                        "support/2× ATR). Perketat bila volatilitas naik."),
+        } if sl_v else None),
+        "target": {"tp1": num(tp1, 2), "tp2": num(tp2, 2),
+                   "catatan": ("TP1 di resistance terdekat (jual sebagian, geser SL ke break-even), "
+                               "TP2 di resistance berikutnya/Fibonacci.")},
+        "trailing": {
+            "jenis": "Trailing 2×ATR dari puncak (mulai setelah TP1 / profit ≥1R)",
+            "level_saat_ini": num(max([v for v in (s20, last_price - 2 * atr_v) if isinstance(v, (int, float))]), 2),
+            "catatan": "Setelah TP1 tercapai, geser SL ke harga entry (break-even), lalu ikuti kenaikan.",
+        },
+        "time_stop_hari": 20,
+        "kelayakan": {
+            "rrr": num(rrr, 2), "rr_min": 2.0, "layak": layak,
+            "alasan": ("Ruang ke resistance memadai (RRR ≥ 1:2)." if layak else
+                       ("Ruang ke resistance terlalu dekat — tunggu koreksi atau lewati." if rrr is not None else
+                        "Stop loss belum valid sehingga RRR tak dapat dihitung.")),
+        },
         "level_referensi": {
             "resistance_terdekat": num(lv_res, 2),
             "support_terdekat": num(lv_sup, 2),
@@ -4535,7 +4796,8 @@ def cron_koreksi(request: Request, secret: str = Query("")):
 
         state_key = f"ci:koreksi_state:{tk}"
         prev = str(_upstash_get(state_key) or "")
-        plan_txt = _telegram_action_plan(d.get("action_plan"))
+        ap = d.get("action_plan") or {}
+        plan_txt = _telegram_action_plan(ap)
         plan_block = ("\n\n" + plan_txt) if plan_txt else ""
 
         # (1) Konfirmasi reversal: sebelumnya SELL/STRONG SELL, sekarang BUY/STRONG BUY.
@@ -4557,6 +4819,25 @@ def cron_koreksi(request: Request, secret: str = Query("")):
                        f"(harga {num(price, 2)})\nKualitas {num(score, 0)} · sinyal {sig} — tunggu konfirmasi reversal."
                        + plan_block)
                 if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                    _upstash_set(dedupe, "1", ttl=86400)
+                    sent += 1
+
+        # (3) Setup swing siap entry: setup valid (pullback/breakout) + RRR ≥ 1:2
+        #     + timing bagus. Ini notifikasi proaktif "titik masuk terbaik".
+        setup = ap.get("setup") or {}
+        kel = ap.get("kelayakan") or {}
+        tmg = ap.get("timing") or {}
+        trg = setup.get("trigger") or {}
+        if (setup.get("layak_entry") and kel.get("layak")
+                and setup.get("jenis") in ("Pullback di tren naik", "Breakout")):
+            dedupe = f"ci:notif:koreksi:{tk}:SETUP:{today}"
+            if not _upstash_get(dedupe):
+                trig = f" · trigger @ {num(trg.get('level'), 2)}" if trg.get("level") else ""
+                msg = (f"🎯 SETUP SWING SIAP: {strip_suffix(tk)}\n"
+                       f"{setup.get('jenis')} · timing {num(tmg.get('skor'), 0)}/100 "
+                       f"({tmg.get('label') or '—'})\n"
+                       f"Harga {num(price, 2)}{trig} · RRR 1:{num(kel.get('rrr'), 2)}")
+                if _telegram_send(msg + plan_block + "\n\n(dedesaputra_invst)"):
                     _upstash_set(dedupe, "1", ttl=86400)
                     sent += 1
 
@@ -4621,11 +4902,17 @@ def backtest(
     div_vol: bool = Query(True, description="Gerbang divergensi RSI bullish + volume > rata-rata"),
     weekly: bool = Query(True, description="Multi-timeframe: tren mingguan naik (close > SMA20 mingguan)"),
     costs: bool = Query(True, description="Biaya + slippage 0,3% round-trip"),
+    plan_mode: bool = Query(True, description="Exit selaras rencana aksi: SL struktural (support-0,3×ATR), gerbang RRR≥2, geser SL ke break-even, trailing 2×ATR"),
+    rr_min: float = Query(2.0, ge=1.0, le=5.0, description="RRR minimum agar trade diambil (mode plan)"),
+    trail_mult: float = Query(2.0, ge=0.5, le=5.0, description="Pengali ATR untuk trailing stop (mode plan)"),
     tickers_param: str = Query("", alias="tickers",
                                description="Daftar kode kustom dipisah koma (maks 45); menimpa universe"),
 ):
-    """Estimasi win rate historis per kriteria screener (eduksi, bukan jaminan masa depan).
-    Sinyal -> entry di harga tutup, SL 2xATR, TP 2R (RRR 1:2), hold maks 5/20 hari.
+    """Estimasi win rate historis per kriteria screener (edukasi, bukan jaminan masa depan).
+    Sinyal -> entry di harga tutup. plan_mode=True (default) menyamakan exit dengan
+    rencana aksi: SL struktural support-0,3×ATR, TP di resistance, gerbang RRR≥2,
+    geser SL ke break-even setelah 1R, lalu trailing 2×ATR. plan_mode=False memakai
+    mode lama: SL 2×ATR, TP 2R tetap. Hold maks 5/20 hari.
     Filter optimasi (regime/bb_confirm/div_vol/weekly) mempersempit sinyal ke kondisi
     yang lebih terkonfirmasi; costs menambahkan biaya+slippage 0,3% round-trip.
     Kriteria 'all' menjalankan 4 kriteria sekaligus dan mengembalikan hasil terbaik
@@ -4635,7 +4922,7 @@ def backtest(
         best = None
         for c in ("swing", "scalping", "bsjp", "buy"):
             r = backtest(c, universe, years, limit, confirm, regime, bb_confirm,
-                         div_vol, weekly, costs, tickers_param)
+                         div_vol, weekly, costs, plan_mode, rr_min, trail_mult, tickers_param)
             if r.get("total_trades", 0) <= 0:
                 continue
             if best is None:
@@ -4671,10 +4958,18 @@ def backtest(
         except Exception:
             ihsg_align = None
     results: List[dict] = []
+    tot_skipped = 0
     with ThreadPoolExecutor(max_workers=8) as ex:
         for r in ex.map(lambda t: _backtest_one_safe(t, criteria, years, confirm, regime, bb_confirm,
-                                                     div_vol, weekly, costs, ihsg_align), tickers):
-            if r and r.get("trades", 0) > 0:
+                                                     div_vol, weekly, costs, ihsg_align,
+                                                     plan_mode=plan_mode, rr_min=rr_min,
+                                                     trail_mult=trail_mult), tickers):
+            if not r:
+                continue
+            # Kandidat yang DILEWATI (RRR<2) tetap dihitung walau tak ada trade,
+            # supaya terlihat berapa banyak sinyal yang disaring gerbang RRR.
+            tot_skipped += r.get("skipped_rrr", 0)
+            if r.get("trades", 0) > 0:
                 results.append(r)
     tot_trades = sum(r["trades"] for r in results)
     tot_wins = sum(r["wins"] for r in results)
@@ -4704,18 +4999,28 @@ def backtest(
         "wins": tot_wins,
         "losses": tot_losses,
         "timeouts": tot_timeouts,
+        "skipped_rrr": tot_skipped,
+        "plan_mode": bool(plan_mode),
+        "rr_min": float(rr_min),
+        "trail_mult": float(trail_mult),
         "win_rate_pct": num(tot_wins / decided * 100, 1) if decided else None,
         "avg_r": num(avg_r, 2),
         "per_ticker": results[:15],
-        "note": ("Backtest: entry harga tutup saat sinyal, SL 2xATR, TP 2R (RRR 1:2 sesuai buku), "
-                 "hold maks 5 hari (scalping/BSJP) / 20 hari (swing/buy); timeout keluar di close. "
+        "note": ("Backtest: entry harga tutup saat sinyal. "
+                 + (f"Mode PLAN: SL di support-0,3×ATR (maks 3×ATR), TP di resistance terdekat-0,3×ATR, "
+                    f"trade dilewati bila RRR < {rr_min:g} (skipped_rrr), geser SL ke break-even setelah 1R, "
+                    f"lalu trailing {trail_mult:g}×ATR. "
+                    if plan_mode else
+                    "Mode LAMA: SL 2×ATR, TP 2R (RRR 1:2). ")
+                 + "hold maks 5 hari (scalping/BSJP) / 20 hari (swing/buy); timeout keluar di close. "
                  "Filter optimasi aktif: "
                  + ("IHSG>MA200 " if regime else "") + ("BB band bawah/tengah+tren naik " if bb_confirm else "")
                  + ("divergensi RSI+volume " if div_vol else "") + ("tren mingguan " if weekly else "")
                  + ("| biaya+slippage 0,3% round-trip " if costs else "tanpa biaya") + ". "
                  "Rentan survivorship bias & aksi korporasi. Kinerja masa lalu BUKAN jaminan masa depan. "
                  "Kriteria 'bandar' tidak diuji: Broker Summary hanya snapshot hari ini tanpa riwayat. "
-                 "Kriteria 'buy' memakai skor komposit multi-konfirmasi (tanpa bandarmology historis)."),
+                 "Kriteria 'buy' memakai skor komposit multi-konfirmasi (tanpa bandarmology historis). "
+                 "Win rate dihitung dari trade yang dituntaskan; timeout dihitung terpisah."),
         "disclaimer": DISCLAIMER,
     }
 
@@ -4726,6 +5031,9 @@ def backtest_matrix(
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
+    plan_mode: bool = Query(True, description="Exit selaras rencana aksi (SL struktural, RRR≥2, BE, trailing)"),
+    rr_min: float = Query(2.0, ge=1.0, le=5.0, description="RRR minimum agar trade diambil (mode plan)"),
+    trail_mult: float = Query(2.0, ge=0.5, le=5.0, description="Pengali ATR untuk trailing stop"),
     tickers_param: str = Query("", alias="tickers",
                                description="Daftar kode kustom dipisah koma (maks 30); menimpa universe"),
 ):
@@ -4748,7 +5056,8 @@ def backtest_matrix(
                 ihsg_align = s
     except Exception:
         ihsg_align = None
-    out = _backtest_matrix(tickers, criteria, years, ihsg_align)
+    out = _backtest_matrix(tickers, criteria, years, ihsg_align,
+                           plan_mode=plan_mode, rr_min=rr_min, trail_mult=trail_mult)
     out["disclaimer"] = DISCLAIMER
     return out
 
@@ -4781,7 +5090,7 @@ class ScreenerRequest(BaseModel):
     include_signal: bool = True
     include_bandarmology: bool = True
     require_confirm: bool = False
-    require_regime: bool = False
+    require_regime: Optional[bool] = None
 
 
 @app.get("/api/screener/tickers")
@@ -4806,16 +5115,20 @@ def screener(
     include_signal: bool = Query(True),
     include_bandarmology: bool = Query(True),
     require_confirm: bool = Query(False),
-    require_regime: bool = Query(False, description="Hanya saham saat IHSG di atas MA200 (filter kondisi pasar)"),
+    require_regime: Optional[bool] = Query(None, description="Hanya saham saat IHSG di atas MA200. Default: aktif otomatis untuk kriteria swing/buy/koreksi."),
 ):
     """Scan saham dengan kriteria screener Coachinvestasi.
 
     require_confirm=True hanya menampilkan saham yang lolos konfirmasi buku
     (harga > SMA20, RSI < 70, volume > VolumeMA20). require_regime=True hanya
-    memproses sinyal saat IHSG di atas MA200 (tidak mengejar pasar bear).
+    memproses sinyal saat IHSG di atas MA200 (tidak mengejar pasar bear). Bila
+    tidak diisi (None), filter regime otomatis AKTIF untuk kriteria swing/buy/
+    koreksi karena strategi itu sebaiknya tidak melawan pasar bear.
     Gunakan offset/limit berulang-ulang untuk memindai SELURUH kode saham
     (total_tickers & next_offset disediakan untuk paginasi).
     """
+    if require_regime is None:
+        require_regime = criteria in ("swing", "buy", "koreksi")
     all_tickers = load_idx_tickers(universe)
     window = all_tickers[offset:offset + limit]
     if not window:
@@ -4899,13 +5212,16 @@ def screener_post(payload: ScreenerRequest):
     if not payload.tickers:
         raise HTTPException(422, "List tickers tidak boleh kosong.")
     tickers = [t.upper() if "." in t else f"{t.upper()}.JK" for t in payload.tickers][:100]
+    require_regime = payload.require_regime
+    if require_regime is None:
+        require_regime = payload.criteria in ("swing", "buy", "koreksi")
     scan = _scan(tickers, payload.criteria, payload.period,
                  payload.include_signal, payload.include_bandarmology,
-                 payload.require_confirm, payload.require_regime)
+                 payload.require_confirm, require_regime)
     return {
         "criteria": payload.criteria,
         "require_confirm": payload.require_confirm,
-        "require_regime": payload.require_regime,
+        "require_regime": require_regime,
         "period": payload.period,
         "requested": len(tickers),
         "scanned": scan["scanned"],

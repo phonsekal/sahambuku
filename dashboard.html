@@ -155,6 +155,7 @@
           <label class="flex items-center gap-1.5 text-slate-400" title="Entry hanya saat divergensi RSI bullish atau RSI&lt;70, dan volume di atas rata-rata"><input type="checkbox" id="btDivVol" checked class="rounded bg-slate-800 border-slate-600 accent-emerald-500"> Divergensi+Vol</label>
           <label class="flex items-center gap-1.5 text-slate-400" title="Ketat: multi-timeframe — hanya saat tren mingguan naik (close &gt; SMA mingguan). Menghilangkan sinyal pantulan saat tren mingguan turun."><input type="checkbox" id="btWeekly" class="rounded bg-slate-800 border-slate-600 accent-emerald-500"> Tren mingguan (ketat)</label>
           <label class="flex items-center gap-1.5 text-slate-400" title="Kurangi hasil dengan biaya + slippage 0,3% round-trip (realistis)"><input type="checkbox" id="btCosts" checked class="rounded bg-slate-800 border-slate-600 accent-amber-500"> Biaya 0,3%</label>
+          <label class="flex items-center gap-1.5 text-slate-400" title="Selaraskan exit backtest dengan rencana aksi: SL struktural (support-0,3×ATR, maks 3×ATR), trade DILEWATI bila RRR &lt; 1:2, geser SL ke break-even setelah profit 1R, lalu trailing 2×ATR. Matikan untuk mode lama (SL 2×ATR tetap, TP 2R)."><input type="checkbox" id="btPlan" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> Mode rencana (RRR≥2 + trailing)</label>
         </div>
         <label class="flex items-center gap-2 text-xs text-slate-400" title="Hanya entry saat: harga di atas SMA20, RSI<70, volume di atas rata-rata 20 hari — sesuai penekanan konfirmasi di buku.">
           <input type="checkbox" id="btConfirm" checked class="rounded bg-slate-800 border-slate-600 accent-violet-500"> Konfirmasi buku
@@ -784,6 +785,16 @@ function renderAnalyze(d) {
   if (ap) {
     h += card("📋 Rencana Aksi — Tunggu Apa & di Harga Berapa", `
       <div class="text-sm font-semibold mb-3 ${s.action.includes("BUY") ? "text-emerald-400" : s.action.includes("SELL") ? "text-rose-400" : "text-amber-300"}">${esc(ap.kesimpulan || "")}</div>
+      ${ap.setup ? `<div class="mb-3 rounded-xl border ${ap.setup.layak_entry ? "border-emerald-500/40 bg-emerald-500/10" : "border-slate-700 bg-slate-800/40"} px-3.5 py-3">
+        <div class="flex flex-wrap items-center gap-2 mb-1.5">
+          <span class="text-[11px] font-bold uppercase tracking-wider ${ap.setup.layak_entry ? "text-emerald-300" : "text-slate-300"}">🧩 Setup: ${esc(ap.setup.jenis || "—")}</span>
+          ${ap.kelayakan ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${ap.kelayakan.layak ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}">⚖️ RRR ${ap.kelayakan.rrr != null ? "1:" + fmt(ap.kelayakan.rrr, 2) : "—"} ${ap.kelayakan.layak ? "layak" : "di bawah 1:2"}</span>` : ""}
+          ${ap.timing ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${ap.timing.skor >= 70 ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : ap.timing.skor >= 45 ? "border-amber-500/40 text-amber-300 bg-amber-500/10" : "border-slate-600 text-slate-400"}">⏱ Timing masuk ${fmt(ap.timing.skor, 0)}/100 · ${esc(ap.timing.label || "")}</span>` : ""}
+        </div>
+        <div class="text-[11px] text-slate-300">${esc(ap.setup.deskripsi || "")}</div>
+        ${ap.setup.trigger ? `<div class="text-[11px] mt-1.5 text-sky-300">🎯 Trigger: <b class="tabular">${ap.setup.trigger.level != null ? fmt(ap.setup.trigger.level) : "—"}</b> — ${esc(ap.setup.trigger.syarat || "")}</div>
+        <div class="text-[10px] text-slate-500 mt-0.5">${esc(ap.setup.trigger.sekarang || "")}</div>` : ""}
+      </div>` : ""}
       <div class="overflow-x-auto mb-3"><table class="w-full text-sm">
         <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Syarat konfirmasi</th><th class="text-left">Level harga</th><th class="text-left">Kondisi sekarang</th><th class="text-center">Sifat</th></tr></thead>
         <tbody>${(ap.langkah || []).map(k => `<tr class="border-b border-slate-800/60"><td class="py-2 pr-3">${esc(k.syarat)}</td><td class="tabular text-sky-300 whitespace-nowrap">${k.level != null ? fmt(k.level) : "—"}</td><td class="text-slate-400 text-[12px]">${esc(k.sekarang || "")}</td><td class="text-center">${k.wajib ? `<span class="text-[10px] px-2 py-0.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-300">wajib</span>` : `<span class="text-[10px] text-slate-500">pendukung</span>`}</td></tr>`).join("")}</tbody>
@@ -791,9 +802,16 @@ function renderAnalyze(d) {
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
         ${kv("Zona Pantau / Entry", (ap.zona_entry && ap.zona_entry.low != null) ? (fmt(ap.zona_entry.low) + (ap.zona_entry.high && ap.zona_entry.high !== ap.zona_entry.low ? " – " + fmt(ap.zona_entry.high) : "")) : "—")}
         ${kv("Pembatalan (SL)", ap.pembatalan ? fmt(ap.pembatalan.level) : "—", "text-rose-400")}
-        ${kv("Target (TP)", ap.target ? fmt(ap.target.tp1) : "—", "text-emerald-400")}
+        ${kv("TP1 (jual sebagian)", ap.target && ap.target.tp1 != null ? fmt(ap.target.tp1) : "—", "text-emerald-400")}
+        ${kv("TP2 (sisa posisi)", ap.target && ap.target.tp2 != null ? fmt(ap.target.tp2) : "—", "text-emerald-400")}
         ${kv("Resistance Terdekat", (ap.level_referensi || {}).resistance_terdekat != null ? fmt(ap.level_referensi.resistance_terdekat) : "—")}
+        ${kv("Batas Waktu (Time Stop)", ap.time_stop_hari ? ap.time_stop_hari + " hari bursa" : "—")}
+        ${kv("Trailing Stop", ap.trailing ? "2×ATR dari puncak" : "—")}
+        ${kv("Support Terdekat", (ap.level_referensi || {}).support_terdekat != null ? fmt(ap.level_referensi.support_terdekat) : "—")}
       </div>
+      ${ap.kelayakan && !ap.kelayakan.layak ? `<div class="text-[11px] text-rose-300/90 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2 mb-1">⛔ ${esc(ap.kelayakan.alasan)}</div>` : ""}
+      ${ap.trailing && ap.trailing.catatan ? `<div class="text-[10px] text-slate-500 mb-1">🔄 ${esc(ap.trailing.catatan)}</div>` : ""}
+      ${ap.timing && ap.timing.komponen ? `<details class="text-[11px] text-slate-500 mb-1"><summary class="cursor-pointer text-slate-400 select-none">Rincian timing masuk</summary><div class="mt-1.5 grid grid-cols-2 gap-1">${Object.entries(ap.timing.komponen).map(([k, v]) => `<div>${esc(k)}: <b class="text-slate-300 tabular">${fmt(v, 0)}</b></div>`).join("")}</div></details>` : ""}
       ${ap.zona_entry && ap.zona_entry.catatan ? `<div class="text-[11px] text-slate-500 mb-1">${esc(ap.zona_entry.catatan)}</div>` : ""}
       ${(ap.konflik || []).length ? `<div class="mt-3 space-y-1">${ap.konflik.map(x => `<div class="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">⚠ ${esc(x)}</div>`).join("")}</div>` : ""}
       <div class="text-[11px] text-slate-500 mt-3">${esc(ap.catatan || "")}</div>`);
@@ -1155,12 +1173,21 @@ function scanPlanHtml(ap) {
   const steps = (ap.langkah || []).map(k => `<tr class="border-b border-slate-700/40"><td class="py-1 pr-3">${esc(k.syarat)}</td><td class="tabular text-sky-300 whitespace-nowrap px-2">${k.level != null ? fmt(k.level) : "—"}</td><td class="text-slate-400 pr-2">${esc(k.sekarang || "")}</td><td class="text-center whitespace-nowrap">${k.wajib ? '<span class="text-[10px] text-rose-300">wajib</span>' : '<span class="text-[10px] text-slate-500">pendukung</span>'}</td></tr>`).join("");
   const z = ap.zona_entry || {};
   const zona = z.low != null ? (fmt(z.low) + (z.high && z.high !== z.low ? " – " + fmt(z.high) : "")) : "—";
+  const st = ap.setup || {}, tm = ap.timing || {}, kel = ap.kelayakan || {};
+  const setupLine = st.jenis ? `<div class="mb-2 flex flex-wrap items-center gap-2">
+      <span class="text-[11px] font-bold ${st.layak_entry ? "text-emerald-300" : "text-slate-300"}">🧩 Setup: ${esc(st.jenis)}</span>
+      ${tm.skor != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${tm.skor >= 70 ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : tm.skor >= 45 ? "border-amber-500/40 text-amber-300 bg-amber-500/10" : "border-slate-600 text-slate-400"}">⏱ Timing ${fmt(tm.skor, 0)}/100</span>` : ""}
+      ${kel.rrr != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${kel.layak ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}">⚖️ RRR 1:${fmt(kel.rrr, 2)}${kel.layak ? "" : " (di bawah 1:2)"}</span>` : ""}
+    </div>
+    ${st.trigger ? `<div class="text-[11px] text-sky-300 mb-2">🎯 Trigger: <b class="tabular">${st.trigger.level != null ? fmt(st.trigger.level) : "—"}</b> — ${esc(st.trigger.syarat || "")}</div>` : ""}` : "";
   return `<div class="text-xs font-semibold mb-2 text-amber-200">${esc(ap.kesimpulan || "")}</div>
+    ${setupLine}
     <table class="w-full text-xs mb-2"><tbody>${steps}</tbody></table>
     <div class="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-400">
       <span>🎯 Zona pantau / entry: <b class="text-slate-200 tabular">${zona}</b></span>
-      <span>🛑 Pembatalan: <b class="text-rose-400 tabular">${ap.pembatalan ? fmt(ap.pembatalan.level) : "—"}</b></span>
-      <span>✅ Target TP: <b class="text-emerald-400 tabular">${ap.target ? fmt(ap.target.tp1) : "—"}</b></span>
+      <span>🛑 SL: <b class="text-rose-400 tabular">${ap.pembatalan ? fmt(ap.pembatalan.level) : "—"}</b></span>
+      <span>✅ TP1: <b class="text-emerald-400 tabular">${ap.target ? fmt(ap.target.tp1) : "—"}</b>${ap.target && ap.target.tp2 != null ? ` · TP2: <b class="text-emerald-400 tabular">${fmt(ap.target.tp2)}</b>` : ""}</span>
+      <span>⏳ Batas: <b class="text-slate-300 tabular">${ap.time_stop_hari ? ap.time_stop_hari + " hari" : "—"}</b></span>
       <span>📅 Data s/d <b class="text-slate-300">${esc(ap.data_date || "—")}</b></span>
     </div>
     ${(ap.konflik || []).length ? `<div class="mt-2 text-[11px] text-amber-300/90">⚠ ${esc(ap.konflik[0])}</div>` : ""}
@@ -1189,7 +1216,7 @@ async function runBacktest() {
     years: $("#btYears").value, confirm: $("#btConfirm").checked ? 1 : 0, limit: 100,
     regime: $("#btRegime").checked ? 1 : 0, bb_confirm: $("#btBB").checked ? 1 : 0,
     div_vol: $("#btDivVol").checked ? 1 : 0, weekly: $("#btWeekly").checked ? 1 : 0,
-    costs: $("#btCosts").checked ? 1 : 0 });
+    costs: $("#btCosts").checked ? 1 : 0, plan_mode: $("#btPlan").checked ? 1 : 0 });
   if (u === "custom") q.set("tickers", $("#btTickers").value);
   else q.set("universe", u);
   const label = u === "custom" ? "saham kustom" : (u === "all" ? "100 saham" : "45 saham LQ45");
@@ -1206,14 +1233,16 @@ async function runBacktest() {
     if (c.div_vol) cfgPills.push("Divergensi RSI+volume");
     if (c.weekly) cfgPills.push("Tren mingguan");
     if (c.costs) cfgPills.push("Biaya+slippage " + (c.cost_pct || 0.3) + "%");
-    let h = `<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">`;
+    if (d.plan_mode) cfgPills.push("Mode rencana: SL struktural + RRR≥2 + break-even + trailing " + (d.trail_mult || 2) + "×ATR");
+    let h = `<div class="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3">`;
     h += kv("Total Trade", d.total_trades);
-    h += kv("Menang (TP)", d.wins, "text-emerald-400");
-    h += kv("Kalah (SL)", d.losses, "text-rose-400");
+    h += kv("Menang", d.wins, "text-emerald-400");
+    h += kv("Kalah", d.losses, "text-rose-400");
     h += kv("Timeout", d.timeouts);
+    h += kv("Dilewati (RRR<2)", d.skipped_rrr != null ? d.skipped_rrr : "—", "text-amber-400");
     h += kv("Win Rate", pct(d.win_rate_pct), (d.win_rate_pct || 0) >= 33 ? "text-emerald-400" : "text-amber-400");
     h += `</div>`;
-    h += `<div class="text-xs text-slate-400 mb-3">Rata-rata hasil per trade: <b class="tabular">${fmt(d.avg_r)}R</b> (titik impas dengan TP 2R adalah <b class="text-slate-200">≈33% win rate</b>). Konfirmasi buku: <b class="${d.confirm ? "text-emerald-400" : "text-slate-300"}">${d.confirm ? "AKTIF" : "OFF"}</b> · Filter optimasi: ${cfgPills.length ? cfgPills.map(p => `<span class="inline-block text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(p)}</span>`).join("") : '<span class="text-slate-500">tidak ada</span>'}<br><span class="text-slate-500">${esc(d.note)}</span></div>`;
+    h += `<div class="text-xs text-slate-400 mb-3">Rata-rata hasil per trade: <b class="tabular">${fmt(d.avg_r)}R</b> ${d.plan_mode ? '(mode <b class="text-sky-300">PLAN</b>: SL di support, trade dilewati bila RRR &lt; 1:2, SL digeser ke break-even lalu trailing — sama dengan yang dipakai di analisis & scan)' : '(mode lama: SL 2×ATR tetap, TP 2R; titik impas <b class="text-slate-200">≈33% win rate</b>)'}. Konfirmasi buku: <b class="${d.confirm ? "text-emerald-400" : "text-slate-300"}">${d.confirm ? "AKTIF" : "OFF"}</b> · Filter optimasi: ${cfgPills.length ? cfgPills.map(p => `<span class="inline-block text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(p)}</span>`).join("") : '<span class="text-slate-500">tidak ada</span>'}<br><span class="text-slate-500">${esc(d.note)}</span></div>`;
     h += `<div class="overflow-x-auto"><table class="w-full text-sm">
       <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60">
         <th class="text-left py-2">Saham</th><th class="text-right">Trade</th><th class="text-right">Win</th><th class="text-right">Loss</th><th class="text-right">Timeout</th><th class="text-right">Win Rate</th><th class="text-right">Avg R</th>
@@ -1235,7 +1264,8 @@ async function runBacktestMatrix() {
   const crit = $("#btCriteria").value;
   btn.disabled = true; btn.textContent = "Menghitung matriks…";
   const u = $("#btUniverse").value;
-  const q = new URLSearchParams({ criteria: crit, years: $("#btYears").value, limit: 100 });
+  const q = new URLSearchParams({ criteria: crit, years: $("#btYears").value, limit: 100,
+    plan_mode: $("#btPlan").checked ? 1 : 0 });
   if (u === "custom") q.set("tickers", $("#btTickers").value);
   else q.set("universe", u);
   const label = u === "custom" ? "saham kustom" : (u === "all" ? "100 saham" : "45 saham LQ45");
