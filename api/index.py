@@ -4206,40 +4206,54 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
     max_chase = entry_ref + 1.0 * atr_v
     _res_txt = (f" Alternatif breakout: close di atas {_rp(lv_res)} dengan volume ≥1,5× MA20."
                 if lv_res else "")
-    if setup["jenis"] == "Tunggu (belum ada setup)":
+    belum_setup = setup["jenis"] == "Tunggu (belum ada setup)"
+    if belum_setup:
         if isinstance(s20, (int, float)) and s20 and last_price >= s20:
             # Di atas SMA20 tanpa setup: pantau area PULLBACK ke SMA20 (bukan support
             # terjauh) agar level yang ditampilkan tetap masuk akal.
             zona = {"low": num(s20 - 0.6 * atr_v, 2), "high": num(s20 + 0.4 * atr_v, 2),
+                    "label": "Zona pullback ke SMA20 (pantau)",
                     "catatan": ("Belum ada setup — pantau PULLBACK ke SMA20 di area ini, lalu tunggu "
                                 "candle bullish + volume sebelum masuk." + _res_txt)}
         elif isinstance(s20, (int, float)) and s20:
             # Di bawah SMA20 (tren belum naik): level pertama yang perlu DIREBUT adalah SMA20,
             # bukan support terjauh atau resistance yang bisa jauh di atas. Ini level reversal.
             zona = {"low": num(s20 - 0.4 * atr_v, 2), "high": num(s20 + 0.4 * atr_v, 2),
+                    "label": "Level yang perlu direbut (SMA20)",
                     "catatan": ("Belum ada setup beli (harga masih di bawah SMA20). Level pertama yang "
                                 "perlu direbut: SMA20. Tunggu harga kembali DI ATAS SMA20 dengan volume"
                                 + (f", lalu konfirmasi breakout di atas {_rp(lv_res)}." if lv_res else "."))}
         elif lv_res:
             # Tanpa SMA20: tampilkan level BREAKOUT yang perlu ditembus (bukan zona beli).
             zona = {"low": num(lv_res - 0.3 * atr_v, 2), "high": num(lv_res + 0.5 * atr_v, 2),
+                    "label": "Level breakout yang dipantau",
                     "catatan": ("Belum ada setup beli. Zona ini adalah level BREAKOUT yang dipantau — "
                                 "masuk hanya bila harga ditutup DI ATAS resistance dengan volume ≥1,5× MA20.")}
         elif zona_sup.get("low") is not None:
             zona = dict(zona_sup)
+            zona["label"] = "Zona support (pantau)"
             zona["catatan"] = ("Belum ada setup rapi — area pantau support. " + zona_note + _res_txt)
         else:
             zona = {"low": num(last_price - 0.5 * atr_v, 2), "high": num(last_price + 0.5 * atr_v, 2),
+                    "label": "Area pantau",
                     "catatan": "Belum ada level jelas (belum ada support/resistance valid) — tunggu arah terkonfirmasi."}
     else:
-        zona = {"low": num(z_low, 2), "high": num(z_high, 2), "catatan": zona_note}
+        zona = {"low": num(z_low, 2), "high": num(z_high, 2),
+                "label": ("Zona entry pullback" if setup["jenis"].startswith("Pullback") else "Zona entry breakout"),
+                "catatan": zona_note}
+    # Tandai bila zona berada DI ATAS harga (level untuk direbut/ditembus, bukan zona beli).
+    zona["di_atas_harga"] = bool(zona.get("low") is not None and last_price is not None and zona["low"] > last_price)
     risk_v = entry_ref - sl_v
     reward_v = tp1 - entry_ref
     rrr = (reward_v / risk_v) if risk_v > 0 else None
-    layak = bool(rrr is not None and rrr >= 2.0 and tp1 > entry_ref)
-    setup["layak_entry"] = bool(layak and setup["jenis"] != "Tunggu (belum ada setup)")
-    setup["harga_entry"] = num(entry_ref, 2)
-    setup["batas_kejar"] = num(max_chase, 2)
+    # Belum ada setup entry -> rencana ini hanya level pantau, jadi RRR belum relevan dan
+    # tidak boleh tampil "layak" (dulu 137 kasus Tunggu tampil hijau "layak" padahal tak ada setup).
+    layak = bool(rrr is not None and rrr >= 2.0 and tp1 > entry_ref and not belum_setup)
+    setup["layak_entry"] = bool(layak and not belum_setup)
+    # Zona & harga entry harus KONSISTEN: saat belum ada setup, jangan tampilkan "harga entry"
+    # dari harga sekarang (dulu bisa jauh di luar zona yang ditampilkan).
+    setup["harga_entry"] = None if belum_setup else num(entry_ref, 2)
+    setup["batas_kejar"] = None if belum_setup else num(max_chase, 2)
 
     # --- Timing score: seberapa tepat WAKTUNYA masuk (0-100) ---
     t_parts: Dict[str, float] = {}
@@ -4287,7 +4301,9 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
     if liquidity_grade and str(liquidity_grade).lower().startswith(("kurang", "tipis")):
         konflik.append("Likuiditas tipis — pakai order kecil dan hati-hati spread lebar.")
     # Gerbang RRR: ruang ke resistance harus minimal 1:2 dari risiko.
-    if rrr is not None and not layak:
+    if belum_setup:
+        pass  # belum ada setup entry -> RRR belum relevan, jangan tampilkan peringatan RRR.
+    elif rrr is not None and not layak:
         konflik.append(f"RRR hanya 1:{_rp(rrr, 2)} (< 1:2) — ruang ke resistance terlalu dekat. Tunggu harga "
                        "koreksi ke support agar rasio membaik, atau lewati trade ini.")
     elif rrr is None:
@@ -4315,9 +4331,12 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
         "time_stop_hari": 20,
         "kelayakan": {
             "rrr": num(rrr, 2), "rr_min": 2.0, "layak": layak,
-            "alasan": ("Ruang ke resistance memadai (RRR ≥ 1:2)." if layak else
-                       ("Ruang ke resistance terlalu dekat — tunggu koreksi atau lewati." if rrr is not None else
-                        "Stop loss belum valid sehingga RRR tak dapat dihitung.")),
+            "belum_setup": belum_setup,
+            "alasan": (("Belum ada setup entry (pullback/breakout) — ini baru level pantau; RRR baru relevan "
+                        "setelah trigger terpenuhi.") if belum_setup else
+                       ("Ruang ke resistance memadai (RRR ≥ 1:2)." if layak else
+                        ("Ruang ke resistance terlalu dekat — tunggu koreksi atau lewati." if rrr is not None else
+                         "Stop loss belum valid sehingga RRR tak dapat dihitung."))),
         },
         "level_referensi": {
             "resistance_terdekat": num(lv_res, 2),

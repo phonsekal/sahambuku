@@ -471,6 +471,45 @@ const kv = (k, v, extra = "") =>
      <div class="text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">${esc(k)}</div>
      <div class="text-lg font-bold tabular ${extra}">${v}</div>
    </div>`;
+// Registri rencana aksi untuk tombol "Salin ringkasan" (diisi saat render analisis/scan).
+let planRegistry = {};
+// Badge RRR: hijau bila layak (>=1:2), merah bila kurang, netral saat belum ada setup entry.
+function rrrChip(kel, long) {
+  if (!kel) return "";
+  if (kel.belum_setup) return `<span class="text-[10px] px-2 py-0.5 rounded-full border border-slate-600 text-slate-400" title="Belum ada setup entry (pullback/breakout) — RRR baru relevan setelah trigger terpenuhi">⏸ RRR belum relevan</span>`;
+  if (kel.rrr == null) return `<span class="text-[10px] px-2 py-0.5 rounded-full border border-slate-600 text-slate-400">⚖️ RRR —</span>`;
+  const ok = !!kel.layak;
+  return `<span class="text-[10px] px-2 py-0.5 rounded-full border ${ok ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}" title="${ok ? "Ruang ke resistance memadai (RRR ≥ 1:2)" : "Ruang ke resistance < 1:2"}">⚖️ RRR 1:${fmt(kel.rrr, 2)}${long ? (ok ? " layak" : " (di bawah 1:2)") : ""}</span>`;
+}
+// Ringkasan rencana aksi sebagai teks polos (untuk disalin ke catatan/chat).
+function planSummaryText(tk, ap) {
+  if (!ap) return "";
+  const st = ap.setup || {}, kel = ap.kelayakan || {}, t = ap.target || {}, z = ap.zona_entry || {};
+  const L = [];
+  L.push(`📋 RENCANA AKSI${tk ? " — " + tk : ""}`);
+  if (ap.kesimpulan) L.push(ap.kesimpulan);
+  if (st.jenis) L.push(`Setup: ${st.jenis}${st.layak_entry ? " — SIAP ENTRY" : ""}`);
+  if (st.trigger) L.push(`Trigger entry: ${st.trigger.level != null ? fmt(st.trigger.level) : "—"}${st.trigger.syarat ? " (" + st.trigger.syarat + ")" : ""}`);
+  if (st.harga_entry != null) L.push(`Harga entry rencana: ${fmt(st.harga_entry)}${st.batas_kejar != null ? " · jangan kejar di atas " + fmt(st.batas_kejar) : ""}`);
+  if (z.low != null) L.push(`${z.label || "Zona pantau/entry"}: ${fmt(z.low)}${z.high != null && z.high !== z.low ? " – " + fmt(z.high) : ""}`);
+  if (ap.pembatalan) L.push(`Pembatalan (SL): ${fmt(ap.pembatalan.level)}`);
+  if (t.tp1 != null) L.push(`TP1: ${fmt(t.tp1)}${t.tp2 != null ? " · TP2: " + fmt(t.tp2) : ""}`);
+  if (kel.belum_setup) L.push("RRR: belum relevan (belum ada setup entry)");
+  else if (kel.rrr != null) L.push(`RRR: 1:${fmt(kel.rrr, 2)} (${kel.layak ? "layak" : "di bawah 1:2"})`);
+  if (ap.timing && ap.timing.skor != null) L.push(`Timing masuk: ${fmt(ap.timing.skor, 0)}/100 — ${ap.timing.label || ""}`);
+  if (ap.time_stop_hari) L.push(`Batas waktu (time stop): ${ap.time_stop_hari} hari bursa`);
+  (ap.konflik || []).forEach(k => L.push("⚠ " + k));
+  L.push(`Data s/d ${ap.data_date || "—"}`);
+  return L.filter(x => x != null && x !== "").join("\n");
+}
+async function copyPlanSummary(key, btn) {
+  const e = planRegistry[key];
+  if (!e || !e.ap) { toast("Rencana belum tersedia.", "info"); return; }
+  const txt = planSummaryText(e.tk, e.ap);
+  try { await navigator.clipboard.writeText(txt); toast("Ringkasan rencana disalin ✓", "info"); }
+  catch (err) { toast("Salin gagal: " + txt.slice(0, 100) + "…", "info"); }
+  if (btn) { const o = btn.textContent; btn.textContent = "✓ Tersalin"; setTimeout(() => { btn.textContent = o; }, 1500); }
+}
 // Keterangan singkat untuk kalimat alasan sinyal (dari compute_signal).
 const REASON_HELP = [
   ["Harga > SMA20 > SMA50", "Struktur tren naik: harga di atas dua rata-rata utama."],
@@ -784,11 +823,12 @@ function renderAnalyze(d) {
   const ap = d.action_plan;
   if (ap) {
     h += card("📋 Rencana Aksi — Tunggu Apa & di Harga Berapa", `
+      <div class="flex justify-end -mt-1 mb-2"><button onclick="copyPlanSummary('__analysis__', this)" class="text-[11px] px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-sky-300 hover:border-sky-500/50 transition">📋 Salin ringkasan</button></div>
       <div class="text-sm font-semibold mb-3 ${s.action.includes("BUY") ? "text-emerald-400" : s.action.includes("SELL") ? "text-rose-400" : "text-amber-300"}">${esc(ap.kesimpulan || "")}</div>
       ${ap.setup ? `<div class="mb-3 rounded-xl border ${ap.setup.layak_entry ? "border-emerald-500/40 bg-emerald-500/10" : "border-slate-700 bg-slate-800/40"} px-3.5 py-3">
         <div class="flex flex-wrap items-center gap-2 mb-1.5">
           <span class="text-[11px] font-bold uppercase tracking-wider ${ap.setup.layak_entry ? "text-emerald-300" : "text-slate-300"}">🧩 Setup: ${esc(ap.setup.jenis || "—")}</span>
-          ${ap.kelayakan ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${ap.kelayakan.layak ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}">⚖️ RRR ${ap.kelayakan.rrr != null ? "1:" + fmt(ap.kelayakan.rrr, 2) : "—"} ${ap.kelayakan.layak ? "layak" : "di bawah 1:2"}</span>` : ""}
+          ${rrrChip(ap.kelayakan, true)}
           ${ap.timing ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${ap.timing.skor >= 70 ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : ap.timing.skor >= 45 ? "border-amber-500/40 text-amber-300 bg-amber-500/10" : "border-slate-600 text-slate-400"}">⏱ Timing masuk ${fmt(ap.timing.skor, 0)}/100 · ${esc(ap.timing.label || "")}</span>` : ""}
         </div>
         <div class="text-[11px] text-slate-300">${esc(ap.setup.deskripsi || "")}</div>
@@ -802,7 +842,7 @@ function renderAnalyze(d) {
         <tbody>${(ap.langkah || []).map(k => `<tr class="border-b border-slate-800/60"><td class="py-2 pr-3">${esc(k.syarat)}</td><td class="tabular text-sky-300 whitespace-nowrap">${k.level != null ? fmt(k.level) : "—"}</td><td class="text-slate-400 text-[12px]">${esc(k.sekarang || "")}</td><td class="text-center">${k.wajib ? `<span class="text-[10px] px-2 py-0.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-300">wajib</span>` : `<span class="text-[10px] text-slate-500">pendukung</span>`}</td></tr>`).join("")}</tbody>
       </table></div>
       <div class="grid grid-cols-2 lg:grid-cols-4 gap-2 mb-3">
-        ${kv("Zona Pantau / Entry", (ap.zona_entry && ap.zona_entry.low != null) ? (fmt(ap.zona_entry.low) + (ap.zona_entry.high && ap.zona_entry.high !== ap.zona_entry.low ? " – " + fmt(ap.zona_entry.high) : "")) : "—")}
+        ${kv((ap.zona_entry && ap.zona_entry.label) ? ap.zona_entry.label : "Zona Pantau / Entry", (ap.zona_entry && ap.zona_entry.low != null) ? (fmt(ap.zona_entry.low) + (ap.zona_entry.high && ap.zona_entry.high !== ap.zona_entry.low ? " – " + fmt(ap.zona_entry.high) : "")) : "—")}
         ${kv("Pembatalan (SL)", ap.pembatalan ? fmt(ap.pembatalan.level) : "—", "text-rose-400")}
         ${kv("TP1 (jual sebagian)", ap.target && ap.target.tp1 != null ? fmt(ap.target.tp1) : "—", "text-emerald-400")}
         ${kv("TP2 (sisa posisi)", ap.target && ap.target.tp2 != null ? fmt(ap.target.tp2) : "—", "text-emerald-400")}
@@ -813,7 +853,8 @@ function renderAnalyze(d) {
         ${kv("Trailing Stop", ap.trailing ? "2×ATR dari puncak" : "—")}
         ${kv("Support Terdekat", (ap.level_referensi || {}).support_terdekat != null ? fmt(ap.level_referensi.support_terdekat) : "—")}
       </div>
-      ${ap.kelayakan && !ap.kelayakan.layak ? `<div class="text-[11px] text-rose-300/90 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2 mb-1">⛔ ${esc(ap.kelayakan.alasan)}</div>` : ""}
+      ${ap.kelayakan && ap.kelayakan.belum_setup ? `<div class="text-[11px] text-slate-400 bg-slate-800/40 border border-slate-700 rounded-xl px-3 py-2 mb-1">⏸ ${esc(ap.kelayakan.alasan)}</div>` : ""}
+      ${ap.kelayakan && !ap.kelayakan.layak && !ap.kelayakan.belum_setup ? `<div class="text-[11px] text-rose-300/90 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3 py-2 mb-1">⛔ ${esc(ap.kelayakan.alasan)}</div>` : ""}
       ${ap.trailing && ap.trailing.catatan ? `<div class="text-[10px] text-slate-500 mb-1">🔄 ${esc(ap.trailing.catatan)}</div>` : ""}
       ${ap.timing && ap.timing.komponen ? `<details class="text-[11px] text-slate-500 mb-1"><summary class="cursor-pointer text-slate-400 select-none">Rincian timing masuk</summary><div class="mt-1.5 grid grid-cols-2 gap-1">${Object.entries(ap.timing.komponen).map(([k, v]) => `<div>${esc(k)}: <b class="text-slate-300 tabular">${fmt(v, 0)}</b></div>`).join("")}</div></details>` : ""}
       ${ap.zona_entry && ap.zona_entry.catatan ? `<div class="text-[11px] text-slate-500 mb-1">${esc(ap.zona_entry.catatan)}</div>` : ""}
@@ -1014,6 +1055,7 @@ function renderAnalyze(d) {
     h += card("Bandarmology", `<div class="text-xs text-slate-500">${esc(d.bandarmology_note)}</div>`);
   }
 
+  planRegistry["__analysis__"] = { ap: d.action_plan, tk: tk };
   $("#analyzeResult").innerHTML = h;
   loadChart(lastResolved || d.ticker, lastPeriod, chartInterval);
 }
@@ -1178,10 +1220,12 @@ function renderScan(d) {
       <th class="text-center px-3" title="Skor komposit kualitas beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari">Likuiditas</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
+      <th class="text-center px-3" title="Rasio risiko:imbalan dari harga entry rencana — layak bila ≥ 1:2">⚖️ RRR</th>
       <th class="text-center px-3" title="Rencana aksi: tunggu apa & di harga berapa sebelum entry">📋 Rencana</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
     const ki = r.koreksi_info || {};
+    if (r.action_plan) planRegistry[String(r.ticker).toUpperCase()] = { ap: r.action_plan, tk: stripJK(r.ticker) };
     h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
       <td class="px-4 py-3"><div class="font-bold">${esc(stripJK(r.ticker))}</div><div class="text-[10px] text-slate-500">${esc(r.data_date || "")}</div></td>
       <td class="px-3 text-right tabular font-semibold">${fmt(r.price)}</td>
@@ -1199,9 +1243,10 @@ function renderScan(d) {
       <td class="px-3 text-xs">${r.bandarmology
         ? `<span class="${r.bandarmology.status.includes("ACC") ? "text-emerald-400" : r.bandarmology.status.includes("DIS") ? "text-rose-400" : "text-slate-400"}">${esc(r.bandarmology.status.split(" ")[0])}</span>`
         : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-3 text-center">${r.action_plan ? rrrChip(r.action_plan.kelayakan) : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-3 text-center">${r.action_plan ? `<button onclick="toggleScanPlan(this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${(r.action_plan.setup && r.action_plan.setup.batas_kejar != null && r.price > r.action_plan.setup.batas_kejar) ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}" title="Tunggu apa & di harga berapa">📋 Lihat${(r.action_plan.setup && r.action_plan.setup.batas_kejar != null && r.price > r.action_plan.setup.batas_kejar) ? " ⚠️" : ""}</button>` : '<span class="text-slate-600">—</span>'}</td>
     </tr>
-    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${isKoreksi ? 16 : 13}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">    ${scanPlanHtml(r.action_plan, r.ticker, r.price)}</td></tr>` : ""}`;
+    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${isKoreksi ? 17 : 14}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">    ${scanPlanHtml(r.action_plan, r.ticker, r.price)}</td></tr>` : ""}`;
   }
   h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
@@ -1223,7 +1268,7 @@ function scanPlanHtml(ap, tk, px) {
   const setupLine = st.jenis ? `<div class="mb-2 flex flex-wrap items-center gap-2">
       <span class="text-[11px] font-bold ${st.layak_entry ? "text-emerald-300" : "text-slate-300"}">🧩 Setup: ${esc(st.jenis)}</span>
       ${tm.skor != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${tm.skor >= 70 ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : tm.skor >= 45 ? "border-amber-500/40 text-amber-300 bg-amber-500/10" : "border-slate-600 text-slate-400"}">⏱ Timing ${fmt(tm.skor, 0)}/100</span>` : ""}
-      ${kel.rrr != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${kel.layak ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}">⚖️ RRR 1:${fmt(kel.rrr, 2)}${kel.layak ? "" : " (di bawah 1:2)"}</span>` : ""}
+      ${rrrChip(kel, true)}
     </div>
     ${st.trigger ? `<div class="text-[11px] text-sky-300 mb-1">🎯 Trigger: <b class="tabular">${st.trigger.level != null ? fmt(st.trigger.level) : "—"}</b> — ${esc(st.trigger.syarat || "")}</div>` : ""}
     ${(st.harga_entry != null || st.batas_kejar != null) ? `<div class="text-[11px] text-slate-300 mb-1">💰 Entry rencana <b class="tabular text-sky-300">${st.harga_entry != null ? fmt(st.harga_entry) : "—"}</b> · 🚫 jangan kejar di atas <b class="tabular text-rose-300">${st.batas_kejar != null ? fmt(st.batas_kejar) : "—"}</b></div>` : ""}
@@ -1232,13 +1277,16 @@ function scanPlanHtml(ap, tk, px) {
     ${setupLine}
     <table class="w-full text-xs mb-2"><tbody>${steps}</tbody></table>
     <div class="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-400">
-      <span>🎯 Zona pantau / entry: <b class="text-slate-200 tabular">${zona}</b></span>
+      <span>🎯 ${esc(z.label || "Zona pantau / entry")}: <b class="text-slate-200 tabular">${zona}</b></span>
       <span>🛑 SL: <b class="text-rose-400 tabular">${ap.pembatalan ? fmt(ap.pembatalan.level) : "—"}</b></span>
       <span>✅ TP1: <b class="text-emerald-400 tabular">${ap.target ? fmt(ap.target.tp1) : "—"}</b>${ap.target && ap.target.tp2 != null ? ` · TP2: <b class="text-emerald-400 tabular">${fmt(ap.target.tp2)}</b>` : ""}</span>
       <span>⏳ Batas: <b class="text-slate-300 tabular">${ap.time_stop_hari ? ap.time_stop_hari + " hari" : "—"}</b></span>
       <span>📅 Data s/d <b class="text-slate-300">${esc(ap.data_date || "—")}</b></span>
     </div>
-    ${(st.layak_entry && tk) ? `<div class="mt-2"><button onclick="toggleKoreksiWatch('${esc(tk)}', this)" class="text-[10px] px-2.5 py-1 rounded-lg border font-bold ${koreksiWatch.has(tkU) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-emerald-500/40 bg-emerald-500/5 text-emerald-300 hover:bg-emerald-500/15"}">${koreksiWatch.has(tkU) ? "✓ Dipantau Telegram" : "🔔 Pantau setup ini di Telegram"}</button></div>` : ""}
+    <div class="mt-2 flex flex-wrap items-center gap-2">
+      ${(st.layak_entry && tk) ? `<button onclick="toggleKoreksiWatch('${esc(tk)}', this)" class="text-[10px] px-2.5 py-1 rounded-lg border font-bold ${koreksiWatch.has(tkU) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-emerald-500/40 bg-emerald-500/5 text-emerald-300 hover:bg-emerald-500/15"}">${koreksiWatch.has(tkU) ? "✓ Dipantau Telegram" : "🔔 Pantau setup ini di Telegram"}</button>` : ""}
+      ${tk ? `<button onclick="copyPlanSummary('${esc(String(tk).toUpperCase())}', this)" class="text-[10px] px-2.5 py-1 rounded-lg border border-slate-700 text-slate-300 hover:text-sky-300 hover:border-sky-500/50 transition">📋 Salin ringkasan</button>` : ""}
+    </div>
     ${(ap.konflik || []).length ? `<div class="mt-2 text-[11px] text-amber-300/90">⚠ ${esc(ap.konflik[0])}</div>` : ""}
     ${(z.catatan) ? `<div class="mt-1 text-[10px] text-slate-500">${esc(z.catatan)}</div>` : ""}`;
 }
