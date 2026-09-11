@@ -4116,11 +4116,15 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
         step("Tren mingguan searah (close di atas SMA20 mingguan)", opsi_mingguan)
 
     # Zona support terdekat — dipakai hanya sebagai fallback bila belum ada setup rapi.
+    # Level Fibonacci hanya dipakai bila memang DI BAWAH harga; kalau tidak, levelnya
+    # bisa di atas harga dan menghasilkan "zona entry" yang menyesatkan.
     if lv_sup:
         zona_sup = {"low": num(sup_below["band"][0] if sup_below.get("band") else lv_sup, 2),
                     "high": num(sup_below["band"][1] if sup_below.get("band") else lv_sup, 2)}
-    else:
+    elif isinstance(lv_fib, (int, float)) and lv_fib < last_price:
         zona_sup = {"low": num(lv_fib, 2), "high": num(lv_fib, 2)}
+    else:
+        zona_sup = {"low": None, "high": None}
 
     sl = (rm or {}).get("stop_loss") or (last_price - 2 * atr14 if isinstance(atr14, (int, float)) and atr14 > 0 else None)
     tp = (rm or {}).get("take_profit")
@@ -4200,9 +4204,33 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
     if entry_ref - sl_v > 2.0 * atr_v:
         sl_v = entry_ref - 2.0 * atr_v
     max_chase = entry_ref + 1.0 * atr_v
-    if setup["jenis"] == "Tunggu (belum ada setup)" and zona_sup.get("low") is not None:
-        zona = dict(zona_sup)
-        zona["catatan"] = "Area pantulan (zona support) — belum ada setup rapi. " + zona_note
+    _res_txt = (f" Alternatif breakout: close di atas {_rp(lv_res)} dengan volume ≥1,5× MA20."
+                if lv_res else "")
+    if setup["jenis"] == "Tunggu (belum ada setup)":
+        if isinstance(s20, (int, float)) and s20 and last_price >= s20:
+            # Di atas SMA20 tanpa setup: pantau area PULLBACK ke SMA20 (bukan support
+            # terjauh) agar level yang ditampilkan tetap masuk akal.
+            zona = {"low": num(s20 - 0.6 * atr_v, 2), "high": num(s20 + 0.4 * atr_v, 2),
+                    "catatan": ("Belum ada setup — pantau PULLBACK ke SMA20 di area ini, lalu tunggu "
+                                "candle bullish + volume sebelum masuk." + _res_txt)}
+        elif isinstance(s20, (int, float)) and s20:
+            # Di bawah SMA20 (tren belum naik): level pertama yang perlu DIREBUT adalah SMA20,
+            # bukan support terjauh atau resistance yang bisa jauh di atas. Ini level reversal.
+            zona = {"low": num(s20 - 0.4 * atr_v, 2), "high": num(s20 + 0.4 * atr_v, 2),
+                    "catatan": ("Belum ada setup beli (harga masih di bawah SMA20). Level pertama yang "
+                                "perlu direbut: SMA20. Tunggu harga kembali DI ATAS SMA20 dengan volume"
+                                + (f", lalu konfirmasi breakout di atas {_rp(lv_res)}." if lv_res else "."))}
+        elif lv_res:
+            # Tanpa SMA20: tampilkan level BREAKOUT yang perlu ditembus (bukan zona beli).
+            zona = {"low": num(lv_res - 0.3 * atr_v, 2), "high": num(lv_res + 0.5 * atr_v, 2),
+                    "catatan": ("Belum ada setup beli. Zona ini adalah level BREAKOUT yang dipantau — "
+                                "masuk hanya bila harga ditutup DI ATAS resistance dengan volume ≥1,5× MA20.")}
+        elif zona_sup.get("low") is not None:
+            zona = dict(zona_sup)
+            zona["catatan"] = ("Belum ada setup rapi — area pantau support. " + zona_note + _res_txt)
+        else:
+            zona = {"low": num(last_price - 0.5 * atr_v, 2), "high": num(last_price + 0.5 * atr_v, 2),
+                    "catatan": "Belum ada level jelas (belum ada support/resistance valid) — tunggu arah terkonfirmasi."}
     else:
         zona = {"low": num(z_low, 2), "high": num(z_high, 2), "catatan": zona_note}
     risk_v = entry_ref - sl_v

@@ -793,6 +793,7 @@ function renderAnalyze(d) {
         </div>
         <div class="text-[11px] text-slate-300">${esc(ap.setup.deskripsi || "")}</div>
         ${(ap.setup.harga_entry != null || ap.setup.batas_kejar != null) ? `<div class="text-[11px] mt-1 text-slate-300">💰 Harga entry rencana: <b class="tabular text-sky-300">${ap.setup.harga_entry != null ? fmt(ap.setup.harga_entry) : "—"}</b> · 🚫 Batas jangan kejar: <b class="tabular text-rose-300">${ap.setup.batas_kejar != null ? fmt(ap.setup.batas_kejar) : "—"}</b></div>` : ""}
+        ${(ap.setup.batas_kejar != null && m && m.last_price != null && m.last_price > ap.setup.batas_kejar) ? `<div class="text-[11px] mt-1.5 text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-2.5 py-1.5">⚠️ Harga (${fmt(m.last_price)}) sudah <b>di atas batas jangan kejar</b> (${fmt(ap.setup.batas_kejar)}). Jangan chase — tunggu pullback ke zona entry di atas.</div>` : ""}
         ${ap.setup.trigger ? `<div class="text-[11px] mt-1.5 text-sky-300">🎯 Trigger: <b class="tabular">${ap.setup.trigger.level != null ? fmt(ap.setup.trigger.level) : "—"}</b> — ${esc(ap.setup.trigger.syarat || "")}</div>
         <div class="text-[10px] text-slate-500 mt-0.5">${esc(ap.setup.trigger.sekarang || "")}</div>` : ""}
       </div>` : ""}
@@ -976,7 +977,7 @@ function renderAnalyze(d) {
       ${kv("RRR", RM.risk_reward_ratio != null ? fmt(RM.risk_reward_ratio) : "—", RM.risk_reward_ratio != null && RM.risk_reward_ratio >= 2 ? "text-emerald-400" : (RM.risk_reward_ratio != null && RM.risk_reward_ratio < 1 ? "text-rose-400" : ""))}
     </div>
     <div class="text-xs text-slate-500">Maks posisi (contoh risk Rp5.000.000): <b class="text-slate-300">${RM.max_position_idr != null ? fmtIdr(RM.max_position_idr) : "—"}</b></div>
-    ${RM.aligned_with_action_plan ? `<div class="text-[10px] text-emerald-400/80 mt-1.5">✓ Diselaraskan dengan Rencana Aksi: entry = harga entry rencana, SL di bawah zona entry, TP1/TP2 dari resistance.</div>` : ""}`);
+    ${RM.aligned_with_action_plan ? `<div class="text-[10px] text-emerald-400/80 mt-1.5">✓ Diselaraskan dengan Rencana Aksi: <b>Entry, SL, dan RRR dihitung dari HARGA ENTRY RENCANA</b> (bukan harga sekarang) — SL di bawah zona entry, TP1/TP2 di resistance.</div>` : ""}`);
   h += `</div>`;
 
   if (b.status) {
@@ -1198,9 +1199,9 @@ function renderScan(d) {
       <td class="px-3 text-xs">${r.bandarmology
         ? `<span class="${r.bandarmology.status.includes("ACC") ? "text-emerald-400" : r.bandarmology.status.includes("DIS") ? "text-rose-400" : "text-slate-400"}">${esc(r.bandarmology.status.split(" ")[0])}</span>`
         : '<span class="text-slate-600">—</span>'}</td>
-      <td class="px-3 text-center">${r.action_plan ? `<button onclick="toggleScanPlan(this)" class="text-[10px] px-2 py-1 rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-400 font-bold" title="Tunggu apa & di harga berapa">📋 Lihat</button>` : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-3 text-center">${r.action_plan ? `<button onclick="toggleScanPlan(this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${(r.action_plan.setup && r.action_plan.setup.batas_kejar != null && r.price > r.action_plan.setup.batas_kejar) ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}" title="Tunggu apa & di harga berapa">📋 Lihat${(r.action_plan.setup && r.action_plan.setup.batas_kejar != null && r.price > r.action_plan.setup.batas_kejar) ? " ⚠️" : ""}</button>` : '<span class="text-slate-600">—</span>'}</td>
     </tr>
-    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${isKoreksi ? 16 : 13}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">${scanPlanHtml(r.action_plan, r.ticker)}</td></tr>` : ""}`;
+    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${isKoreksi ? 16 : 13}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">    ${scanPlanHtml(r.action_plan, r.ticker, r.price)}</td></tr>` : ""}`;
   }
   h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
@@ -1212,7 +1213,7 @@ function toggleScanPlan(btn) {
 }
 
 // Rencana aksi hasil scan: tunggu apa & di harga berapa sebelum entry.
-function scanPlanHtml(ap, tk) {
+function scanPlanHtml(ap, tk, px) {
   if (!ap) return "";
   const tkU = tk ? String(tk).toUpperCase() : "";
   const steps = (ap.langkah || []).map(k => `<tr class="border-b border-slate-700/40"><td class="py-1 pr-3">${esc(k.syarat)}</td><td class="tabular text-sky-300 whitespace-nowrap px-2">${k.level != null ? fmt(k.level) : "—"}</td><td class="text-slate-400 pr-2">${esc(k.sekarang || "")}</td><td class="text-center whitespace-nowrap">${k.wajib ? '<span class="text-[10px] text-rose-300">wajib</span>' : '<span class="text-[10px] text-slate-500">pendukung</span>'}</td></tr>`).join("");
@@ -1225,7 +1226,8 @@ function scanPlanHtml(ap, tk) {
       ${kel.rrr != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${kel.layak ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}">⚖️ RRR 1:${fmt(kel.rrr, 2)}${kel.layak ? "" : " (di bawah 1:2)"}</span>` : ""}
     </div>
     ${st.trigger ? `<div class="text-[11px] text-sky-300 mb-1">🎯 Trigger: <b class="tabular">${st.trigger.level != null ? fmt(st.trigger.level) : "—"}</b> — ${esc(st.trigger.syarat || "")}</div>` : ""}
-    ${(st.harga_entry != null || st.batas_kejar != null) ? `<div class="text-[11px] text-slate-300 mb-2">💰 Entry rencana <b class="tabular text-sky-300">${st.harga_entry != null ? fmt(st.harga_entry) : "—"}</b> · 🚫 jangan kejar di atas <b class="tabular text-rose-300">${st.batas_kejar != null ? fmt(st.batas_kejar) : "—"}</b></div>` : ""}` : "";
+    ${(st.harga_entry != null || st.batas_kejar != null) ? `<div class="text-[11px] text-slate-300 mb-1">💰 Entry rencana <b class="tabular text-sky-300">${st.harga_entry != null ? fmt(st.harga_entry) : "—"}</b> · 🚫 jangan kejar di atas <b class="tabular text-rose-300">${st.batas_kejar != null ? fmt(st.batas_kejar) : "—"}</b></div>` : ""}
+    ${(st.batas_kejar != null && px != null && px > st.batas_kejar) ? `<div class="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-lg px-2.5 py-1 mb-2">⚠️ Harga (${fmt(px)}) sudah di atas batas jangan kejar (${fmt(st.batas_kejar)}) — jangan chase, tunggu pullback ke zona entry.</div>` : ""}` : "";
   return `<div class="text-xs font-semibold mb-2 text-amber-200">${esc(ap.kesimpulan || "")}</div>
     ${setupLine}
     <table class="w-full text-xs mb-2"><tbody>${steps}</tbody></table>
