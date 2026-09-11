@@ -604,6 +604,23 @@ async function analyze() {
   }
 }
 
+// Fundamental dimuat atas permintaan (hemat kuota API): sekali klik, analisis
+// dihitung ulang dengan fundamentals=full lalu seluruh kartu dirender ulang.
+async function loadFundamentals(btn) {
+  const tk = lastResolved || $("#ticker").value.trim().toUpperCase();
+  if (!tk) return;
+  const period = lastPeriod || $("#period").value;
+  btn.disabled = true; btn.textContent = "Memuat…";
+  try {
+    const d = await getJSON(`/api/analyze/${encodeURIComponent(tk)}?period=${period}&fundamentals=full`);
+    lastResolved = tk; lastPeriod = period;
+    renderAnalyze(d);
+  } catch (e) {
+    toast(`Fundamental tidak tersedia: ${e.message}`, "error");
+    btn.disabled = false; btn.textContent = "📊 Muat Fundamental";
+  }
+}
+
 async function loadChart(tk, period, interval) {
   const holder = document.getElementById("chartHolder");
   if (!holder) return;
@@ -824,7 +841,13 @@ function renderAnalyze(d) {
   const yoyCell = v => v == null ? `<span class="text-slate-600">—</span>`
     : `<span class="tabular font-semibold ${v >= 0 ? "text-emerald-400" : "text-rose-400"}">${v > 0 ? "+" : ""}${fmt(v, 1)}%</span>`;
   const money = v => fmtMoney(v, F.financial_currency || F.currency);
-  h += card("Fundamental (Profil Emiten)", `
+  if (!d.fundamentals) {
+    h += card("Fundamental (Profil Emiten)", `
+    <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+      <div class="text-xs text-slate-400">Data fundamental (PE · PBV · EPS · ROE · laporan YoY · dividen · aksi korporasi) dimuat <b class="text-slate-200">saat tombol diklik</b> untuk menghemat kuota API.</div>
+      <button onclick="loadFundamentals(this)" class="shrink-0 text-xs px-4 py-2 rounded-xl font-bold bg-sky-500 text-slate-950 hover:bg-sky-400 transition">📊 Muat Fundamental</button>
+    </div>`);
+  } else h += card("Fundamental (Profil Emiten)", `
     <div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
       ${kv("Nama", F.name ? esc(F.name) : "—")}
       ${kv("Sektor", F.sector ? esc(F.sector) : "—")}
@@ -860,6 +883,9 @@ function renderAnalyze(d) {
     ${(F.financials_quarterly || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">🗓 Perbandingan Kuartalan (vs Kuartal Sama Tahun Lalu)</div>
     <div class="overflow-x-auto mb-3"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Kuartal</th><th class="text-right">Pendapatan</th><th class="text-right">Δ YoY</th><th class="text-right">Laba Bersih</th><th class="text-right">Δ YoY</th><th class="text-right">EPS</th></tr></thead>
     <tbody>${F.financials_quarterly.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(r.period)}</td><td class="text-right tabular">${r.revenue != null ? money(r.revenue) : "—"}</td><td class="text-right">${yoyCell(r.revenue_yoy_pct)}</td><td class="text-right tabular">${r.net_income != null ? money(r.net_income) : "—"}</td><td class="text-right">${yoyCell(r.net_income_yoy_pct)}</td><td class="text-right tabular">${r.eps != null ? fmt(r.eps, 2) : "—"}</td></tr>`).join("")}</tbody></table></div>` : ""}
+    ${(F.dividends_annual || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">🧾 Rekap Dividen Tahunan</div>
+    <div class="overflow-x-auto mb-3"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Tahun Buku</th><th class="text-right">Total / saham</th><th class="text-right">Jumlah bayar</th><th class="text-right">Final</th><th class="text-right">Interim</th></tr></thead>
+    <tbody>${F.dividends_annual.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold">${esc(String(r.fiscal_year))}</td><td class="text-right tabular font-semibold text-emerald-400">${fmt(r.total_per_share, 2)}</td><td class="text-right tabular">${r.count != null ? r.count + "×" : "—"}</td><td class="text-right tabular">${r.final_per_share != null ? fmt(r.final_per_share, 2) : "—"}</td><td class="text-right tabular text-amber-300">${r.interim_per_share != null ? fmt(r.interim_per_share, 2) : "—"}</td></tr>`).join("")}</tbody></table></div>` : ""}
     ${(F.dividends || []).length ? `<div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-2">💰 Riwayat Dividen (10 tahun terakhir)</div>
     <div class="overflow-x-auto mb-1"><table class="w-full text-sm"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60"><th class="text-left py-1.5">Ex-Date</th><th class="text-left">Jenis</th><th class="text-right">Tahun Buku</th><th class="text-right">Dividen/saham</th></tr></thead>
     <tbody>${F.dividends.map(r => `<tr class="border-b border-slate-800/60"><td class="py-1.5">${esc(r.date)}</td><td>${r.type === "Interim" ? `<span class="text-[10px] px-2 py-0.5 rounded-full border border-amber-500/40 bg-amber-500/10 text-amber-300" title="Dividen interim: dibayar di tengah tahun berjalan">Interim</span>` : `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-300" title="Dividen final/tahunan: hasil keputusan RUPS, dibayar Jan-Jun">Final (tahunan)</span>`}</td><td class="text-right tabular">${r.fiscal_year ? esc(String(r.fiscal_year)) : "—"}</td><td class="text-right tabular text-emerald-400">${r.amount != null ? fmt(r.amount, 2) : "—"}</td></tr>`).join("")}</tbody></table></div>
@@ -1089,6 +1115,7 @@ function renderScan(d) {
       <th class="text-center px-3" title="Skor komposit kualitas beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari">Likuiditas</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
+      <th class="text-center px-3" title="Rencana aksi: tunggu apa & di harga berapa sebelum entry">📋 Rencana</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
     const ki = r.koreksi_info || {};
@@ -1109,10 +1136,35 @@ function renderScan(d) {
       <td class="px-3 text-xs">${r.bandarmology
         ? `<span class="${r.bandarmology.status.includes("ACC") ? "text-emerald-400" : r.bandarmology.status.includes("DIS") ? "text-rose-400" : "text-slate-400"}">${esc(r.bandarmology.status.split(" ")[0])}</span>`
         : '<span class="text-slate-600">—</span>'}</td>
-    </tr>`;
+      <td class="px-3 text-center">${r.action_plan ? `<button onclick="toggleScanPlan(this)" class="text-[10px] px-2 py-1 rounded-lg border border-sky-500/40 bg-sky-500/10 text-sky-400 font-bold" title="Tunggu apa & di harga berapa">📋 Lihat</button>` : '<span class="text-slate-600">—</span>'}</td>
+    </tr>
+    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${isKoreksi ? 16 : 13}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">${scanPlanHtml(r.action_plan)}</td></tr>` : ""}`;
   }
   h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
+}
+
+function toggleScanPlan(btn) {
+  const row = btn.closest("tr").nextElementSibling;
+  if (row && row.classList.contains("scan-plan")) row.classList.toggle("hidden");
+}
+
+// Rencana aksi hasil scan: tunggu apa & di harga berapa sebelum entry.
+function scanPlanHtml(ap) {
+  if (!ap) return "";
+  const steps = (ap.langkah || []).map(k => `<tr class="border-b border-slate-700/40"><td class="py-1 pr-3">${esc(k.syarat)}</td><td class="tabular text-sky-300 whitespace-nowrap px-2">${k.level != null ? fmt(k.level) : "—"}</td><td class="text-slate-400 pr-2">${esc(k.sekarang || "")}</td><td class="text-center whitespace-nowrap">${k.wajib ? '<span class="text-[10px] text-rose-300">wajib</span>' : '<span class="text-[10px] text-slate-500">pendukung</span>'}</td></tr>`).join("");
+  const z = ap.zona_entry || {};
+  const zona = z.low != null ? (fmt(z.low) + (z.high && z.high !== z.low ? " – " + fmt(z.high) : "")) : "—";
+  return `<div class="text-xs font-semibold mb-2 text-amber-200">${esc(ap.kesimpulan || "")}</div>
+    <table class="w-full text-xs mb-2"><tbody>${steps}</tbody></table>
+    <div class="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-400">
+      <span>🎯 Zona pantau / entry: <b class="text-slate-200 tabular">${zona}</b></span>
+      <span>🛑 Pembatalan: <b class="text-rose-400 tabular">${ap.pembatalan ? fmt(ap.pembatalan.level) : "—"}</b></span>
+      <span>✅ Target TP: <b class="text-emerald-400 tabular">${ap.target ? fmt(ap.target.tp1) : "—"}</b></span>
+      <span>📅 Data s/d <b class="text-slate-300">${esc(ap.data_date || "—")}</b></span>
+    </div>
+    ${(ap.konflik || []).length ? `<div class="mt-2 text-[11px] text-amber-300/90">⚠ ${esc(ap.konflik[0])}</div>` : ""}
+    ${(z.catatan) ? `<div class="mt-1 text-[10px] text-slate-500">${esc(z.catatan)}</div>` : ""}`;
 }
 
 /* ---------- BACKTEST ---------- */

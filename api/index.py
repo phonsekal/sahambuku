@@ -16,6 +16,7 @@ Fitur:
 Endpoint:
   GET  /api/health                  -> status API
   GET  /api/analyze/{ticker}        -> analisis lengkap + sinyal BUY/SELL/HOLD
+  GET  /api/fundamentals/{ticker}   -> fundamental (dimuat saat tombol diklik; hemat kuota)
   POST /api/bandarmology/analyze    -> analisis Broker Summary (input manual)
 
 Menjalankan lokal:
@@ -1495,6 +1496,53 @@ def _telegram_send(text: str) -> bool:
     except Exception:
         return False
 
+
+def _rp_id(v: Any) -> str:
+    """Format angka gaya Indonesia (ribuan '.', tanpa nol ekor) untuk pesan."""
+    try:
+        s = f"{float(v):,.2f}".rstrip("0").rstrip(".")
+        return s.replace(",", ".")
+    except (TypeError, ValueError):
+        return str(v)
+
+
+def _telegram_action_plan(ap: Optional[dict], max_steps: int = 3) -> str:
+    """Ringkasan rencana aksi untuk Telegram: tunggu apa & di harga berapa."""
+    if not ap:
+        return ""
+    lines: List[str] = []
+    kes = str(ap.get("kesimpulan") or "").strip()
+    if kes:
+        lines.append(kes)
+    steps = ap.get("langkah") or []
+    wajib = [s for s in steps if s.get("wajib")] or steps
+    for k in wajib[:max_steps]:
+        lv = f" @ {_rp_id(k.get('level'))}" if k.get("level") not in (None, "") else ""
+        tag = " (wajib)" if k.get("wajib") else ""
+        lines.append(f"• {k.get('syarat')}{lv}{tag}")
+    zona = ap.get("zona_entry") or {}
+    if zona.get("low") not in (None, ""):
+        z = _rp_id(zona["low"])
+        if zona.get("high") not in (None, "") and zona["high"] != zona["low"]:
+            z += "–" + _rp_id(zona["high"])
+        lines.append(f"🎯 Zona pantau/entry: {z}")
+    tail = []
+    tp = ap.get("target") or {}
+    bat = ap.get("pembatalan") or {}
+    if tp.get("tp1") not in (None, ""):
+        tail.append(f"✅ TP {_rp_id(tp['tp1'])}")
+    if bat.get("level") not in (None, ""):
+        tail.append(f"🛑 Batal < {_rp_id(bat['level'])}")
+    if tail:
+        lines.append(" · ".join(tail))
+    konf = ap.get("konflik") or []
+    if konf:
+        lines.append(f"⚠ {konf[0]}")
+    if not lines:
+        return ""
+    return "📋 Rencana aksi (tunggu apa & di harga berapa):\n" + "\n".join(lines)
+
+
 TICKER_CACHE: Dict[str, dict] = {}
 TICKER_CACHE_TTL_SECONDS = 24 * 3600
 
@@ -2446,12 +2494,14 @@ def _fetch_fmp_fundamentals(sym: str) -> Optional[dict]:
     # --- Riwayat dividen ---
     div = _fmp_get("dividends", {"symbol": sym, "limit": 12})
     if isinstance(div, list) and div:
-        out["dividends"] = [
+        fmp_div = [
             {"date": str(x.get("date", ""))[:10], "amount": x.get("dividend"),
              "adj": x.get("adjDividend"),
              "payment": str(x.get("paymentDate", ""))[:10] or None}
             for x in div[:12]
         ]
+        out["dividends"] = _classify_dividends(fmp_div)
+        out["dividends_annual"] = _dividend_annual_recap(out["dividends"])
 
     # --- Aksi korporasi: stock split ---
     split = _fmp_get("splits", {"symbol": sym, "limit": 12})
@@ -2653,6 +2703,39 @@ def _classify_dividends(rows: List[dict]) -> List[dict]:
             if r is not top:
                 r["type"] = "Interim"
     return rows
+
+
+def _dividend_annual_recap(rows: List[dict]) -> List[dict]:
+    """Rekap dividen per tahun buku: total, jumlah pembayaran, final vs interim.
+
+    Dipakai agar bisa langsung dibaca "tahun ini bagi dividen berapa" tanpa
+    menjumlahkan baris satu per satu.
+    """
+    by_year: Dict[int, dict] = {}
+    for r in rows or []:
+        fy = r.get("fiscal_year")
+        if not fy:
+            continue
+        amt = float(r.get("amount") or 0.0)
+        g = by_year.setdefault(int(fy), {"fiscal_year": int(fy), "total": 0.0,
+                                         "count": 0, "final": 0.0, "interim": 0.0})
+        g["total"] += amt
+        g["count"] += 1
+        if r.get("type") == "Interim":
+            g["interim"] += amt
+        else:
+            g["final"] += amt
+    out = []
+    for fy in sorted(by_year, reverse=True):
+        g = by_year[fy]
+        out.append({
+            "fiscal_year": fy,
+            "total_per_share": num(g["total"], 2),
+            "count": g["count"],
+            "final_per_share": num(g["final"], 2) if g["final"] else None,
+            "interim_per_share": num(g["interim"], 2) if g["interim"] else None,
+        })
+    return out
 
 
 def _fetch_yahoo_fundamentals(ticker: str, light: bool = False) -> Optional[dict]:
@@ -2863,6 +2946,7 @@ def _fetch_yahoo_fundamentals(ticker: str, light: bool = False) -> Optional[dict
                          "adj": num(x.get("amount"), 2), "payment": None})
     if rows:
         out["dividends"] = _classify_dividends(rows)
+        out["dividends_annual"] = _dividend_annual_recap(out["dividends"])
 
     # --- Aksi korporasi: stock split / reverse split ---
     sps = sorted((ev.get("splits") or {}).values(),
@@ -3059,6 +3143,7 @@ def fetch_fundamentals(ticker: str, last_price: Optional[float] = None,
         "financials_annual": pick("financials_annual") or [],
         "financials_quarterly": pick("financials_quarterly") or [],
         "dividends": pick("dividends") or [],
+        "dividends_annual": pick("dividends_annual") or [],
         "splits": pick("splits") or [],
     })
 
@@ -3079,6 +3164,71 @@ def fetch_fundamentals(ticker: str, last_price: Optional[float] = None,
                        "Rasio keuangan sedang tidak tersedia (sumber fundamental "
                        "dibatasi) — coba beberapa saat lagi.")
     return out
+
+
+def _scan_action_plan(df: pd.DataFrame, action: str,
+                      bandarmology: Optional[dict] = None,
+                      liquidity_grade: Optional[str] = None) -> Optional[dict]:
+    """Rencana aksi ringkas untuk hasil scan: tunggu apa & di harga berapa.
+
+    Dipakai hanya untuk kandidat yang lolos kriteria (jumlahnya sedikit) supaya
+    beban scan tidak membengkak. Isinya level harga nyata (SMA, S&R, Fibonacci,
+    Bollinger, AVG bandar) sehingga jelas kapan rencana valid atau batal.
+    """
+    try:
+        close = df["Close"].astype(float)
+        last = float(close.iloc[-1])
+        s20 = num(sma(close, 20).iloc[-1], 2)
+        s50 = num(sma(close, 50).iloc[-1], 2)
+        s200 = num(sma(close, 200).iloc[-1], 2)
+        r14 = num(rsi(close, 14).iloc[-1], 2)
+        _, _, hist = macd(close)
+        atr14 = num(atr(df, 14).iloc[-1], 2)
+        bb_up, bb_mid, bb_lo = bollinger_bands(close, 20, 2.0)
+        bb_up_v, bb_mid_v, bb_lo_v = float(bb_up.iloc[-1]), float(bb_mid.iloc[-1]), float(bb_lo.iloc[-1])
+        bb_range = (bb_up_v - bb_lo_v) if bb_up_v > bb_lo_v else 0.0
+        bb_bw = bb_range / bb_mid_v if bb_mid_v and bb_mid_v > 0 else 0.0
+        bb_bw_hist = ((bb_up - bb_lo) / bb_mid.replace(0, float("nan"))).dropna()
+        bb_squeeze = bool(len(bb_bw_hist) >= 30 and bb_bw <= float(bb_bw_hist.tail(30).quantile(0.2)))
+        sr_zones = find_sr_zones(df)
+        fib = fibonacci_levels(df)
+        vol = volume_analysis(df)
+        weekly_series = _weekly_trend_series(df)
+        weekly_up = bool(weekly_series.iloc[-1]) if len(weekly_series) else False
+        wk_close = close.resample("W-FRI").last()
+        wk_ma = sma(wk_close, 20)
+        weekly = {
+            "up": weekly_up,
+            "close": num(float(wk_close.iloc[-1]), 0) if len(wk_close) else None,
+            "sma20": num(float(wk_ma.iloc[-1]), 0) if len(wk_ma) and not np.isnan(wk_ma.iloc[-1]) else None,
+        }
+        atr_v = float(atr14) if atr14 else 0.0
+        rm = risk_management(last, sr_zones, action, atr_v, 5_000_000, force_long=True)
+        out = build_action_plan(
+            last_price=last, action=action, trend=detect_trend(df), sr_zones=sr_zones,
+            fib=fib, weekly=weekly, bandarmology=bandarmology, regime=_ihsg_regime(), rm=rm,
+            ind={
+                "sma20": s20, "sma50": s50, "sma200": s200, "rsi14": r14, "atr14": atr14,
+                "macd": {"histogram": num(hist.iloc[-1], 4)}, "volume": vol,
+                "bollinger": {"upper": num(bb_up_v, 2), "lower": num(bb_lo_v, 2),
+                              "squeeze": bb_squeeze},
+            },
+            liquidity_grade=liquidity_grade,
+            data_date=str(df.index[-1].date()) if hasattr(df.index[-1], "date") else str(df.index[-1]),
+        )
+        # Ringkas payload scan: hanya yang penting untuk keputusan.
+        return {
+            "kesimpulan": out.get("kesimpulan"),
+            "langkah": (out.get("langkah") or [])[:5],
+            "zona_entry": out.get("zona_entry"),
+            "pembatalan": out.get("pembatalan"),
+            "target": out.get("target"),
+            "level_referensi": out.get("level_referensi"),
+            "konflik": out.get("konflik") or [],
+            "data_date": out.get("data_date"),
+        }
+    except Exception:
+        return None
 
 
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
@@ -3123,11 +3273,22 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
     # Skor komposit sinyal beli (optimasi: multi-konfirmasi, lihat compute_buy_score).
     item["buy_score"] = compute_buy_score(df, item.get("bandarmology"))
 
+    def _attach_plan(eligible: bool, act: str = "") -> None:
+        """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
+        if not eligible or criteria not in ("buy", "koreksi", "bandar"):
+            return
+        action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
+        plan = _scan_action_plan(df, action, item.get("bandarmology"),
+                                 (item.get("buy_score") or {}).get("liquidity_grade"))
+        if plan:
+            item["action_plan"] = plan
+
     if criteria == "bandar":
         # Kriteria Bandarmology buku (Bab 3-7): akumulasi + value share Top Buyer >= 60%.
         b = item.get("bandarmology") or {}
         bandar_ok = bool(b.get("status", "").startswith("ACC") and b.get("value_share_significant"))
         item["criteria_met"] = ["BANDAR"] if bandar_ok else []
+        _attach_plan(bandar_ok)
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": bandar_ok, "bandar_used": bandar_used}
 
@@ -3136,6 +3297,7 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         sc = (item.get("buy_score") or {}).get("score") or 0
         label = "BUY KUAT" if sc >= 70 else ("BUY KONF" if sc >= 50 else "")
         item["criteria_met"] = [label] if label else []
+        _attach_plan(sc >= 70)
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": sc >= 70, "bandar_used": bandar_used}
 
@@ -3160,9 +3322,11 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "bandar_status": b.get("status"),
         }
         item["criteria_met"] = ["BELI KOREKSI"] if koreksi_ok else []
+        _attach_plan(koreksi_ok, act=str(item.get("signal") or "HOLD"))
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": koreksi_ok, "bandar_used": bandar_used}
 
+    _attach_plan(bool(result["eligible"]))
     return {"tk": tk, "skipped": False, "item": item,
             "eligible": bool(result["eligible"]), "bandar_used": bandar_used}
 
@@ -3636,7 +3800,8 @@ def api_info():
         "dashboard": "/",
         "endpoints": [
             "GET  /api/health",
-            "GET  /api/analyze/{ticker}?period=1y",
+            "GET  /api/analyze/{ticker}?period=1y&fundamentals=off|ringkas|full",
+            "GET  /api/fundamentals/{ticker}?level=ringkas|full",
             "GET  /api/quotes?tickers=BBCA,TLKM&with_bandar=0",
             "GET  /api/sync?key=KODE_SINKRON",
             "PUT  /api/sync?key=KODE_SINKRON",
@@ -4092,8 +4257,31 @@ def analyze(
     ticker: str,
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
     risk_amount: float = Query(5_000_000, gt=0),
+    fundamentals: str = Query("off", pattern="^(full|ringkas|off)$",
+                              description="Kedalaman fundamental; default off agar hemat kuota "
+                                          "(dashboard memuatnya saat tombol Fundamental diklik)"),
 ):
-    return _analyze_core(ticker, period, risk_amount, light=False)
+    return _analyze_core(ticker, period, risk_amount, light=False, fund_level=fundamentals)
+
+
+@app.get("/api/fundamentals/{ticker}")
+def fundamentals_only(
+    ticker: str,
+    level: str = Query("full", pattern="^(ringkas|full)$"),
+    price: float = Query(0, ge=0, description="Harga terakhir (opsional; untuk kapitalisasi & yield)"),
+):
+    """Fundamental emiten dimuat atas permintaan (dipakai tombol di tab Analisis).
+
+    Dipisah dari /api/analyze supaya tab Analisis tidak memanggil sumber fundamental
+    (FMP/Yahoo) pada setiap analisis — hemat kuota API. level=ringkas hanya rasio
+    (1 permintaan); level=full menambah laporan YoY, dividen, dan aksi korporasi.
+    """
+    f = fetch_fundamentals(ticker, price or None, light=(level == "ringkas"))
+    if not f:
+        raise HTTPException(502, ("Data fundamental sedang tidak tersedia (sumber dibatasi "
+                                  "atau kuota habis). Coba lagi beberapa saat."))
+    return {"ticker": ticker.upper(), "level": level, "fundamentals": f,
+            "disclaimer": DISCLAIMER}
 
 
 @app.get("/api/quotes")
@@ -4192,6 +4380,7 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
         rm = d.get("risk_management") or {}
         rsi = (d.get("indicators") or {}).get("rsi14")
         sig = (d.get("signal") or {}).get("action", "")
+        plan_txt = _telegram_action_plan(d.get("action_plan"), max_steps=2)
         base = {"ticker": strip_suffix(tk), "price": num(price, 2),
                 "qty": h.get("qty"), "avg": h.get("avg")}
         out: List[dict] = []
@@ -4214,8 +4403,11 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
             out.append({**base, "type": "OB", "rsi": num(rsi, 1),
                         "message": f"⚠️ {strip_suffix(tk)} overbought (RSI {num(rsi, 1)}) — waspada koreksi"})
         if sig in ("SELL", "STRONG SELL"):
+            msg = f"⬇️ {strip_suffix(tk)} sinyal {sig} — pertimbangkan take profit / cut loss"
+            if plan_txt:
+                msg += "\n\n" + plan_txt
             out.append({**base, "type": "SELL", "signal": sig,
-                        "message": f"⬇️ {strip_suffix(tk)} sinyal {sig} — pertimbangkan take profit / cut loss"})
+                        "action_plan": d.get("action_plan"), "message": msg})
         return out
 
     alerts: List[dict] = []
@@ -4343,6 +4535,8 @@ def cron_koreksi(request: Request, secret: str = Query("")):
 
         state_key = f"ci:koreksi_state:{tk}"
         prev = str(_upstash_get(state_key) or "")
+        plan_txt = _telegram_action_plan(d.get("action_plan"))
+        plan_block = ("\n\n" + plan_txt) if plan_txt else ""
 
         # (1) Konfirmasi reversal: sebelumnya SELL/STRONG SELL, sekarang BUY/STRONG BUY.
         if prev in ("SELL", "STRONG SELL") and sig in ("BUY", "STRONG BUY"):
@@ -4350,7 +4544,8 @@ def cron_koreksi(request: Request, secret: str = Query("")):
             if not _upstash_get(dedupe):
                 msg = (f"🔄 KONFIRMASI REVERSAL: {strip_suffix(tk)}\n"
                        f"Sinyal berubah {prev} → {sig} · kualitas {num(score, 0)}\n"
-                       f"Harga {num(price, 2)} — verifikasi volume & breakout AVG bandar sebelum entry.")
+                       f"Harga {num(price, 2)} — verifikasi volume & breakout AVG bandar sebelum entry."
+                       + plan_block)
                 if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
                     _upstash_set(dedupe, "1", ttl=86400)
                     sent += 1
@@ -4359,7 +4554,8 @@ def cron_koreksi(request: Request, secret: str = Query("")):
             dedupe = f"ci:notif:koreksi:{tk}:SUPPORT:{today}"
             if not _upstash_get(dedupe):
                 msg = (f"🎯 {strip_suffix(tk)} mendekati zona entry: support {num(nearest_sup, 2)} "
-                       f"(harga {num(price, 2)})\nKualitas {num(score, 0)} · sinyal {sig} — tunggu konfirmasi reversal.")
+                       f"(harga {num(price, 2)})\nKualitas {num(score, 0)} · sinyal {sig} — tunggu konfirmasi reversal."
+                       + plan_block)
                 if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
                     _upstash_set(dedupe, "1", ttl=86400)
                     sent += 1
