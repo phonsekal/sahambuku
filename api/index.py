@@ -1104,11 +1104,64 @@ def analyze_broker_summary(payload: dict) -> dict:
 # ---------------------------------------------------------------------------
 
 
+# --- Konsistensi sumber data ---
+# Sinyal harus stabil untuk data yang sama. Bila yfinance sempat rate-limited lalu
+# analisis berpindah ke IDX Edge (harga mentah), indikator bisa berubah walau pasar
+# belum buka. Karena itu sumber yang berhasil untuk suatu saham dipakai ulang
+# sepanjang hari bursa (disimpan di Upstash bila sinkronisasi aktif).
+_SOURCE_PREF: Dict[str, dict] = {}
+SOURCE_PREF_PREFIX = "ci:tsrc:"
+STICKY_SOURCES = ("yfinance", "idx-edge-pro")
+
+
+def _today_wib() -> str:
+    """Tanggal WIB (UTC+7) sebagai batas hari bursa IDX."""
+    return time.strftime("%Y-%m-%d", time.gmtime(time.time() + 7 * 3600))
+
+
+def _source_pref_get(ticker: str) -> Optional[str]:
+    """Sumber data yang sudah dipakai hari ini untuk ticker ini (None bila belum)."""
+    tk = ticker.upper()
+    rec = _SOURCE_PREF.get(tk)
+    if not (isinstance(rec, dict) and rec.get("date") == _today_wib()):
+        rec = None
+        if SYNC_ENABLED:
+            raw = _upstash_get(SOURCE_PREF_PREFIX + tk)
+            if raw:
+                try:
+                    cand = json.loads(raw)
+                except Exception:
+                    cand = None
+                if isinstance(cand, dict) and cand.get("date") == _today_wib():
+                    rec = cand
+                    _SOURCE_PREF[tk] = cand
+    src = (rec or {}).get("src")
+    # Dataset GitHub (bukan real-time) tidak dipaku: begitu sumber real-time
+    # pulih, data harus kembali mutakhir.
+    return src if src in STICKY_SOURCES else None
+
+
+def _source_pref_set(ticker: str, source: str) -> None:
+    """Catat sumber data hari ini agar analisis berikutnya tetap memakainya."""
+    base = (source or "").split(" ")[0].strip()
+    if base not in STICKY_SOURCES:
+        return
+    rec = {"src": base, "date": _today_wib()}
+    _SOURCE_PREF[ticker.upper()] = rec
+    if SYNC_ENABLED:
+        _upstash_set(SOURCE_PREF_PREFIX + ticker.upper(), json.dumps(rec), ttl=86400)
+
+
 def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> pd.DataFrame:
     """Unduh OHLCV dengan fallback berantai:
     1) yfinance (real-time, dibatasi timeout) -> 2) IDX Edge PRO -> 3) dataset GitHub IDX.
     Kode tanpa titik (mis. TLKM) otomatis dicoba dengan suffix .JK bila gagal.
     Sumber akhir dicatat di df.attrs['source'].
+
+    Harga diambil APA ADANYA (auto_adjust=False) supaya nilainya sama dengan
+    IDX Edge/dataset dan dengan chart di platform broker; kalau memakai harga
+    hasil penyesuaian dividen, support/resistance & sinyal ikut bergeser saat
+    sumber data berpindah.
 
     yf_timeout: batas waktu khusus utk yfinance (None = YFINANCE_TIMEOUT global).
     Jalur backtest/matriks memakai timeout lebih pendek karena di Vercel yfinance
@@ -1121,14 +1174,23 @@ def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> 
     if hit and now - hit["ts"] < CACHE_TTL_SECONDS:
         return hit["df"]
     yf_timeout = yf_timeout if yf_timeout is not None else YFINANCE_TIMEOUT
+    prefer = _source_pref_get(ticker)
 
     def _attempt(tk: str):
-        """Coba satu varian ticker; kembalikan (df, source, yf_err)."""
+        """Coba satu varian ticker; kembalikan (df, source, yf_err).
+
+        prefer (jika ada) dicoba lebih dulu agar sumber data tidak berpindah dan
+        sinyal tidak berubah tanpa data baru.
+        """
         yf_err = None
+        if prefer == "idx-edge-pro" and IDX_EDGE_API_KEYS:
+            df_edge = fetch_idx_history(tk)
+            if df_edge is not None and not df_edge.empty:
+                return df_edge, "idx-edge-pro", None
         try:
             df = _call_with_timeout(
                 lambda: yf.download(tk, period=period, interval="1d",
-                                    auto_adjust=True, progress=False, threads=False),
+                                    auto_adjust=False, progress=False, threads=False),
                 yf_timeout,
             )
             if df is None:
@@ -1139,7 +1201,7 @@ def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> 
 
         source = "yfinance"
         if df is None or df.empty:
-            if IDX_EDGE_API_KEYS:
+            if IDX_EDGE_API_KEYS and prefer != "idx-edge-pro":
                 df = fetch_idx_history(tk)
                 if df is not None:
                     source = "idx-edge-pro" + (" (yfinance gagal)" if yf_err else "")
@@ -1177,6 +1239,7 @@ def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> 
         df = df.dropna(subset=["Open", "High", "Low", "Close", "Volume"]).tail(500)
     if len(df) < 30:
         raise HTTPException(422, detail="Data historis terlalu sedikit untuk analisis (min 30 bar).")
+    _source_pref_set(ticker, source)
     df.attrs["source"] = source
     CACHE[key] = {"ts": now, "df": df}
     return df
@@ -3826,13 +3889,14 @@ def quotes(
     tickers: str = Query(..., description="Kode saham dipisah koma, maks 15. Contoh: BBCA,TLKM,BBRI"),
     period: str = Query("1y", pattern="^(1mo|3mo|6mo|1y|2y|5y)$"),
     with_bandar: bool = Query(False, description="Sertakan Broker Summary (memakai kuota IDX Edge)"),
-    fundamentals: str = Query("full", pattern="^(full|ringkas|off)$",
-                              description="Kedalaman fundamental: full|ringkas|off"),
+    fundamentals: str = Query("off", pattern="^(full|ringkas|off)$",
+                              description="Kedalaman fundamental: off|ringkas|full (opsional)"),
 ):
     """Kutipan + sinyal + TP/SL untuk portofolio/watchlist (paralel, hemat kuota).
 
-    fundamentals=full menyertakan rasio, perbandingan laporan YoY tahunan &
-    kuartalan, riwayat dividen, dan aksi korporasi tiap posisi.
+    fundamentals=off (default) -> kutipan ringan; 'ringkas' menambah rasio
+    (PE/PBV/EPS/ROE/dividen); 'full' menambah laporan YoY, dividen, dan aksi
+    korporasi. Rasio lengkap per saham tersedia di /api/analyze/{ticker}.
     """
     codes = [c.strip().upper() for c in tickers.split(",") if c.strip()][:15]
     if not codes:
