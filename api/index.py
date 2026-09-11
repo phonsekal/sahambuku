@@ -3339,7 +3339,7 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 
     def _attach_plan(eligible: bool, act: str = "") -> None:
         """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
-        if not eligible or criteria not in ("buy", "koreksi", "bandar"):
+        if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing"):
             return
         action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
         plan = _scan_action_plan(df, action, item.get("bandarmology"),
@@ -4745,6 +4745,9 @@ def koreksi_watch_list(period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"))
             price = float(d["market"]["last_price"])
             sr = (d.get("support_resistance") or {}).get("zones") or []
             sup = [z["price"] for z in sr if z["type"] == "support" and z["price"] < price]
+            ap = d.get("action_plan") or {}
+            setup = ap.get("setup") or {}
+            kel = ap.get("kelayakan") or {}
             return {
                 "ticker": tk, "ok": True,
                 "price": num(price, 2),
@@ -4752,6 +4755,13 @@ def koreksi_watch_list(period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"))
                 "score": (d.get("buy_score") or {}).get("score"),
                 "nearest_support": num(max(sup), 2) if sup else None,
                 "support_distance_pct": num((price / max(sup) - 1) * 100, 1) if sup else None,
+                # Info setup swing agar panel pantauan menampilkan status entry.
+                "setup": setup.get("jenis"),
+                "layak_entry": bool(setup.get("layak_entry")),
+                "trigger": num((setup.get("trigger") or {}).get("level"), 2),
+                "rrr": num(kel.get("rrr"), 2),
+                "rrr_layak": bool(kel.get("layak")),
+                "timing": num((ap.get("timing") or {}).get("skor"), 0),
             }
         except Exception:
             return {"ticker": tk, "ok": False}
