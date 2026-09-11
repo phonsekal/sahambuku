@@ -1523,6 +1523,9 @@ def _telegram_action_plan(ap: Optional[dict], max_steps: int = 3) -> str:
         lines.append(f"🧩 Setup: {setup['jenis']}{lv}")
         if trg.get("syarat"):
             lines.append(f"   {trg['syarat']}")
+        if setup.get("harga_entry") not in (None, "") or setup.get("batas_kejar") not in (None, ""):
+            lines.append(f"💰 Entry rencana {_rp_id(setup.get('harga_entry'))} · "
+                         f"🚫 jangan kejar di atas {_rp_id(setup.get('batas_kejar'))}")
 
     steps = ap.get("langkah") or []
     wajib = [s for s in steps if s.get("wajib")] or steps
@@ -4112,14 +4115,12 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
         step("MACD di atas garis sinyal (konfirmasi momentum)", f"histogram {_rp(hist, 3)}")
         step("Tren mingguan searah (close di atas SMA20 mingguan)", opsi_mingguan)
 
+    # Zona support terdekat — dipakai hanya sebagai fallback bila belum ada setup rapi.
     if lv_sup:
-        zona = {"low": num(sup_below["band"][0] if sup_below.get("band") else lv_sup, 2),
-                "high": num(sup_below["band"][1] if sup_below.get("band") else lv_sup, 2)}
-        zona["catatan"] = ("Area pantulan (zona support). Tunggu candle konfirmasi di area ini; "
-                           "close di bawahnya = rencana batal.")
+        zona_sup = {"low": num(sup_below["band"][0] if sup_below.get("band") else lv_sup, 2),
+                    "high": num(sup_below["band"][1] if sup_below.get("band") else lv_sup, 2)}
     else:
-        zona = {"low": num(lv_fib, 2), "high": num(lv_fib, 2),
-                "catatan": "Belum ada zona support yang jelas; gunakan Fibonacci terdekat sebagai acuan."}
+        zona_sup = {"low": num(lv_fib, 2), "high": num(lv_fib, 2)}
 
     sl = (rm or {}).get("stop_loss") or (last_price - 2 * atr14 if isinstance(atr14, (int, float)) and atr14 > 0 else None)
     tp = (rm or {}).get("take_profit")
@@ -4129,11 +4130,8 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
     res_list = sorted([z["price"] for z in res if z.get("price")], key=lambda x: x)
     tp1 = (res_list[0] + 0.3 * atr_v) if res_list else (tp or last_price + 2 * atr_v)
     tp2 = (res_list[1] + 0.3 * atr_v) if len(res_list) > 1 else (tp1 + 1.5 * atr_v)
-    sl_v = sl if isinstance(sl, (int, float)) else (last_price - 2 * atr_v)
-    risk_v = last_price - sl_v
-    reward_v = tp1 - last_price
-    rrr = (reward_v / risk_v) if risk_v > 0 else None
-    layak = bool(rrr is not None and rrr >= 2.0)
+    # sl_v, RRR, dan kelayakan dihitung SETELAH setup, dari HARGA ENTRY yang
+    # direncanakan (pullback: SMA20/zona, breakout: resistance) — bukan harga sekarang.
 
     # --- Setup swing: pullback di tren naik vs breakout ---
     rsi_ok = isinstance(rsi, (int, float)) and 35 <= rsi <= 68
@@ -4175,7 +4173,45 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
                      "syarat": ("Pullback ke SMA20/support (cari pantulan), ATAU close menembus resistance "
                                 "dengan volume ≥1,5× MA20"),
                      "sekarang": f"harga {_rp(last_price)} · RSI {_rp(rsi, 1)}"}}
+    # --- Harga acuan entry & zona SESUAI SETUP (bukan support terjauh) ---
+    # Contoh: sinyal BUY di 4.320 dengan SMA20 4.264 -> zona entry ±SMA20 (4.218–4.295),
+    # bukan support jauh 4.040–4.090 yang mustahil tersentuh saat momentum naik.
+    # Penting: RRR dihitung dari harga entry yang DIRENCANAKAN. Bila harga sudah naik
+    # di atas zona, entry tetap di rencana (tunggu pullback), bukan dikejar.
+    if setup["jenis"].startswith("Pullback"):
+        entry_ref = float(setup["trigger"].get("level") or last_price)
+        z_low, z_high = entry_ref - 0.6 * atr_v, entry_ref + 0.4 * atr_v
+        sl_v = z_low - 1.0 * atr_v
+        zona_note = ("Zona beli saat harga pullback ke SMA20/zona support lalu memantul. Masuk hanya bila "
+                     "muncul candle bullish + volume; close di bawah batas bawah = rencana batal.")
+    elif setup["jenis"] == "Breakout":
+        entry_ref = float(setup["trigger"].get("level") or last_price)
+        z_low, z_high = entry_ref - 0.2 * atr_v, entry_ref + 0.5 * atr_v
+        sl_v = entry_ref - 1.5 * atr_v
+        zona_note = ("Zona entry breakout: beli saat close menembus resistance (agresif), atau lebih aman "
+                     "saat pullback pertama ke level breakout.")
+    else:
+        entry_ref = last_price
+        z_low, z_high = last_price - 0.5 * atr_v, last_price + 0.5 * atr_v
+        sl_v = last_price - 2.0 * atr_v
+        zona_note = ("Belum ada setup rapi. Tunggu pullback ke SMA20/support dengan pantulan, atau close "
+                     "menembus resistance dengan volume.")
+    # Batasi risiko maksimal 2×ATR agar stop tidak terlalu lebar (RRR tetap sehat).
+    if entry_ref - sl_v > 2.0 * atr_v:
+        sl_v = entry_ref - 2.0 * atr_v
+    max_chase = entry_ref + 1.0 * atr_v
+    if setup["jenis"] == "Tunggu (belum ada setup)" and zona_sup.get("low") is not None:
+        zona = dict(zona_sup)
+        zona["catatan"] = "Area pantulan (zona support) — belum ada setup rapi. " + zona_note
+    else:
+        zona = {"low": num(z_low, 2), "high": num(z_high, 2), "catatan": zona_note}
+    risk_v = entry_ref - sl_v
+    reward_v = tp1 - entry_ref
+    rrr = (reward_v / risk_v) if risk_v > 0 else None
+    layak = bool(rrr is not None and rrr >= 2.0 and tp1 > entry_ref)
     setup["layak_entry"] = bool(layak and setup["jenis"] != "Tunggu (belum ada setup)")
+    setup["harga_entry"] = num(entry_ref, 2)
+    setup["batas_kejar"] = num(max_chase, 2)
 
     # --- Timing score: seberapa tepat WAKTUNYA masuk (0-100) ---
     t_parts: Dict[str, float] = {}
@@ -4237,8 +4273,8 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
         "zona_entry": zona,
         "pembatalan": ({
             "level": num(sl_v, 2),
-            "catatan": ("Rencana batal bila harga ditutup di bawah level ini (SL di bawah "
-                        "support/2× ATR). Perketat bila volatilitas naik."),
+            "catatan": ("Rencana batal bila harga ditutup di bawah level ini (SL di bawah zona entry, "
+                        "maks 2× ATR). Dihitung dari harga entry rencana, bukan harga sekarang."),
         } if sl_v else None),
         "target": {"tp1": num(tp1, 2), "tp2": num(tp2, 2),
                    "catatan": ("TP1 di resistance terdekat (jual sebagian, geser SL ke break-even), "
@@ -4435,6 +4471,36 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
             },
             liquidity_grade=liquidity.get("grade"), data_date=data_date,
         )
+
+    # --- Selaraskan Risk Management dengan Rencana Aksi ---
+    # SL/TP/entry memakai harga entry yang DIRENCANAKAN (pullback: SMA20; breakout:
+    # resistance), bukan harga sekarang, supaya kartu Risk Management, kolom SL
+    # portofolio, dan notifikasi memakai level yang sama dengan Rencana Aksi.
+    if action_plan:
+        _sp = action_plan.get("setup") or {}
+        _bat = action_plan.get("pembatalan") or {}
+        _tgt = action_plan.get("target") or {}
+        _kel = action_plan.get("kelayakan") or {}
+        _e, _slp, _tpp = _sp.get("harga_entry"), _bat.get("level"), _tgt.get("tp1")
+        if (isinstance(_e, (int, float)) and isinstance(_slp, (int, float))
+                and isinstance(_tpp, (int, float)) and _e > _slp):
+            _risk = _e - _slp
+            _pct = _risk / _e if _e > 0 else None
+            rm = {
+                "direction": "long",
+                "entry": num(_e, 2),
+                "stop_loss": num(_slp, 2),
+                "take_profit": num(_tpp, 2),
+                "take_profit_2": num(_tgt.get("tp2"), 2),
+                "risk_reward_ratio": num(_kel.get("rrr"), 2),
+                "max_position_idr": num(risk_amount / _pct, 0) if _pct else None,
+                "position_sizing_note": (
+                    "Maks Risk per Trade / %SL = Maks Posisi (contoh buku: Rp5.000.000 / 20% = "
+                    f"Rp25.000.000). Di sini memakai risiko Rp{risk_amount:,.0f} dan SL rencana "
+                    "aksi (dihitung dari harga entry rencana, bukan harga sekarang)."),
+                "rrr_note": "RRR minimal 1:2 (jika < 2, trade sebaiknya dilewati).",
+                "aligned_with_action_plan": True,
+            }
 
     return {
         "ticker": ticker.upper(),

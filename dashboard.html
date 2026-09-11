@@ -792,6 +792,7 @@ function renderAnalyze(d) {
           ${ap.timing ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${ap.timing.skor >= 70 ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : ap.timing.skor >= 45 ? "border-amber-500/40 text-amber-300 bg-amber-500/10" : "border-slate-600 text-slate-400"}">⏱ Timing masuk ${fmt(ap.timing.skor, 0)}/100 · ${esc(ap.timing.label || "")}</span>` : ""}
         </div>
         <div class="text-[11px] text-slate-300">${esc(ap.setup.deskripsi || "")}</div>
+        ${(ap.setup.harga_entry != null || ap.setup.batas_kejar != null) ? `<div class="text-[11px] mt-1 text-slate-300">💰 Harga entry rencana: <b class="tabular text-sky-300">${ap.setup.harga_entry != null ? fmt(ap.setup.harga_entry) : "—"}</b> · 🚫 Batas jangan kejar: <b class="tabular text-rose-300">${ap.setup.batas_kejar != null ? fmt(ap.setup.batas_kejar) : "—"}</b></div>` : ""}
         ${ap.setup.trigger ? `<div class="text-[11px] mt-1.5 text-sky-300">🎯 Trigger: <b class="tabular">${ap.setup.trigger.level != null ? fmt(ap.setup.trigger.level) : "—"}</b> — ${esc(ap.setup.trigger.syarat || "")}</div>
         <div class="text-[10px] text-slate-500 mt-0.5">${esc(ap.setup.trigger.sekarang || "")}</div>` : ""}
       </div>` : ""}
@@ -805,6 +806,8 @@ function renderAnalyze(d) {
         ${kv("TP1 (jual sebagian)", ap.target && ap.target.tp1 != null ? fmt(ap.target.tp1) : "—", "text-emerald-400")}
         ${kv("TP2 (sisa posisi)", ap.target && ap.target.tp2 != null ? fmt(ap.target.tp2) : "—", "text-emerald-400")}
         ${kv("Resistance Terdekat", (ap.level_referensi || {}).resistance_terdekat != null ? fmt(ap.level_referensi.resistance_terdekat) : "—")}
+        ${kv("Harga Entry Rencana", ap.setup && ap.setup.harga_entry != null ? fmt(ap.setup.harga_entry) : "—")}
+        ${kv("Batas Jangan Kejar", ap.setup && ap.setup.batas_kejar != null ? fmt(ap.setup.batas_kejar) : "—", "text-rose-300")}
         ${kv("Batas Waktu (Time Stop)", ap.time_stop_hari ? ap.time_stop_hari + " hari bursa" : "—")}
         ${kv("Trailing Stop", ap.trailing ? "2×ATR dari puncak" : "—")}
         ${kv("Support Terdekat", (ap.level_referensi || {}).support_terdekat != null ? fmt(ap.level_referensi.support_terdekat) : "—")}
@@ -963,14 +966,17 @@ function renderAnalyze(d) {
       <span class="text-sm">Drop Base Rally</span>
       <span class="text-sm font-semibold ${dbr.detected ? "text-emerald-400" : "text-slate-500"}">${dbr.detected ? "✅ Terdeteksi" : "—"}</span>
     </div>`);
+  const RM = d.risk_management || {};
   h += card("Risk Management (Bab 8)",
-    `<div class="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-3">
-      ${kv("Entry", fmt(d.risk_management.entry))}
-      ${kv("Stop Loss", fmt(d.risk_management.stop_loss), "text-rose-400")}
-      ${kv("Take Profit", fmt(d.risk_management.take_profit), "text-emerald-400")}
-      ${kv("RRR", fmt(d.risk_management.risk_reward_ratio), (d.risk_management.risk_reward_ratio || 0) >= 2 ? "text-emerald-400" : (d.risk_management.risk_reward_ratio || 0) < 1 ? "text-rose-400" : "")}
+    `<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
+      ${kv("Entry (rencana)", RM.entry != null ? fmt(RM.entry) : "—")}
+      ${kv("Stop Loss", RM.stop_loss != null ? fmt(RM.stop_loss) : "—", "text-rose-400")}
+      ${kv("TP1", RM.take_profit != null ? fmt(RM.take_profit) : "—", "text-emerald-400")}
+      ${kv("TP2", RM.take_profit_2 != null ? fmt(RM.take_profit_2) : "—", "text-emerald-400")}
+      ${kv("RRR", RM.risk_reward_ratio != null ? fmt(RM.risk_reward_ratio) : "—", RM.risk_reward_ratio != null && RM.risk_reward_ratio >= 2 ? "text-emerald-400" : (RM.risk_reward_ratio != null && RM.risk_reward_ratio < 1 ? "text-rose-400" : ""))}
     </div>
-    <div class="text-xs text-slate-500">Maks posisi (contoh risk Rp5.000.000): <b class="text-slate-300">${fmtIdr(d.risk_management.max_position_idr)}</b></div>`);
+    <div class="text-xs text-slate-500">Maks posisi (contoh risk Rp5.000.000): <b class="text-slate-300">${RM.max_position_idr != null ? fmtIdr(RM.max_position_idr) : "—"}</b></div>
+    ${RM.aligned_with_action_plan ? `<div class="text-[10px] text-emerald-400/80 mt-1.5">✓ Diselaraskan dengan Rencana Aksi: entry = harga entry rencana, SL di bawah zona entry, TP1/TP2 dari resistance.</div>` : ""}`);
   h += `</div>`;
 
   if (b.status) {
@@ -1218,7 +1224,8 @@ function scanPlanHtml(ap, tk) {
       ${tm.skor != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${tm.skor >= 70 ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : tm.skor >= 45 ? "border-amber-500/40 text-amber-300 bg-amber-500/10" : "border-slate-600 text-slate-400"}">⏱ Timing ${fmt(tm.skor, 0)}/100</span>` : ""}
       ${kel.rrr != null ? `<span class="text-[10px] px-2 py-0.5 rounded-full border ${kel.layak ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-rose-500/40 text-rose-300 bg-rose-500/10"}">⚖️ RRR 1:${fmt(kel.rrr, 2)}${kel.layak ? "" : " (di bawah 1:2)"}</span>` : ""}
     </div>
-    ${st.trigger ? `<div class="text-[11px] text-sky-300 mb-2">🎯 Trigger: <b class="tabular">${st.trigger.level != null ? fmt(st.trigger.level) : "—"}</b> — ${esc(st.trigger.syarat || "")}</div>` : ""}` : "";
+    ${st.trigger ? `<div class="text-[11px] text-sky-300 mb-1">🎯 Trigger: <b class="tabular">${st.trigger.level != null ? fmt(st.trigger.level) : "—"}</b> — ${esc(st.trigger.syarat || "")}</div>` : ""}
+    ${(st.harga_entry != null || st.batas_kejar != null) ? `<div class="text-[11px] text-slate-300 mb-2">💰 Entry rencana <b class="tabular text-sky-300">${st.harga_entry != null ? fmt(st.harga_entry) : "—"}</b> · 🚫 jangan kejar di atas <b class="tabular text-rose-300">${st.batas_kejar != null ? fmt(st.batas_kejar) : "—"}</b></div>` : ""}` : "";
   return `<div class="text-xs font-semibold mb-2 text-amber-200">${esc(ap.kesimpulan || "")}</div>
     ${setupLine}
     <table class="w-full text-xs mb-2"><tbody>${steps}</tbody></table>
