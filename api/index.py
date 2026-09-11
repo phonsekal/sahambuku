@@ -30,6 +30,7 @@ import math
 import os
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
@@ -2258,18 +2259,27 @@ def _divergence_series(df: pd.DataFrame, period: int = 14, carry: int = 3):
 FMP_API_KEY = os.environ.get("FMP_API_KEY", "").strip()
 FMP_CACHE: Dict[str, dict] = {}
 FMP_TTL = 24 * 3600  # fundamental berubah per kuartal -> cache 1 hari cukup
+FMP_QUOTA_UNTIL = 0.0  # circuit breaker saat FMP membalas HTTP 429 (kuota habis)
 
 
 def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Optional[dict]:
     """GET ke Financial Modeling Prep (FMP) API 'stable' (v3 legacy sudah nonaktif).
 
-    None bila key belum di-set / gagal / simbol di luar cakupan paket (mis. IDX .JK
-    butuh paket berbayar FMP). Endpoint baru: /stable/quote, /stable/ratios,
-    /stable/key-metrics, /stable/income-statement, /stable/dividends, /stable/splits."""
+    None bila key belum di-set / gagal / kuota habis / simbol di luar cakupan paket
+    (mis. IDX .JK butuh paket berbayar FMP). Endpoint: /stable/quote, /stable/ratios,
+    /stable/key-metrics, /stable/income-statement, /stable/dividends, /stable/splits.
+
+    Cache memakai kunci path+params (bukan hanya path) supaya data antar simbol
+    tidak saling tertukar.
+    """
+    global FMP_QUOTA_UNTIL
     if not FMP_API_KEY:
         return None
+    if time.time() < FMP_QUOTA_UNTIL:
+        return None  # kuota harian FMP habis -> jangan panggil lagi hari ini
     now = time.time()
-    hit = FMP_CACHE.get(path)
+    key = path + "?" + urllib.parse.urlencode(sorted((params or {}).items()))
+    hit = FMP_CACHE.get(key)
     if hit and now - hit["ts"] < FMP_TTL:
         return hit["data"]
     url = f"https://financialmodelingprep.com/stable/{path}?apikey={FMP_API_KEY}"
@@ -2279,11 +2289,16 @@ def _fmp_get(path: str, params: Optional[Dict[str, Any]] = None) -> Optional[dic
         req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
         with urllib.request.urlopen(req, timeout=20) as resp:
             data = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            # Paket gratis FMP dibatasi kuota harian -> breaker hingga reset WIB.
+            FMP_QUOTA_UNTIL = _idx_edge_quota_until()
+        return None
     except Exception:
         return None
     if isinstance(data, dict) and isinstance(data.get("Error Message"), str):
         return None
-    FMP_CACHE[path] = {"ts": now, "data": data}
+    FMP_CACHE[key] = {"ts": now, "data": data}
     return data
 
 
@@ -3534,19 +3549,46 @@ def dashboard():
     return FileResponse(DASHBOARD_PATH, media_type="text/html")
 
 
-@app.get("/api/health")
-def health():
+def _fmp_selfcheck() -> dict:
+    """Uji nyata kunci FMP: cek simbol saham AS dan simbol IDX (.JK).
+
+    Dipakai endpoint /api/health?fmp_check=1 supaya kelihatan apakah kunci FMP
+    benar-benar hidup dan bursa mana saja yang tercakup paketnya.
+    """
+    if not FMP_API_KEY:
+        return {"key_set": False, "note": "FMP_API_KEY belum di-set."}
+    us = _fmp_get("quote", {"symbol": "AAPL"})
+    if us is None and time.time() < FMP_QUOTA_UNTIL:
+        return {"key_set": True, "kuota": "habis (HTTP 429) — otomatis aktif lagi setelah kuota reset",
+                "saham_as": "tidak dapat diuji", "saham_idx": "tidak dapat diuji"}
+    idx = _fmp_get("quote", {"symbol": "BBCA.JK"})
     return {
+        "key_set": True,
+        "saham_as": "ok" if isinstance(us, list) and us else "gagal/tidak tercakup",
+        "saham_idx": "ok" if isinstance(idx, list) and idx else "tidak tercakup paket",
+        "catatan": ("Paket FMP gratis tidak mencakup bursa Indonesia, jadi rasio "
+                    "fundamental saham IDX diambil dari Yahoo Finance."),
+    }
+
+
+@app.get("/api/health")
+def health(fmp_check: bool = Query(False, description="Uji kunci FMP ke API-nya")):
+    out = {
         "sync_enabled": SYNC_ENABLED,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "idx_edge_quota_out": idx_edge_quota_out(),
         "idx_edge_keys": len(IDX_EDGE_API_KEYS),
         "fmp_configured": bool(FMP_API_KEY),
+        "fmp_quota_out": time.time() < FMP_QUOTA_UNTIL,
+        "fundamental_source": "Yahoo Finance (mencakup IDX) + FMP untuk bursa lain",
         "market_regime": _ihsg_regime(),
         "status": "ok",
         "service": "dedesaputra_invst Strategy API",
         "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
     }
+    if fmp_check:
+        out["fmp_check"] = _fmp_selfcheck()
+    return out
 
 
 def _analyze_core(ticker: str, period: str, risk_amount: float,
