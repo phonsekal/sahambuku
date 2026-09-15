@@ -1370,9 +1370,19 @@ function scCriteriaChanged() {
 // PINDAI PRA-TUTUP: endpoint berbeda, dan sengaja berbeda — harga masuknya adalah harga
 // pasar SAAT pemindaian, bukan harga tutup yang sudah lewat. Sesudah bursa tutup mode ini
 // hanya membaca sesi terakhir yang selesai (fase sesi ikut dilaporkan apa adanya).
+// Kriteria yang bisa dinilai pada keadaan sesi berjalan. Yang di luar daftar ini TIDAK
+// ditolak diam-diam: API memakai kriteria bawaan (momentumkuat) dan memberi tahu bahwa
+// permintaannya dialihkan, supaya pemakai tahu apa yang sebenarnya dinilai.
+const PRECLOSE_CRITERIA = ["momentum", "momentumkuat", "breakout", "launchpad", "volsr"];
+
 async function scanPreclose() {
   const btn = $("#btnPreclose");
-  const q = new URLSearchParams({ universe: $("#scUniverse").value,
+  const picked = $("#scCriteria").value;
+  const crit = PRECLOSE_CRITERIA.includes(picked) ? picked : "momentumkuat";
+  if (crit !== picked) {
+    toast(`Kriteria "${picked}" belum didukung mode pra-tutup (hanya ${PRECLOSE_CRITERIA.join(", ")}); memakai ${crit}.`, "info");
+  }
+  const q = new URLSearchParams({ universe: $("#scUniverse").value, criteria: crit,
     limit: $("#scLimit").value, mom_min_pct: "8" });
   if ($("#scLimit").value === "50") q.set("limit", "250");   // pra-tutup memeriksa banyak nama
   btn.disabled = true; btn.textContent = "Memindai harga berjalan…";
@@ -1476,12 +1486,19 @@ function renderScan(d) {
         ? ` · <button onclick="scanAll()" class="text-emerald-400 hover:underline font-semibold" title="Pindai halaman demi halaman sampai seluruh emiten tuntas, lalu gabungkan hasilnya">⏭ Tuntaskan semua ${totalPages} halaman</button>`
         : "")
     : (totalPages > 1 ? ` · <span class="text-emerald-400">✓ seluruh ${d.total_tickers} emiten sudah dipindai sampai halaman terakhir</span>` : "");
+  // Mode pra-tutup TIDAK memeriksa bandarmology (butuh 1 permintaan API per saham dan
+  // tidak relevan untuk keputusan hari itu) dan tidak punya konsep "dilewati" yang sama.
+  // Sebelumnya baris ini menampilkan "undefined" karena kuncinya memang tidak ada —
+  // jadi ringkasannya dibuat terpisah, bukan memaksa kunci yang tidak berlaku.
+  const summaryLine = (d.mode === "preclose")
+    ? `<span>Harga berjalan diperiksa <b class="text-slate-200">${d.quotes_today ?? d.scanned}</b> dari <b class="text-slate-200">${d.requested ?? d.total_tickers}</b> emiten · cakupan <b class="text-slate-200">${fmt(d.coverage_pct, 1)}%</b> · tanpa kutipan hari ini <b class="text-slate-200">${d.quotes_failed ?? 0}</b> · lolos syarat awal <b class="text-slate-200">${d.passed_stage1 ?? d.results.length}</b></span>`
+    : `<span>Dipindai <b class="text-slate-200">${d.scanned}</b> saham · dilewati <b class="text-slate-200">${d.skipped}</b> · bandarmology dicek <b class="text-slate-200">${d.bandarmology_checked}</b> · total universe <b class="text-slate-200">${d.total_tickers}</b></span>`;
   $("#scanInfo").innerHTML =
-    `<div class="flex flex-wrap items-center">${regimeBadge}<span>Dipindai <b class="text-slate-200">${d.scanned}</b> saham · dilewati <b class="text-slate-200">${d.skipped}</b> · bandarmology dicek <b class="text-slate-200">${d.bandarmology_checked}</b> · total universe <b class="text-slate-200">${d.total_tickers}</b></span>` +
+    `<div class="flex flex-wrap items-center">${regimeBadge}${summaryLine}` +
     (d.spread ? ` · <span class="text-sky-400" title="Sampel tersebar MERATA di seluruh daftar emiten, bukan hanya emiten pertama secara alfabet">sampel tersebar</span>` : "") +
     pageInfo + accInfo + walkBtns +
     (d.ticket_filtered ? ` · <span class="text-amber-300" title="Penyaring ukuran tiket: saham dengan tiket terendah (kuintil 20%) di kelas likuiditasnya dibuang">🎫 tiket kecil dibuang <b>${d.ticket_filtered}</b></span>` : "") +
-    `</div>${ticketPanel}${blockedBanner}${rsBypassNote}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
+    `</div>${ticketPanel}${blockedBanner}${rsBypassNote}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note || d.note || "")}</div>`;
 
   if (!d.results.length) {
     $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : (d.accumulated ? "Belum ada saham yang lolos kriteria di halaman-halaman yang sudah dipindai." : "Tidak ada saham yang lolos kriteria pada halaman ini.")}</div>`;
@@ -1520,10 +1537,19 @@ function renderScan(d) {
   if (d.mode === "preclose") {
     const pc = d.preclose || {}, ss = pc.session || {};
     const openNow = ss.phase === "SESI BERJALAN";
+    const CRIT_LABEL = { momentum: "Momentum murni", momentumkuat: "Momentum + Breakout",
+      breakout: "Breakout high 20 hari", launchpad: "The Launch Pad", volsr: "S&R Volume" };
+    const critLabel = CRIT_LABEL[d.criteria] || d.criteria;
     const tone = openNow ? "text-rose-200/90 bg-rose-500/10 border-rose-500/30" : "text-amber-200/90 bg-amber-500/10 border-amber-500/30";
-    h += `<div class="mb-3 text-[11px] ${tone} rounded-xl px-3.5 py-2.5">⏱ <b>PINDAI PRA-TUTUP</b> · jam server <b>${esc(ss.wib || "")} WIB</b> · fase <b>${esc(ss.phase || "?")}</b>${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}. Harga masuk di kolom Rencana Harian adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari ini, bukan harga tutup yang sudah lewat.</div>`;
+    h += `<div class="mb-3 text-[11px] ${tone} rounded-xl px-3.5 py-2.5">⏱ <b>PINDAI PRA-TUTUP</b> · kriteria <b>${esc(critLabel)}</b> · mesin <b>${esc(pc.engine || d.engine || "")}</b> · jam server <b>${esc(ss.wib || "")} WIB</b> · fase <b>${esc(ss.phase || "?")}</b>${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}. Harga masuk di kolom Rencana Harian adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari ini, bukan harga tutup yang sudah lewat.</div>`;
     if (!openNow) h += `<div class="mb-3 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚠️ Sesi reguler sedang <b>TIDAK berjalan</b> (${esc(ss.phase || "?")}). Hasil ini membaca sesi terakhir yang selesai, jadi bukan pra-tutup. Jalankan lagi pada 15:00-15:49 WIB untuk memakai harga yang bisa dibayar hari itu.</div>`;
     if (pc.measured_risk) h += `<div class="mb-3 text-[11px] text-emerald-200/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">📐 <b>RISIKO MODE INI SUDAH DIUKUR, BUKAN DIANGGAP:</b> ${esc(pc.measured_risk)}</div>`;
+    const tr = pc.track_record;
+    if (tr && tr.pairs) {
+      h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">📊 <b>CATATAN AKURASI MODE INI</b> (dari sinyal yang benar-benar dikirim, bukan simulasi) · ${tr.days} hari · ${tr.pairs} sinyal: rata-rata selisih harga masuk ke harga tutup <b>${tr.mean_drift_pct >= 0 ? "+" : ""}${fmt(tr.mean_drift_pct, 3)}%</b> · rata-rata |selisih| <b>${fmt(tr.mean_abs_drift_pct, 3)}%</b> · sinyal yang masih berlaku saat penutupan <b>${fmt(tr.survival_pct, 1)}%</b>.${tr.last_date ? ` Terakhir diperiksa ${esc(tr.last_date)} (${esc(tr.last_criteria || "")}).` : ""}</div>`;
+    } else {
+      h += `<div class="mb-3 text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">📊 Belum ada catatan akurasi tersimpan. Verifikasi dibandingkan dengan harga tutup resmi setelah data final tersedia (pukul 20:00 WIB), jadi catatan ini terisi mulai hari pertama cron pra-tutup berjalan.</div>`;
+    }
     h += `<div class="mb-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">Batasan yang ikut ditanggung mode ini: <b>harga &amp; volume belum final</b> sampai lewat lelang penutupan (~16:00), sehingga syarat "naik &ge;8%" dan "tembus high 20 hari" bisa batal sebelum tutup — kandidat dengan jarak &le;2% dari ambang ditandai <b>RAPUH</b>. <b>Penyaring tiket tidak aktif</b> (jumlah transaksi baru ada setelah bursa tutup). Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini; sisanya tidak diperiksa).</div>`;
   }
   if (isSilent) h += `<div class="mb-3 text-[11px] text-violet-300/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕵️ <b>Akumulasi diam-diam</b>: satu broker yang konsisten net BELI (≥70% hari, net/gross ≥ 0,5) selama 10 hari. Ini menjawab "siapa yang mengakumulasi" — pertanyaan yang gagal dijawab bila nilai seluruh broker dijumlahkan, karena arus broker lain bisa saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah semua broker hanya +227,56 M).

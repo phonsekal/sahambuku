@@ -1,0 +1,47 @@
+name: Verifikasi Pra-Tutup (harga masuk 15:40 vs harga tutup resmi)
+
+# KENAPA INI ADA:
+# Mode pra-tutup hanya sah bila harga pukul 15:40 memang mewakili harga tutup. Satu
+# pengukuran riset tidak cukup untuk mempertanggungjawabkannya setiap hari, jadi cron
+# 15:40 menyimpan snapshot sinyalnya, dan job ini membandingkannya dengan bar FINAL
+# (ringkasan harian IDX tersinkron sekitar 19.30 WIB) lalu memperbarui catatan akurasi
+# bergulir yang tampil di dashboard (/api/preclose-track).
+#
+# YANG DIUKUR SETIAP HARI:
+#   1. selisih harga masuk (15:40) terhadap harga tutup resmi, rata-rata dan rata-rata
+#      nilai absolutnya;
+#   2. berapa banyak sinyal yang MASIH memenuhi syaratnya pada data final (untuk
+#      kriteria pola: fungsi sinyal produksi dijalankan ulang atas data final).
+#
+# KEJUJURAN: bila bar final belum tersedia, endpoint membalas ok=false dan TIDAK
+# mencatat apa pun, sehingga catatan akurasi tidak pernah diisi pembanding yang salah.
+on:
+  schedule:
+    - cron: "0 13 * * 1-5"   # 13:00 UTC = 20:00 WIB, Senin-Jumat (setelah sinkronisasi IDX)
+  workflow_dispatch: {}
+
+jobs:
+  verifikasi-pra-tutup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Panggil endpoint /api/cron/preclose-verify
+        run: |
+          set -euo pipefail
+          echo "Verifikasi pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 280 -o resp_verify.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/preclose-verify")
+          echo "HTTP $code"
+          cat resp_verify.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint verifikasi pra-tutup membalas HTTP $code"
+            exit 1
+          fi
+          # ok=false berarti belum ada snapshot / bar final belum siap. Itu bukan
+          # kegagalan infrastruktur, jadi hanya diperingatkan, bukan digagalkan.
+          if grep -q '"ok":false' resp_verify.json; then
+            echo "::warning::Verifikasi belum bisa dijalankan (lihat reason pada JSON)."
+          fi
+          echo "Selesai."

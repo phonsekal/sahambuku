@@ -2790,6 +2790,66 @@ def quick_signal(df: pd.DataFrame) -> str:
         return "N/A"
 
 
+# --- HOOK BAR BERJALAN (dipakai mode pra-tutup) -----------------------------
+# Diisi HANYA selama pemindaian pra-tutup berlangsung, lalu dikosongkan di blok
+# finally. Selama terisi, baris terakhir setiap data harian adalah HARI INI dengan
+# nilai berjalan, sehingga SELURUH kriteria di aplikasi ini (launchpad, volsr,
+# breakout, skor beli) bisa dinilai pada keadaan sesi yang sedang berjalan tanpa
+# menyalin ulang logika sinyalnya.
+LIVE_BAR_OVERRIDE: Dict[str, dict] = {}
+PRECLOSE_MODE_ACTIVE = False
+
+
+def _inject_live_bar(df: pd.DataFrame, snap: dict) -> pd.DataFrame:
+    """Kembalikan salinan `df` dengan bar TERAKHIR = keadaan sesi yang sedang berjalan.
+
+    Kalau data harian sudah memuat bar hari ini (mis. sumbernya sudah tersinkron),
+    isinya DIGANTI; kalau belum, satu baris baru ditambahkan. Volume dinaikkan ke
+    perkiraan volume final (1/PRECLOSE_VOLUME_SHARE = 1/0,87) karena syarat volume
+    (mis. Launch Pad: >= 1,5x VolumeMA20) didefinisikan atas volume akhir hari,
+    sedangkan pukul 15:40 baru ~87% yang terkumpul.
+    """
+    try:
+        out = df.copy()
+    except Exception:
+        return df
+    try:
+        price = float(snap.get("price") or 0)
+        if price <= 0:
+            return df
+        import datetime as _dt
+        tz = _dt.timezone(_dt.timedelta(hours=WIB_OFFSET))
+        today = _wib_now().date()
+        vol = float(snap.get("day_volume") or 0) / max(PRECLOSE_VOLUME_SHARE, 1e-6)
+        row = {
+            "Open": float(snap.get("day_open") or price),
+            "High": float(snap.get("day_high") or price),
+            "Low": float(snap.get("day_low") or price),
+            "Close": price,
+            "Volume": vol,
+        }
+        for col in ("Value",):
+            if col in out.columns:
+                row[col] = price * vol
+        if "Freq" in out.columns:
+            row["Freq"] = float("nan")   # jumlah transaksi belum tersedia intraday
+        stamp = pd.Timestamp(today)
+        try:
+            last_date = pd.Timestamp(out.index[-1]).date()
+        except (IndexError, TypeError, ValueError):
+            last_date = None
+        if last_date == today:
+            for k, v in row.items():
+                if k in out.columns:
+                    out.iloc[-1, out.columns.get_loc(k)] = v
+            out.index = out.index[:-1].tolist() + [stamp] if len(out) else out.index
+        else:
+            out.loc[stamp] = [row.get(c, float("nan")) for c in out.columns]
+        return out.sort_index()
+    except Exception:
+        return df
+
+
 def _get_ticker_data(tk: str, period: str):
     """Data OHLCV per ticker:
     1) IDX Edge PRO (real-time IDX; menghindari yfinance yang menggantung di
@@ -2797,6 +2857,15 @@ def _get_ticker_data(tk: str, period: str):
     2) yfinance (untuk ticker non-IDX / bila IDX Edge tidak dikonfigurasi),
     3) dataset publik GitHub.
     """
+    df, src = _get_ticker_data_raw(tk, period)
+    snap = LIVE_BAR_OVERRIDE.get(tk) if LIVE_BAR_OVERRIDE else None
+    if df is not None and snap:
+        df = _inject_live_bar(df, snap)
+        src = f"{src}+live"
+    return df, src
+
+
+def _get_ticker_data_raw(tk: str, period: str):
     if ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
         df = fetch_idx_history(tk)
         if df is not None:
@@ -4174,6 +4243,10 @@ def _momentum_trade_plan(df: pd.DataFrame, entry_price: Optional[float] = None,
     try:
         close = df["Close"].astype(float)
         last = float(close.iloc[-1])
+        # Mode pra-tutup aktif: baris terakhir df SUDAH berupa keadaan sesi berjalan
+        # (lihat LIVE_BAR_OVERRIDE), jadi `last` memang harga yang bisa dibayar sekarang.
+        if entry_price is None and PRECLOSE_MODE_ACTIVE:
+            entry_price, entry_mode = last, "preclose"
         preclose = bool(entry_price) and str(entry_mode) == "preclose"
         anchor = float(entry_price) if preclose else last
         atr_v = float(atr(df, 14).iloc[-1])
@@ -4357,9 +4430,15 @@ def _preclose_snapshot(ticker: str) -> Optional[dict]:
             pass
     highs = [float(b["high"]) for b in bars if b.get("high")]
     lows = [float(b["low"]) for b in bars if b.get("low")]
+    day_open = None
+    for b in bars:
+        if b.get("open"):
+            day_open = float(b["open"])
+            break
     return {
         "ticker": ticker,
         "price": px,
+        "day_open": day_open,
         "prev_close": prev,
         "day_ret_pct": (round((px / prev - 1) * 100, 3) if prev and prev > 0 else None),
         "day_high": max(highs) if highs else None,
@@ -4375,16 +4454,33 @@ def _preclose_snapshot(ticker: str) -> Optional[dict]:
     }
 
 
+# Kriteria yang bisa dipindai dalam mode pra-tutup.
+#   momentum / momentumkuat : jalur cepat dua tahap (harga berjalan saja di tahap 1)
+#   breakout / launchpad / volsr : jalur "bar berjalan disuntikkan" (lihat
+#     LIVE_BAR_OVERRIDE) sehingga fungsi sinyal PRODUKSI apa adanya yang menilai,
+#     bukan salinannya. Bedanya penting: jalur ini memerlukan riwayat harian per
+#     emiten, jadi ia memakai kuota penyedia riwayat (IDX Edge) seperti pemindaian biasa.
+PRECLOSE_CRITERIA = ("momentum", "momentumkuat", "breakout", "launchpad", "volsr")
+PRECLOSE_PATTERN_CRITERIA = ("breakout", "launchpad", "volsr")
+
+
 def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
                    min_value: float = MOMENTUM_VALUE_FLOOR, period: str = "6mo",
-                   workers: int = 12) -> dict:
-    """Pindai harga SEKARANG se-pasar, lalu verifikasi struktur atas data harian.
+                   workers: int = 12, criteria: str = "momentumkuat") -> dict:
+    """Pindai keadaan SEKARANG se-pasar, dengan harga masuk yang bisa dibayar hari ini.
 
-    Dua tahap, karena satu-satunya cara memeriksa harga hari berjalan adalah satu
-    permintaan per emiten: tahap 1 menyaring dengan harga+volume berjalan (murah,
-    satu permintaan), tahap 2 hanya untuk yang lolos (sedikit) mengambil riwayat
-    harian untuk memeriksa high 20 sesi, ATR, dan kelas likuiditas.
+    Dua mesin, dipilih oleh `criteria`:
+      * momentum/momentumkuat -> dua tahap. Satu-satunya cara memeriksa harga hari
+        berjalan adalah satu permintaan per emiten, jadi tahap 1 menyaring dengan
+        harga+volume berjalan (murah), tahap 2 hanya untuk yang lolos mengambil
+        riwayat harian untuk high 20 sesi, ATR, dan kelas likuiditas.
+      * breakout/launchpad/volsr -> bar berjalan disuntikkan ke riwayat harian, lalu
+        fungsi sinyal produksi dinilai apa adanya. Ini menjaga definisi kriteria tetap
+        satu sumber: yang berubah hanya baris terakhir (hari ini), bukan rumusnya.
     """
+    criteria = str(criteria or "momentumkuat").lower()
+    if criteria not in PRECLOSE_CRITERIA:
+        criteria = "momentumkuat"
     snaps: List[dict] = []
     if tickers:
         with ThreadPoolExecutor(max_workers=max(1, min(int(workers), 24))) as ex:
@@ -4392,6 +4488,11 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
                 if r:
                     snaps.append(r)
     today_snaps = [s for s in snaps if s.get("is_today")]
+
+    if criteria in PRECLOSE_PATTERN_CRITERIA:
+        return _preclose_pattern_scan(tickers, today_snaps, criteria, period,
+                                      mom_min_pct, workers, snaps)
+
     for s in today_snaps:
         # Nilai transaksi FINAL yang diperkirakan: volume pra-tutup masih ~87% dari
         # volume resmi, jadi angkanya dinaikkan sebelum dibandingkan dengan lantai.
@@ -4482,6 +4583,79 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
         "passed_stage1": len(passed),
         "results": results,
         "session": preclose_session_info(),
+        "criteria": criteria,
+        "engine": "price-stage2",
+    }
+
+
+def _preclose_pattern_scan(tickers: List[str], today_snaps: List[dict],
+                          criteria: str, period: str, mom_min_pct: float,
+                          workers: int, snaps: List[dict]) -> dict:
+    """Jalur kedua: bar berjalan disuntikkan, lalu fungsi sinyal PRODUKSI menilai.
+
+    Caranya: LIVE_BAR_OVERRIDE diisi snapshot harga berjalan untuk tiap emiten, lalu
+    `_scan` dijalankan seperti biasa. Karena `_get_ticker_data` mengembalikan riwayat
+    harian dengan baris terakhir = keadaan sesi sekarang, seluruh definisi kriteria
+    (pola buku, breakout, skor beli) dan seluruh turunannya (rencana aksi, zona entry,
+    kelas likuiditas) ikut menilai keadaan berjalan tanpa logika kembar.
+
+    Kuota: jalur ini mengambil riwayat harian per emiten (sumber sama dengan pemindaian
+    biasa), jadi jumlah permintaan penyedia riwayat dilaporkan di `history_requests`.
+    Penyaring ukuran tiket DIMATIKAN karena Freq belum tersedia intraday; kalau tidak
+    dimatikan, angkanya NaN dan saham bisa lolos/gagal karena alasan palsu.
+    """
+    global PRECLOSE_MODE_ACTIVE
+    override = {s["ticker"]: s for s in today_snaps}
+    LIVE_BAR_OVERRIDE.clear()
+    LIVE_BAR_OVERRIDE.update(override)
+    PRECLOSE_MODE_ACTIVE = True
+    try:
+        scan = _scan(tickers, criteria, period, True, False, False, False, False,
+                     2e9, False, mom_min_pct)
+    finally:
+        LIVE_BAR_OVERRIDE.clear()
+        PRECLOSE_MODE_ACTIVE = False
+    sess = preclose_session_info()
+    results = []
+    for r in scan.get("results") or []:
+        tk = r.get("ticker")
+        snap = override.get(tk) or {}
+        r["entry_now"] = num(snap.get("price") or r.get("price"), 2)
+        r["day_return_pct"] = num(snap.get("day_ret_pct"), 2)
+        r["previous_close"] = num(snap.get("prev_close"), 2)
+        r["estimated_value_final_idr"] = num(
+            (snap.get("day_value_idr") or 0) / PRECLOSE_VOLUME_SHARE, 0)
+        r["preclose"] = True
+        r["preclose_info"] = {
+            "session": sess,
+            "entry_now": num(snap.get("price"), 2),
+            "entry_timing": "beli SEKARANG, sebelum sesi tutup (harga pasar)",
+            "entry_rule": PRECLOSE_ENTRY_RULE,
+            "measured_risk": PRECLOSE_SURVIVAL_NOTE,
+            "volume_share_assumed": PRECLOSE_VOLUME_SHARE,
+            "ticket_filter_disabled": True,
+            "note": ("Baris terakhir data harian diganti keadaan sesi berjalan, jadi "
+                     "pola/sinyal dinilai pada harga & volume SEKARANG. "
+                     + PRECLOSE_ENTRY_RULE),
+        }
+        if isinstance(r.get("criteria_met"), list):
+            r["criteria_met"] = [f"{c} (pra-tutup)" for c in r["criteria_met"]]
+        results.append(r)
+    results.sort(key=lambda r: (GRADE_RANK.get(str(r.get("liquidity_grade")), 9),
+                                -(r.get("day_return_pct") or 0)))
+    return {
+        "checked": len(tickers),
+        "quotes_ok": len(snaps),
+        "quotes_today": len(today_snaps),
+        "quotes_failed": len(tickers) - len(snaps),
+        "coverage_pct": num(100.0 * len(today_snaps) / len(tickers), 1) if tickers else None,
+        "passed_stage1": len(results),
+        "results": results,
+        "session": sess,
+        "criteria": criteria,
+        "engine": "live-bar-injection",
+        "history_requests": len(tickers),
+        "ticket_filter_disabled": True,
     }
 
 
@@ -7773,9 +7947,46 @@ def screener(
     }
 
 
+def _preclose_track_record() -> Optional[dict]:
+    """Catatan akurasi mode pra-tutup yang terkumpul dari verifikasi harian."""
+    raw = _upstash_get("ci:preclose:track")
+    if not raw:
+        return None
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else None
+    except (TypeError, ValueError):
+        return None
+
+
+@app.get("/api/preclose-track")
+def preclose_track():
+    """Catatan akurasi mode pra-tutup: selisih harga masuk terhadap harga tutup resmi.
+
+    Diisi oleh /api/cron/preclose-verify yang membandingkan snapshot 15:40 dengan
+    harga tutup resmi (ringkasan harian IDX) pada hari yang sama. Kalau kosong, berarti
+    verifikasi belum pernah berjalan, dan itu dikatakan apa adanya — bukan dikosongkan
+    supaya tampak bagus.
+    """
+    tr = _preclose_track_record()
+    return {
+        "track_record": tr,
+        "note": ("Verifikasi dijalankan setelah data final tersedia (pukul 20:00 WIB). "
+                 "Yang diukur: selisih harga masuk pra-tutup terhadap harga tutup "
+                 "resmi, dan berapa banyak sinyal yang masih bertahan pada penutupan."),
+        "empty_reason": (None if tr else
+                         "Belum ada verifikasi tersimpan (cron preclose-verify belum "
+                         "pernah berjalan, atau penyimpanan Upstash tidak aktif)."),
+        "disclaimer": DISCLAIMER,
+    }
+
+
 @app.get("/api/screener/preclose")
 def screener_preclose(
     universe: str = Query("all", pattern="^(all|liquid)$"),
+    criteria: str = Query("momentumkuat",
+                          pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$",
+                          description="Kriteria yang dinilai pada keadaan sesi berjalan"),
     limit: int = Query(250, ge=1, le=951, description="Jumlah emiten yang diperiksa harga berjalan"),
     mom_min_pct: float = Query(8.0, ge=1.0, le=30.0, description="Ambang return harian berjalan (%)"),
     min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0, description="Lantai nilai transaksi berjalan (Rp)"),
@@ -7804,21 +8015,34 @@ def screener_preclose(
         tickers = spread_pick(tickers, limit)
     elif limit < len(tickers):
         tickers = tickers[:limit]
+    used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
-                          period=period, workers=workers)
+                          period=period, workers=workers, criteria=used)
     return {
-        "criteria": "momentumkuat",
+        # Kriteria yang BENAR-BENAR dipakai, supaya tabel di dashboard memilih kolom
+        # yang tepat (mis. kolom Launch Pad saat kriteria launchpad).
+        "criteria": used,
+        "criteria_requested": criteria,
+        "criteria_supported": list(PRECLOSE_CRITERIA),
         "mode": "preclose",
         "universe": universe,
         "mom_min_pct": mom_min_pct,
         "min_value_idr": min_value,
         "requested": len(tickers),
         "scanned": scan["checked"],
+        # Kunci berikut tidak berlaku di mode ini (tidak ada bandarmology, tidak ada
+        # konsep "dilewati"), tetapi tetap DIKIRIM dengan nilai yang benar supaya tidak
+        # ada pembaca yang menampilkan "undefined".
+        "skipped": scan["quotes_failed"],
+        "bandarmology_checked": 0,
+        "total_tickers": len(load_idx_tickers(universe)),
+        "spread": True,
         "quotes_ok": scan["quotes_ok"],
         "quotes_today": scan["quotes_today"],
         "quotes_failed": scan["quotes_failed"],
         "coverage_pct": scan["coverage_pct"],
         "passed_stage1": scan["passed_stage1"],
+        "engine": scan["engine"],
         "preclose": {
             "session": scan["session"],
             "entry_price_meaning": ("harga pasar SAAT PEMINDAIAN (mode pra-tutup), "
@@ -7826,11 +8050,18 @@ def screener_preclose(
             "entry_rule": PRECLOSE_ENTRY_RULE,
             "measured_risk": PRECLOSE_SURVIVAL_NOTE,
             "volume_share_assumed": PRECLOSE_VOLUME_SHARE,
+            "engine": scan["engine"],
+            "track_record": _preclose_track_record(),
             "coverage_note": ("Emitten tanpa kutipan harga berjalan tidak diperiksa "
                               "(kolom quotes_failed). Cakupan bukan 100%."),
             "ticket_note": ("Penyaring ukuran tiket TIDAK aktif di mode ini karena "
                             "jumlah transaksi (Freq) baru tersedia setelah bursa tutup."),
+            "criteria_note": ("Kriteria yang didukung mode pra-tutup: momentum, "
+                              "momentumkuat, breakout, launchpad, volsr."),
         },
+        "bandarmology_note": ("Bandarmology tidak diperiksa di mode pra-tutup: biayanya "
+                              "satu permintaan API per saham dan hasilnya bukan penentu "
+                              "keputusan hari itu."),
         "results": scan["results"],
         "note": ("Pindai pra-tutup memakai bar 5 menit Yahoo; harganya harga pasar "
                  "saat itu, bukan harga tutup. Bila fase sesi bukan SESI BERJALAN, "
@@ -7842,6 +8073,8 @@ def screener_preclose(
 @app.get("/api/cron/preclose")
 def cron_preclose(request: Request, secret: str = Query(""),
                   universe: str = Query("all", pattern="^(all|liquid)$"),
+                  criteria: str = Query("momentumkuat",
+                                        pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$"),
                   limit: int = Query(250, ge=1, le=951),
                   mom_min_pct: float = Query(8.0, ge=1.0, le=30.0),
                   min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0),
@@ -7866,22 +8099,56 @@ def cron_preclose(request: Request, secret: str = Query(""),
         tickers = spread_pick(tickers, limit)
     elif limit < len(tickers):
         tickers = tickers[:limit]
+    used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
-                          period=period)
+                          period=period, criteria=used)
     sess = scan["session"]
-    kuat = [r for r in scan["results"] if (r.get("momentum_info") or {}).get("breakout_20h")]
-    murni = [r for r in scan["results"] if not (r.get("momentum_info") or {}).get("breakout_20h")]
+    hasil = scan["results"]
+    # Pemisahan "momentum + breakout" vs "momentum saja" hanya bermakna untuk kriteria
+    # momentum. Untuk pola (launchpad/volsr/breakout) kreditnya tidak boleh menumpang
+    # pada syarat momentum, jadi semuanya dilaporkan sebagai satu kelompok.
+    if used in ("momentum", "momentumkuat"):
+        kuat = [r for r in hasil if (r.get("momentum_info") or {}).get("breakout_20h")]
+        murni = [r for r in hasil if not (r.get("momentum_info") or {}).get("breakout_20h")]
+    else:
+        kuat, murni = hasil, []
     fragile = [r for r in kuat if (r.get("momentum_info") or {}).get("fragile")]
 
+    # SIMPAN SNAPSHOT untuk diverifikasi setelah data final tersedia. Tanpa ini, klaim
+    # "harga 15:40 mewakili harga tutup" tidak pernah bisa diuji dengan angka sendiri.
+    snapshot_saved = False
+    if SYNC_ENABLED and hasil:
+        try:
+            payload = {
+                "date_wib": sess["date_wib"], "captured_wib": sess["wib"],
+                "criteria": used, "mom_min_pct": mom_min_pct,
+                "session": sess,
+                "signals": [{
+                    "ticker": r.get("ticker"),
+                    "entry_now": r.get("entry_now") or r.get("price"),
+                    "day_return_pct": r.get("day_return_pct"),
+                    "liquidity_grade": r.get("liquidity_grade"),
+                    "criteria_met": r.get("criteria_met"),
+                    "breakout_20h": (r.get("momentum_info") or {}).get("breakout_20h"),
+                } for r in hasil],
+            }
+            snapshot_saved = _upstash_set(
+                f"ci:preclose:sig:{sess['date_wib']}",
+                json.dumps(payload, ensure_ascii=False, default=str), ttl=30 * 86400)
+        except (TypeError, ValueError):
+            snapshot_saved = False
+
     sent = 0
-    if send and (kuat or murni) and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        dedupe = f"ci:notif:preclose:{sess['date_wib']}"
+    if send and hasil and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        dedupe = f"ci:notif:preclose:{used}:{sess['date_wib']}"
         if not _upstash_get(dedupe):
             def line(i: int, r: dict) -> str:
                 mi = r.get("momentum_info") or {}
                 p = mi.get("plan") or {}
+                ap = r.get("action_plan") or {}
+                entry = r.get("entry_now") or r.get("price") or p.get("entry")
                 parts = [f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
-                         f"{num(r.get('price'), 0)} ({num(r.get('day_return_pct'), 1)}%)"]
+                         f"{num(entry, 0)} ({num(r.get('day_return_pct'), 1)}%)"]
                 if r.get("liquidity_grade"):
                     parts.append(str(r["liquidity_grade"]))
                 out = " · ".join(parts)
@@ -7889,38 +8156,64 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     out += (f"\n     BELI SEKARANG ~{num(p.get('entry'), 0)} · "
                             f"SL {num(p.get('stop_loss'), 0)} · TP {num(p.get('target'), 0)}"
                             f" · maks {p.get('max_hold_days', 5)} hari")
+                elif ap:
+                    z = (ap.get("setup") or {}).get("zona_entry") or {}
+                    lv = (ap.get("zona_entry") or {})
+                    ref = ap.get("level_referensi") or lv.get("low") or z.get("low")
+                    hi = lv.get("high") or z.get("high")
+                    if ref:
+                        out += (f"\n     BELI SEKARANG ~{num(entry, 0)} · zona acuan "
+                                + num(ref, 0)
+                                + (f"-{num(hi, 0)}" if hi else ""))
                 if mi.get("margin_to_threshold_pct") is not None:
                     out += (f"\n     jarak ke ambang {num(mi.get('margin_to_threshold_pct'), 1)}%"
                             + ("  ⚠ RAPUH (harga tinggal turun sedikit syaratnya batal)"
                                if mi.get("fragile") else ""))
                 return out
 
-            head = (f"⏱ PINDAI PRA-TUTUP {sess['wib'][11:16]} WIB · "
+            label = {"momentum": "MOMENTUM MURNI", "momentumkuat": "MOMENTUM + BREAKOUT 20 HARI",
+                     "breakout": "BREAKOUT HIGH 20 HARI", "launchpad": "THE LAUNCH PAD",
+                     "volsr": "S&R VOLUME"}.get(used, used.upper())
+            head = (f"⏱ PINDAI PRA-TUTUP · {label} · {sess['wib'][11:16]} WIB · "
                     f"sisa sesi {sess['minutes_left']:.0f} menit\n"
                     "Harga masuk = harga PASAR SEKARANG (bisa dibayar hari ini).\n"
                     "Harga & volume belum final sampai lewat lelang penutupan.\n")
             body = []
-            if kuat:
-                body.append(f"\n💥 MOMENTUM + BREAKOUT 20 HARI — {len(kuat)} "
-                            f"(alpha5 +3,58%, blok t=+22,25):")
-                for i, r in enumerate(kuat[:12], 1):
+            if used in ("momentum", "momentumkuat"):
+                if kuat:
+                    body.append(f"\n💥 {label} — {len(kuat)} "
+                                f"(alpha5 +3,58%, blok t=+22,25):")
+                    for i, r in enumerate(kuat[:12], 1):
+                        body.append(line(i, r))
+                if murni:
+                    body.append(f"\n⚡ MOMENTUM SAJA (belum tembus high 20 hari) — {len(murni)} "
+                                f"(alpha5 hanya +0,13%):")
+                    for i, r in enumerate(murni[:8], 1):
+                        body.append(line(i, r))
+            else:
+                body.append(f"\n📈 {label} — {len(hasil)} kandidat pada keadaan sesi berjalan:")
+                for i, r in enumerate(hasil[:12], 1):
                     body.append(line(i, r))
-            if murni:
-                body.append(f"\n⚡ MOMENTUM SAJA (belum tembus high 20 hari) — {len(murni)} "
-                            f"(alpha5 hanya +0,13%):")
-                for i, r in enumerate(murni[:8], 1):
-                    body.append(line(i, r))
-            tail = (f"\n\nDasar angka: irisan momentum+breakout, 1,34 juta saham-hari 2020-2026. "
-                    f"Kejadian untung setelah biaya 0,3% hanya 46-47%, jadi stop dan "
-                    f"ukuran posisi yang menentukan. "
+            tail = ("\n\nKriteria dinilai dari bar berjalan yang disuntikkan ke riwayat "
+                    "harian, jadi rumusnya sama dengan pemindaian biasa. "
+                    "Kejadian untung setelah biaya 0,3% hanya 46-47%, jadi stop dan "
+                    "ukuran posisi yang menentukan. "
                     + (f"{len(fragile)} kandidat ditandai RAPUH (jaraknya <= 2% dari "
-                       f"ambang) — syaratnya bisa batal sebelum tutup." if fragile else ""))
+                       f"ambang) - syaratnya bisa batal sebelum tutup." if fragile else "")
+                    + (f"\nKriteria {label} belum punya angka alpha per kejadian di "
+                       f"mode pra-tutup; yang terukur adalah bahwa harga 15:45 hampir "
+                       f"sama dengan harga tutup (median selisih 0,000%)."
+                       if used in PRECLOSE_PATTERN_CRITERIA else ""))
             if _telegram_send(head + "\n".join(body) + tail + "\n\n(dedesaputra_invst)"):
                 _upstash_set(dedupe, "1", ttl=86400)
                 sent = 1
 
     return {
         "mode": "preclose",
+        "criteria": used,
+        "criteria_requested": criteria,
+        "engine": scan["engine"],
+        "snapshot_saved": snapshot_saved,
         "session": sess,
         "universe": universe,
         "requested": len(tickers),
@@ -7937,7 +8230,8 @@ def cron_preclose(request: Request, secret: str = Query(""),
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "mom_min_pct": mom_min_pct,
         "min_value_idr": min_value,
-        "entries": [{"ticker": r.get("ticker"), "entry_now": r.get("price"),
+        "entries": [{"ticker": r.get("ticker"),
+                     "entry_now": r.get("entry_now") or r.get("price"),
                      "day_return_pct": r.get("day_return_pct"),
                      "breakout_20h": (r.get("momentum_info") or {}).get("breakout_20h"),
                      "liquidity_grade": r.get("liquidity_grade"),
@@ -7951,6 +8245,179 @@ def cron_preclose(request: Request, secret: str = Query(""),
         "honesty_note": ("Harga dan volume belum final saat pemindaian berjalan; "
                          "sebagian kandidat bisa gagal memenuhi syarat pada penutupan. "
                          "Penyaring ukuran tiket tidak aktif (Freq belum tersedia)."),
+        "disclaimer": DISCLAIMER,
+    }
+
+
+PRECLOSE_SERIES_FUNCS = {
+    "breakout": breakout_20_series,
+    "launchpad": launch_pad_series,
+    "volsr": volume_sr_series,
+}
+
+
+@app.get("/api/cron/preclose-verify")
+def cron_preclose_verify(request: Request, secret: str = Query(""),
+                         date: str = Query("", description="Tanggal snapshot YYYY-MM-DD; kosong = hari ini WIB"),
+                         send: bool = Query(True)):
+    """Bandingkan sinyal PRA-TUTUP yang tersimpan dengan data FINAL, lalu catat akurasinya.
+
+    Kenapa ini harus ada: mode pra-tutup memakai harga pukul 15:40, sedangkan seluruh
+    bukti alpha dihitung dari harga TUTUP. Klaim "harga 15:40 mewakili harga tutup"
+    tidak boleh cuma dari satu pengukuran riset; ia harus diuji setiap hari atas sinyal
+    yang benar-benar dikirim. Karena itu cron pra-tutup menyimpan snapshot, dan endpoint
+    ini membandingkannya dengan bar final (setelah ~19.30 WIB) lalu memperbarui catatan
+    akurasi bergulir yang dibaca di /api/preclose-track dan di dashboard.
+
+    KEJUJURAN DATA: bila bar final untuk tanggal itu BELUM ada (mis. cron dijalankan
+    terlalu awal), hasilnya melaporkan `data_final_belum_ada` dan TIDAK mencatat apa pun
+    ke catatan akurasi — supaya angka akurasi tidak pernah diisi pembanding yang salah.
+    """
+    auth = request.headers.get("authorization", "")
+    bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
+    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
+        raise HTTPException(403, "Forbidden")
+
+    sess = preclose_session_info()
+    day = (date or sess["date_wib"]).strip()
+    raw = _upstash_get(f"ci:preclose:sig:{day}")
+    if not raw:
+        return {"ok": False, "date": day,
+                "reason": "Tidak ada snapshot pra-tutup tersimpan untuk tanggal ini.",
+                "note": ("Snapshot disimpan olek cron /api/cron/preclose; kalau cron "
+                         "belum pernah berjalan pada tanggal itu, tidak ada yang bisa "
+                         "diverifikasi.")}
+    try:
+        snap = json.loads(raw)
+    except (TypeError, ValueError):
+        return {"ok": False, "date": day, "reason": "Snapshot rusak / tidak dapat dibaca."}
+
+    criteria = str(snap.get("criteria") or "momentumkuat")
+    mom_min_pct = float(snap.get("mom_min_pct") or 8.0)
+    rows: List[dict] = []
+    final_ready = 0
+    for s in snap.get("signals") or []:
+        tk = s.get("ticker")
+        if not tk:
+            continue
+        df, src = _get_ticker_data(tk, "6mo")
+        if df is None or len(df) < 25:
+            continue
+        try:
+            last_date = str(pd.Timestamp(df.index[-1]).date())
+        except (TypeError, ValueError):
+            last_date = None
+        entry = s.get("entry_now")
+        if last_date != day or entry in (None, 0):
+            continue
+        final_ready += 1
+        final_close = float(df["Close"].astype(float).iloc[-1])
+        drift = (final_close / float(entry) - 1) * 100
+        prev_close = (float(df["Close"].astype(float).iloc[-2])
+                      if len(df) >= 2 else None)
+        ret_final = ((final_close / prev_close - 1) * 100 if prev_close else None)
+        if criteria in PRECLOSE_SERIES_FUNCS:
+            try:
+                fired_final = bool(PRECLOSE_SERIES_FUNCS[criteria](df).fillna(False).iloc[-1])
+            except Exception:
+                fired_final = None
+            survived = fired_final
+        else:
+            fired_final = None
+            survived = (ret_final is not None and ret_final >= mom_min_pct)
+        rows.append({
+            "ticker": tk, "entry_1540": num(entry, 2),
+            "final_close": num(final_close, 2),
+            "drift_pct": num(drift, 3),
+            "final_day_return_pct": num(ret_final, 2),
+            "still_fires_at_close": survived,
+            "fired_on_final_pattern": fired_final,
+            "data_source": src,
+        })
+
+    if not rows:
+        return {"ok": False, "date": day, "criteria": criteria,
+                "signals_in_snapshot": len(snap.get("signals") or []),
+                "final_bars_ready": final_ready,
+                "reason": ("Data final untuk tanggal ini belum tersedia (bar final belum "
+                           "ada), atau tidak ada sinyal yang bisa dibandingkan."),
+                "note": ("Jalankan lagi setelah pukul 19.30 WIB saat ringkasan harian "
+                         "IDX sudah tersinkron. Tidak ada yang dicatat ke catatan akurasi.")}
+
+    drift_vals = [r["drift_pct"] for r in rows if r.get("drift_pct") is not None]
+    abs_vals = [abs(v) for v in drift_vals]
+    survived_n = sum(1 for r in rows if r.get("still_fires_at_close"))
+    day_summary = {
+        "date": day, "criteria": criteria, "n": len(rows),
+        "sum_drift_pct": round(sum(drift_vals), 4),
+        "sum_abs_drift_pct": round(sum(abs_vals), 4),
+        "survived": int(survived_n),
+        "captured_wib": snap.get("captured_wib"),
+    }
+
+    track = _preclose_track_record() or {"history": []}
+    hist = [h for h in (track.get("history") or []) if h.get("date") != day]
+    hist.append(day_summary)
+    hist = hist[-60:]
+    n_tot = sum(int(h.get("n") or 0) for h in hist)
+    d_tot = sum(float(h.get("sum_drift_pct") or 0) for h in hist)
+    a_tot = sum(float(h.get("sum_abs_drift_pct") or 0) for h in hist)
+    s_tot = sum(int(h.get("survived") or 0) for h in hist)
+    track = {
+        "days": len(hist),
+        "pairs": int(n_tot),
+        "mean_drift_pct": round(d_tot / n_tot, 3) if n_tot else None,
+        "mean_abs_drift_pct": round(a_tot / n_tot, 3) if n_tot else None,
+        "survival_pct": round(100.0 * s_tot / n_tot, 1) if n_tot else None,
+        "last_date": day,
+        "last_criteria": criteria,
+        "history": hist,
+        "note": ("Dihitung dari sinyal yang benar-benar dikirim oleh cron pra-tutup, "
+                 "dibandingkan harga tutup resmi hari yang sama. Ini pengukuran atas "
+                 "PRAKTIK, bukan simulasi."),
+    }
+    saved = _upstash_set("ci:preclose:track", json.dumps(track, ensure_ascii=False,
+                                                         default=str), ttl=0)
+
+    sent = 0
+    if send and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        dedupe = f"ci:notif:preclose-verif:{day}:{criteria}"
+        if not _upstash_get(dedupe):
+            worst = sorted(rows, key=lambda r: (r.get("drift_pct") or 0))[:3]
+            msg = (f"✅ VERIFIKASI PRA-TUTUP · {day} · kriteria {criteria}\n"
+                   f"Sinyal dibandingkan: {len(rows)}\n"
+                   f"Selisih harga masuk (15:40) ke tutup resmi: rata-rata "
+                   f"{num(sum(drift_vals) / len(drift_vals), 3)}% · rata-rata |selisih| "
+                   f"{num(sum(abs_vals) / len(abs_vals), 3)}%\n"
+                   f"Sinyal yang MASIH berlaku pada penutupan: {survived_n}/{len(rows)} "
+                   f"({num(100.0 * survived_n / len(rows), 1)}%)\n"
+                   f"Selisih terbesar: " + " · ".join(
+                       f"{strip_suffix(str(r['ticker']))} {num(r.get('drift_pct'), 2)}%"
+                       for r in worst)
+                   + f"\n\nCATATAN AKURASI BERGULIR ({track['days']} hari, {track['pairs']} "
+                     f"sinyal): rata-rata selisih {track['mean_drift_pct']}% · rata-rata "
+                     f"|selisih| {track['mean_abs_drift_pct']}% · bertahan "
+                     f"{track['survival_pct']}%")
+            if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                _upstash_set(dedupe, "1", ttl=86400)
+                sent = 1
+
+    return {
+        "ok": True, "date": day, "criteria": criteria,
+        "signals_in_snapshot": len(snap.get("signals") or []),
+        "compared": len(rows),
+        "captured_wib": snap.get("captured_wib"),
+        "mean_drift_pct": num(sum(drift_vals) / len(drift_vals), 3),
+        "mean_abs_drift_pct": num(sum(abs_vals) / len(abs_vals), 3),
+        "survival_pct": num(100.0 * survived_n / len(rows), 1),
+        "survived": survived_n,
+        "track_record_saved": saved,
+        "track_record": track,
+        "telegram_sent": sent,
+        "rows": rows,
+        "note": ("Selisih negatif = harga tutup lebih rendah dari harga masuk pra-tutup "
+                 "(Anda membayar lebih mahal); positif = harga tutup lebih tinggi. "
+                 "'Bertahan' berarti sinyal masih memenuhi syaratnya pada data final."),
         "disclaimer": DISCLAIMER,
     }
 
