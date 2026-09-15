@@ -91,14 +91,17 @@
         <option value="liquid" selected>Liquid (LQ45)</option>
         <option value="all">Semua (951 saham)</option>
       </select>
-      <select id="scCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+      <select id="scCriteria" onchange="scCriteriaChanged()" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="all" selected>Semua kriteria</option>
+        <option value="rs">📈 RS Leader (naik saat IHSG merah)</option>
+        <option value="breakout">🚀 Breakout 20 hari</option>
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
         <option value="bandar">Bandar (ACC + Value Share ≥60%)</option>
         <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
         <option value="koreksi">🛒 Beli Koreksi (Kualitas Kuat + SELL)</option>
+        <option value="silent">🕵️ Akumulasi Diam-diam (1 broker konsisten beli)</option>
       </select>
       <select id="scLimit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
         <option value="5">5 saham</option>
@@ -111,6 +114,12 @@
       </label>
       <label class="flex items-center gap-2 text-xs text-slate-400" title="Hanya proses sinyal beli saat IHSG di ATAS MA200 (filter kondisi pasar — tidak mengejar pasar bear)">
         <input type="checkbox" id="scRegime" checked class="rounded bg-slate-800 border-slate-600 accent-emerald-500"> IHSG bullish
+      </label>
+      <label class="flex items-center gap-2 text-xs text-slate-400" title="Saat pasar bearish (IHSG < MA200), tetap loloskan saham RS LEADER: saham yang NAIK saat IHSG turun (RS line = harga ÷ IHSG mencetak rekor 20 hari)">
+        <input type="checkbox" id="scRsBypass" class="rounded bg-slate-800 border-slate-600 accent-emerald-500"> 🚀 RS leader lolos
+      </label>
+      <label class="flex items-center gap-2 text-xs text-slate-400" title="Buang saham yang ukuran tiketnya (nilai ÷ jumlah transaksi) ada di kuintil 20% terendah DI DALAM kelas likuiditasnya (SANGAT LIKUID / LIKUID / CUKUP) setelah dibersihkan dari ukuran. Uji 5 tahun (alpha 20 hari, pembanding kelas yang sama): RS Leader SANGAT LIKUID +1,04% → +1,49%, LIKUID +2,07% → +2,76%, CUKUP +2,90% → +3,44%; keempatnya membaik di KEDUA paruh holdout. Kontrol 'hanya tiket kecil' negatif di LIKUID dan CUKUP, jadi yang dibuang memang buruk. Ini penyaring kebersihan, BUKAN sinyal beli — kelas KURANG LIKUID tidak disentuh.">
+        <input type="checkbox" id="scTicket" checked class="rounded bg-slate-800 border-slate-600 accent-amber-500"> Tiket wajar
       </label>
       <label class="flex items-center gap-2 text-xs text-slate-400">
         <input type="checkbox" id="scBandar" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> + Bandarmology
@@ -773,6 +782,9 @@ function renderAnalyze(d) {
         ${d.market_regime && d.market_regime.trend
           ? `<span class="text-[10px] px-2 py-0.5 rounded-full border font-bold ${d.market_regime.trend === "bull" ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10" : "border-rose-500/40 text-rose-400 bg-rose-500/10"}" title="${esc(d.market_regime.note || "")}">IHSG ${d.market_regime.trend === "bull" ? "BULLISH" : "BEARISH"} ${fmt(d.market_regime.close, 0)} vs MA200 ${fmt(d.market_regime.ma200, 0)}</span>`
           : ""}
+        ${d.relative_strength && d.relative_strength.available
+          ? `<span class="text-[10px] px-2 py-0.5 rounded-full border font-bold ${d.relative_strength.is_leader ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10" : d.relative_strength.type === "laggard" ? "border-rose-500/40 text-rose-400 bg-rose-500/10" : "border-slate-600 text-slate-300"}" title="${esc(d.relative_strength.note || "")}">RS ${esc(d.relative_strength.label || "")} ${fmt(d.relative_strength.score, 0)}</span>`
+          : ""}
         <span class="text-xs text-violet-400 font-medium">${esc(m.source)}</span>
       </div>
       <div class="text-4xl font-extrabold tabular ${cls(m.change_pct)}">${fmt(m.last_price)}
@@ -784,6 +796,31 @@ function renderAnalyze(d) {
       <div class="text-xs text-slate-500 mt-2">skor <b class="text-slate-300">${fmt(s.score)}</b> · kekuatan ${esc(s.strength)}</div>
     </div>
   </div>`;
+
+  const rs = d.relative_strength;
+  if (rs && rs.available) {
+    const rsCol = rs.is_leader ? "border-emerald-500/40 bg-emerald-500/10"
+      : rs.type === "strong" ? "border-sky-500/40 bg-sky-500/10"
+      : rs.type === "laggard" ? "border-rose-500/40 bg-rose-500/10"
+      : "border-slate-700 bg-slate-800/30";
+    const alpha = (v) => v == null ? "—" : `${v > 0 ? "+" : ""}${pct(v, 1)}`;
+    h += `<div class="border ${rsCol} rounded-2xl p-4 mb-4">
+      <div class="flex flex-wrap items-center gap-2 mb-1.5">
+        <span class="text-[11px] font-bold uppercase tracking-wider text-slate-400">Kekuatan Relatif vs ${esc(rs.benchmark || "IHSG")}</span>
+        <span class="text-[10px] px-2 py-0.5 rounded-full border border-slate-600 text-slate-200 font-bold">${esc(rs.label || "")} · skor ${fmt(rs.score, 0)}</span>
+        ${rs.rs_new_high_20d ? '<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 font-bold">RS line rekor 20 hari</span>' : ""}
+        ${rs.rs_above_ma20 ? '<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10">RS &gt; MA20</span>' : '<span class="text-[10px] px-2 py-0.5 rounded-full border border-rose-500/40 text-rose-400 bg-rose-500/10">RS &lt; MA20</span>'}
+      </div>
+      <div class="text-xs text-slate-300">${esc(rs.note || "")}</div>
+      <div class="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-lg px-2.5 py-1.5 mt-2">⚠️ <b>Konteks kekuatan relatif, bukan sinyal beli.</b> Backtest 5 tahun: alpha +1,20% (h=5) namun terkonsentrasi di saham tidak likuid (&lt;Rp100 jt/hari +2,46%; &ge;Rp10 miliar/hari &asymp;0). Versi tradeable kalah dari basket sama-rata (Sharpe 0,86 vs 1,06; MDD −34% vs −17%).</div>
+      <div class="flex flex-wrap gap-x-5 gap-y-1 text-[11px] text-slate-400 mt-2">
+        <span>Alpha 5h <b class="tabular ${(rs.alpha_5d_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${alpha(rs.alpha_5d_pct)}</b></span>
+        <span>Alpha 20h <b class="tabular ${(rs.alpha_20d_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${alpha(rs.alpha_20d_pct)}</b></span>
+        <span>Alpha 60h <b class="tabular ${(rs.alpha_60d_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${alpha(rs.alpha_60d_pct)}</b></span>
+        <span>Hari IHSG merah yang dimenangkan: <b class="text-slate-200">${rs.red_day_wins}/${rs.red_days_20}</b></span>
+      </div>
+    </div>`;
+  }
 
   if (d.data_warning) {
     h += `<div class="bg-rose-500/10 border border-rose-500/40 rounded-2xl p-4 mb-4 text-sm text-rose-300 shadow-lg shadow-rose-500/10">
@@ -897,7 +934,8 @@ function renderAnalyze(d) {
       ${kv("Histogram", fmt(I.macd.histogram, 3), I.macd.histogram >= 0 ? "text-emerald-400" : "text-rose-400")}
       ${kv("Volume vs MA20", fmt(I.volume.ratio_to_ma20) + "×", I.volume.spike ? "text-emerald-400" : "")}
       ${kv("Nilai rata-rata 20 hari", fmtIdr(d.liquidity.avg_value_20d))}
-      <div class="col-span-2 sm:col-span-3 lg:col-span-5 text-[11px] text-slate-500">💧 Likuiditas: <b class="text-sky-300">${esc(d.liquidity.grade)}</b> (rata-rata nilai 20 hari <b class="tabular">${fmtIdr(d.liquidity.avg_value_20d)}</b> · volume <b class="tabular">${fmtIdr(d.liquidity.avg_volume_20d)}</b> lbr) · 🗓 Multi-timeframe: tren mingguan <b class="${d.weekly.up ? "text-emerald-400" : "text-rose-400"}">${esc(d.weekly.trend)}</b> (close ${fmt(d.weekly.close, 0)} vs SMA20 ${fmt(d.weekly.sma20, 0)}) — sinyal harian sebaiknya searah tren mingguan.</div>
+      ${kv("Tiket rata-rata", d.liquidity.avg_ticket_idr != null ? `${fmtIdr(d.liquidity.avg_ticket_idr)}${d.liquidity.ticket_small ? " ⚠️" : ""}` : "—", d.liquidity.ticket_small ? "text-amber-300" : "")}
+      <div class="col-span-2 sm:col-span-3 lg:col-span-5 text-[11px] text-slate-500">💧 Likuiditas: <b class="text-sky-300">${esc(d.liquidity.grade)}</b> (rata-rata nilai 20 hari <b class="tabular">${fmtIdr(d.liquidity.avg_value_20d)}</b> · volume <b class="tabular">${fmtIdr(d.liquidity.avg_volume_20d)}</b> lbr${d.liquidity.avg_ticket_idr != null ? ` · tiket <b class="tabular">${fmtIdr(d.liquidity.avg_ticket_idr)}</b>/transaksi${d.liquidity.ticket_small ? ' <b class="text-amber-300">(kecil di kelasnya — historis tertinggal ~0,4-1,3 pp/20 hari, bukan sinyal beli)</b>' : ''}` : ""}) · 🗓 Multi-timeframe: tren mingguan <b class="${d.weekly.up ? "text-emerald-400" : "text-rose-400"}">${esc(d.weekly.trend)}</b> (close ${fmt(d.weekly.close, 0)} vs SMA20 ${fmt(d.weekly.sma20, 0)}) — sinyal harian sebaiknya searah tren mingguan.</div>
     </div>`);
 
   const F = d.fundamentals || {};
@@ -1031,7 +1069,7 @@ function renderAnalyze(d) {
         ${kv("Share Top Buyer", pct(b.top_buyer_value_share_pct), b.value_share_significant ? "text-emerald-400" : "")}
       </div>
       ${b.net_foreign ? `<div class="text-xs text-slate-400 mb-3">Net Foreign: hari ini <b class="${b.net_foreign.today > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.today)}</b> · 5 hari <b class="${b.net_foreign.sum_5d > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.sum_5d)}</b> · 20 hari <b class="${b.net_foreign.sum_20d > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.sum_20d)}</b></div>` : ""}
-      ${b.bandar_accumulation ? `<div class="text-xs text-slate-400 mb-4">Akumulasi bandar terakhir: <b class="tabular text-slate-200">${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.top_accumulating_broker ? ` · Top: <b>${esc(b.bandar_accumulation.top_accumulating_broker.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})</span>` : ""}</div>` : ""}
+      ${b.bandar_accumulation ? `<div class="text-xs text-slate-400 mb-4">Broker dominan hari ini: <b class="tabular text-slate-200">${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.data_last_date ? ` <span class="text-slate-500">(data s/d ${esc(b.bandar_accumulation.data_last_date)})</span>` : ""}${b.bandar_accumulation.top_accumulating_broker ? ` · Top: <b>${esc(b.bandar_accumulation.top_accumulating_broker.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})</span>` : ""}${b.bandar_accumulation.silent_accumulator ? `<div class="mt-1">🕵️ Akumulator diam-diam: <b>${esc(b.bandar_accumulation.silent_accumulator.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.silent_accumulator.name || "")})</span> — ${b.bandar_accumulation.silent_accumulator.days_buy}/${b.bandar_accumulation.silent_accumulator.window} hari net beli, net <b class="tabular text-emerald-400">${fmtIdr(b.bandar_accumulation.silent_accumulator.net)}</b>, net/gross ${Number(b.bandar_accumulation.silent_accumulator.net_ratio || 0).toFixed(2)} <span class="text-slate-500">· informasi, bukan sinyal beli</span></div>` : ""}</div>` : ""}
       <div class="grid md:grid-cols-2 gap-4">
         <div><h3 class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Top Buyers</h3>
           <table class="w-full text-sm"><thead><tr class="text-slate-500 text-xs border-b border-slate-700/60"><th class="text-left py-1.5">Broker</th><th class="text-right">Harga</th><th class="text-right">Nilai</th></tr></thead>
@@ -1159,11 +1197,34 @@ async function renderKoreksiWatch() {
   }
 }
 
+// Bangun query screener dari form. Kriteria "rs" selalu TANPA filter regime
+// (memang dirancang untuk pasar bearish); kriteria lain memakai filter IHSG.
+function scParamQuery(offset) {
+  const crit = $("#scCriteria").value;
+  // rs & breakout tidak memakai filter "IHSG bullish": keduanya memang diuji/ditujukan
+  // untuk bertahan di pasar bearish (RS: RS line rekor; breakout: uji holdout 2024-2026
+  // yang bearish). Kriteria lain tetap memakai filter regime sesuai centang pengguna.
+  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent";
+  const q = new URLSearchParams({ criteria: crit, universe: $("#scUniverse").value,
+    limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked,
+    require_confirm: $("#scConfirm").checked,
+    require_regime: noRegime ? "false" : String($("#scRegime").checked),
+    rs_bypass: String($("#scRsBypass").checked),
+    skip_small_ticket: String($("#scTicket").checked) });
+  if (offset) q.set("offset", offset);
+  return q;
+}
+
+function scCriteriaChanged() {
+  const crit = $("#scCriteria").value;
+  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent";
+  const rg = $("#scRegime");
+  if (rg) { rg.disabled = noRegime; rg.parentElement.classList.toggle("opacity-40", noRegime); }
+}
+
 async function scan() {
   const btn = $("#btnScan");
-  const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
-    limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked,
-    require_confirm: $("#scConfirm").checked, require_regime: $("#scRegime").checked });
+  const q = scParamQuery();
   btn.disabled = true; btn.textContent = "Scanning…";
   $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai saham… (bisa butuh beberapa detik)`;
   $("#screenerResult").innerHTML = "";
@@ -1178,6 +1239,19 @@ async function scan() {
   }
 }
 
+// Chip kekuatan relatif vs IHSG untuk tabel hasil scan.
+function rsChip(rs) {
+  if (!rs || !rs.available) return '<span class="text-slate-600">—</span>';
+  const col = rs.is_leader
+    ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
+    : rs.type === "strong" ? "border-sky-500/40 text-sky-400 bg-sky-500/10"
+    : rs.type === "laggard" ? "border-rose-500/40 text-rose-400 bg-rose-500/10"
+    : "border-slate-600 text-slate-400";
+  const a5 = rs.alpha_5d_pct != null
+    ? `<div class="text-[10px] ${rs.alpha_5d_pct >= 0 ? "text-emerald-400/80" : "text-rose-400/80"}">α5 ${rs.alpha_5d_pct > 0 ? "+" : ""}${fmt(rs.alpha_5d_pct, 1)}%</div>` : "";
+  return `<span class="text-[10px] px-2 py-0.5 rounded-full border font-bold ${col}" title="${esc(rs.note || "")}">${rs.is_leader ? "🚀 LEADER" : esc(rs.label || "")} ${fmt(rs.score, 0)}</span>${a5}`;
+}
+
 function renderScan(d) {
   lastScanData = d;
   const rg = d.market_regime || {};
@@ -1189,19 +1263,37 @@ function renderScan(d) {
   const blockedBanner = d.regime_blocked
     ? `<div class="mt-2 text-[11px] text-amber-400/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">⛔ Filter IHSG aktif & pasar sedang BEARISH (IHSG di bawah MA200) — semua sinyal beli ditahan. Matikan centang "IHSG bullish" untuk melihat kandidat mentah.</div>`
     : (d.require_regime ? `<div class="mt-2 text-[11px] text-emerald-400/80">✓ Filter IHSG aktif: hanya sinyal saat IHSG di atas MA200.</div>` : "");
+  const rsBypassNote = (d.rs_bypass && d.regime_blocked && d.results.length)
+    ? `<div class="mt-2 text-[11px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2">🚀 Filter IHSG aktif, tetapi <b>${d.results.length}</b> saham RS LEADER (kuat lawan pasar) tetap diloloskan — inilah saham yang naik walau indeks merah.</div>`
+    : "";
   $("#scanInfo").innerHTML =
     `<div class="flex flex-wrap items-center">${regimeBadge}<span>Dipindai <b class="text-slate-200">${d.scanned}</b> saham · dilewati <b class="text-slate-200">${d.skipped}</b> · bandarmology dicek <b class="text-slate-200">${d.bandarmology_checked}</b> · total universe <b class="text-slate-200">${d.total_tickers}</b></span>` +
+    (d.spread ? ` · <span class="text-sky-400" title="Sampel tersebar MERATA di seluruh daftar emiten, bukan 100 emiten pertama secara alfabet">sampel tersebar</span>` : "") +
     (d.next_offset ? ` · <button onclick="scanMore(${d.next_offset})" class="text-sky-400 hover:underline font-semibold">Lanjut offset ${d.next_offset} →</button>` : "") +
-    `</div>${blockedBanner}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
+    (d.ticket_filtered ? ` · <span class="text-amber-300" title="Penyaring ukuran tiket: saham dengan tiket terendah (kuintil 20%) di kelas likuiditasnya dibuang">🎫 tiket kecil dibuang <b>${d.ticket_filtered}</b></span>` : "") +
+    `</div>${blockedBanner}${rsBypassNote}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
 
   if (!d.results.length) {
     $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : "Tidak ada saham yang lolos kriteria pada halaman ini."}</div>`;
     return;
   }
   const isKoreksi = d.criteria === "koreksi";
+  const isRS = d.criteria === "rs";
+  const isBreakout = d.criteria === "breakout";
+  const isSilent = d.criteria === "silent";
+  // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
+  const nCols = 15 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 3 : 0) + (isSilent ? 1 : 0);
   let h = isKoreksi
     ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
-    : "";
+    : (isRS
+      ? `<div class="mb-3 text-[11px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">📈 <b>RS Leader — kuat lawan pasar</b>: RS line (harga saham ÷ IHSG) mencetak rekor 20 hari DAN harga di atas RS-MA20, jadi saham ini NAIK saat indeks turun. Kriteria ini sengaja <b>tidak</b> memakai filter "IHSG bullish" — justru dicari saat pasar merah. Tetap konfirmasi volume &amp; Broker Summary sebelum entry.
+        <div class="mt-1.5 pt-1.5 border-t border-emerald-500/20 text-amber-300/90">⚠️ <b>Konteks kekuatan relatif, BUKAN sinyal beli.</b> Backtest 5 tahun (897 saham, 865 rb observasi): alpha +1,20% (h=5) tapi hampir seluruhnya di <b>saham tidak likuid</b> — &lt;Rp100 jt/hari +2,46%, sedangkan &ge;Rp10 miliar/hari &asymp;0. Versi tradeable kalah dari basket sama-rata (Sharpe 0,86 vs 1,06; MDD −34% vs −17%). Notifikasi otomatis dimatikan.</div></div>`
+      : (isBreakout
+        ? `<div class="mb-3 text-[11px] text-sky-300/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">🚀 <b>Breakout 20 hari</b>: harga menembus <b>high tertinggi 20 hari</b> sebelumnya. Backtest 5 tahun (saham likuid &ge; Rp10 miliar/hari, point-in-time): alpha20 <b>+1,94%</b> (t=+3,95) vs IHSG, dan <b>stabil</b> pada uji holdout dua paruh waktu (+1,94% vs +1,93%) — sinyal likuid terkuat yang kami uji. Kolom <b>Vol/MA20</b> adalah konteks volume: breakout dengan volume &ge;1,5&times; punya alpha lebih tinggi (+2,28%) tapi peluang entry jauh lebih sedikit (4,5 vs 6,8 saham/hari).
+        <div class="mt-1.5 pt-1.5 border-t border-sky-500/20 text-amber-300/90">⚠️ Breakout di saham tipis sering gagal (false breakout). Tetap cek skor beli, RRR, dan support/resistance (tombol 📋 Rencana) sebelum entry. Kata "alpha" = keunggulan vs pasar, bukan jaminan harga naik (hijau 20 hari hanya ~44%).</div></div>`
+        : ""));
+  if (isSilent) h += `<div class="mb-3 text-[11px] text-violet-300/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕵️ <b>Akumulasi diam-diam</b>: satu broker yang konsisten net BELI (≥70% hari, net/gross ≥ 0,5) selama 10 hari. Ini menjawab "siapa yang mengakumulasi" — pertanyaan yang gagal dijawab bila nilai seluruh broker dijumlahkan, karena arus broker lain bisa saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah semua broker hanya +227,56 M).
+    <div class="mt-1.5 pt-1.5 border-t border-violet-500/20 text-amber-300/90">⚠️ <b>Informasi bandarmology, BUKAN sinyal beli.</b> Uji 77 hari bursa (seluruh pasar): tidak ada daya prediksi — versi broker-dominan maupun versi jumlah sama-sama tidak berbeda dari noise. Riwayat API hanya 80 hari, tidak cukup untuk menguji sinyal berhorizon bulanan. Pemindaian ini memakai <b>1 permintaan API per saham</b>, jadi mulai dari limit kecil.</div></div>`;
   // Kandidat setup swing siap-entry: setup valid (pullback/breakout) + RRR ≥ 1:2.
   const swingReady = (d.results || []).filter(r => r.action_plan && r.action_plan.setup && r.action_plan.setup.layak_entry);
   if (swingReady.length) {
@@ -1214,17 +1306,23 @@ function renderScan(d) {
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
+      ${isRS ? `<th class="text-center px-3" title="Kekuatan relatif vs IHSG: RS line = harga saham ÷ IHSG. Rekor RS saat IHSG melemah = LEADER">RS</th>` : ""}
+      ${isBreakout ? `<th class="text-right px-3" title="High tertinggi 20 hari sebelumnya — level yang baru ditembus, dan jarak harga di atasnya">High 20h</th>` : ""}
+      ${isSilent ? `<th class="text-left px-3" title="Broker yang konsisten net beli tanpa banyak jual. Informasi bandarmology, bukan sinyal beli.">Akumulator</th>` : ""}
       ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
       ${isKoreksi ? `<th class="text-center px-3" title="Pantau: Telegram memberi tahu saat konfirmasi reversal (SELL→BUY)">🔔</th>` : ""}
       <th class="text-center px-3" title="Konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">✓ Buku</th>
       <th class="text-center px-3" title="Skor komposit kualitas beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari">Likuiditas</th>
+      <th class="text-right px-3" title="Ukuran tiket = nilai transaksi ÷ jumlah transaksi (20 sesi). Angka kecil DI DALAM kelas likuiditasnya = banyak transaksi ritel berukuran tipis — uji 5 tahun: tertinggal ~0,4-1,3 poin persen per 20 hari dari kandidat lain di kelas yang sama. Tanda ⚠️ berarti masuk kuintil 20% terendah kelasnya dan dibuang oleh penyaring 'Tiket wajar'.">Tiket</th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
       <th class="text-center px-3" title="Rasio risiko:imbalan dari harga entry rencana — layak bila ≥ 1:2">⚖️ RRR</th>
       <th class="text-center px-3" title="Rencana aksi: tunggu apa & di harga berapa sebelum entry">📋 Rencana</th>
     </tr></thead><tbody>`;
   for (const r of d.results) {
     const ki = r.koreksi_info || {};
+    const bi = r.breakout_info || {};
+    const si = r.silent_info || {};
     if (r.action_plan) planRegistry[String(r.ticker).toUpperCase()] = { ap: r.action_plan, tk: stripJK(r.ticker) };
     h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
       <td class="px-4 py-3"><div class="font-bold">${esc(stripJK(r.ticker))}</div><div class="text-[10px] text-slate-500">${esc(r.data_date || "")}</div></td>
@@ -1233,11 +1331,15 @@ function renderScan(d) {
       <td class="px-3 text-right tabular text-slate-400">${fmtIdr(r.estimated_value_idr)}</td>
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
+      ${isRS ? `<td class="px-3 text-center">${rsChip(r.relative_strength)}</td>` : ""}
+      ${isBreakout ? `<td class="px-3 text-right tabular">${bi.high20 ? `${fmt(bi.high20)}<div class="text-[10px] text-emerald-400">${bi.above_pct != null ? "+" + fmt(bi.above_pct, 1) + "%" : ""}</div>` : "—"}</td>` : ""}
+      ${isSilent ? `<td class="px-3 text-xs">${si.broker ? `<b>${esc(si.broker)}</b><div class="text-[10px] text-slate-500">${si.days_buy}/${si.window} hari · <span class="tabular text-emerald-400">${fmtIdr(si.net)}</span> · net/gross ${Number(si.net_ratio || 0).toFixed(2)}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>` : ""}
       <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
       <td class="px-3 text-center">${buyScoreChip(r.buy_score)}</td>
       <td class="px-3">${liqChip(r.liquidity_grade)}</td>
+      <td class="px-3 text-right tabular">${r.avg_ticket_idr != null ? `${r.ticket_small ? '<span class="text-amber-300" title="Kuintil tiket terendah di kelas likuiditasnya — dibuang saat penyaring aktif">⚠️ </span>' : ""}${fmtIdr(r.avg_ticket_idr)}` : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}</td>
       <td class="px-3 text-xs text-violet-400">${esc(r.source || "—")}</td>
       <td class="px-3 text-xs">${r.bandarmology
@@ -1246,7 +1348,7 @@ function renderScan(d) {
       <td class="px-3 text-center">${r.action_plan ? rrrChip(r.action_plan.kelayakan) : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-3 text-center">${r.action_plan ? `<button onclick="toggleScanPlan(this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${(r.action_plan.setup && r.action_plan.setup.batas_kejar != null && r.price > r.action_plan.setup.batas_kejar) ? "border-amber-500/40 bg-amber-500/10 text-amber-300" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}" title="Tunggu apa & di harga berapa">📋 Lihat${(r.action_plan.setup && r.action_plan.setup.batas_kejar != null && r.price > r.action_plan.setup.batas_kejar) ? " ⚠️" : ""}</button>` : '<span class="text-slate-600">—</span>'}</td>
     </tr>
-    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${isKoreksi ? 17 : 14}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">    ${scanPlanHtml(r.action_plan, r.ticker, r.price)}</td></tr>` : ""}`;
+    ${r.action_plan ? `<tr class="scan-plan hidden"><td colspan="${nCols}" class="px-4 py-3 bg-slate-800/20 border-b border-slate-800/60">    ${scanPlanHtml(r.action_plan, r.ticker, r.price)}</td></tr>` : ""}`;
   }
   h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
@@ -1446,9 +1548,7 @@ function applyMatrixConfig(key, silent) {
 }
 
 async function scanMore(offset) {
-  const q = new URLSearchParams({ criteria: $("#scCriteria").value, universe: $("#scUniverse").value,
-    limit: $("#scLimit").value, offset: offset, include_bandarmology: $("#scBandar").checked,
-    require_confirm: $("#scConfirm").checked, require_regime: $("#scRegime").checked });
+  const q = scParamQuery(offset);
   $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
   try {
     renderScan(await getJSON(`/api/screener?${q}`));
@@ -1866,11 +1966,22 @@ function renderAlertBox(alerts) {
     el.innerHTML = `<div class="text-xs text-emerald-400">✓ Tidak ada alert — semua posisi masih di antara TP dan SL.</div>`;
     return;
   }
+  const cls = a => a.type === "SL" ? "bg-rose-500/10 border-rose-500/40 text-rose-300"
+    : (a.type === "TP" || a.type === "TP_NEAR") ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-300"
+    : a.type === "RS" ? "bg-sky-500/10 border-sky-500/40 text-sky-300"
+    : "bg-amber-500/10 border-amber-500/40 text-amber-300";
   el.innerHTML = `<div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1.5">Alerts saat ini</div>` +
-    alerts.map(a => `<div class="text-sm px-3 py-2 rounded-xl border mb-1.5 ${a.type === "SL"
-      ? "bg-rose-500/10 border-rose-500/40 text-rose-300"
-      : (a.type === "TP" || a.type === "TP_NEAR") ? "bg-emerald-500/10 border-emerald-500/40 text-emerald-300"
-      : "bg-amber-500/10 border-amber-500/40 text-amber-300"}">${esc(a.message)}</div>`).join("");
+    alerts.map(a => `<div class="text-sm px-3 py-2 rounded-xl border mb-1.5 ${cls(a)}">${rsAlertChip(a)}${esc(a.message)}</div>`).join("");
+}
+
+// Chip kekuatan relatif vs IHSG pada daftar alert portofolio.
+function rsAlertChip(a) {
+  const rs = a && a.relative_strength;
+  if (!rs || !rs.available) return "";
+  const col = rs.is_leader ? "border-emerald-500/40 text-emerald-400 bg-emerald-500/10"
+    : rs.type === "laggard" ? "border-rose-500/40 text-rose-400 bg-rose-500/10"
+    : "border-slate-600 text-slate-300";
+  return `<span class="text-[10px] px-2 py-0.5 rounded-full border font-bold ${col} mr-2 whitespace-nowrap">${rs.is_leader ? "🚀 LEADER" : esc(rs.label || "")} ${fmt(rs.score, 0)}</span>`;
 }
 
 async function checkAlerts(manual) {

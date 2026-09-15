@@ -1,0 +1,35 @@
+name: Pindai RS Leader (Kuat Lawan Pasar) — MANUAL / NONAKTIF
+
+# ⚠️ JADWAL OTOMATIS DIMATIKAN.
+# Validasi out-of-sample (Sep 2026) menunjukkan kriteria "RS Leader" TIDAK punya
+# daya prediksi jangka pendek: IC Spearman skor RS = -0,074 vs excess return
+# besoknya, dan 10 skor tertinggi menghasilkan -0,61% (lebih buruk dari baseline
+# acak +0,46%). Karena itu cron TIDAK dijalankan sampai backtest multi-tahun
+# selesai. Hanya bisa dipicu manual (workflow_dispatch) untuk keperluan riset.
+#
+# Jadwal lama (jangan diaktifkan sebelum tervalidasi):
+#   schedule:
+#     - cron: "30 10 * * 1-5"   # 17:30 WIB
+on:
+  workflow_dispatch: {}
+
+jobs:
+  pindai-rs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Panggil endpoint /api/cron/rs
+        run: |
+          set -euo pipefail
+          echo "Memindai RS Leader (manual/riset) pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 300 -o resp_rs.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/rs")
+          echo "HTTP $code"
+          cat resp_rs.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint RS Leader membalas HTTP $code"
+            exit 1
+          fi
+          echo "Selesai."

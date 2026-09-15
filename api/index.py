@@ -70,6 +70,14 @@ CACHE_TTL_SECONDS = 5 * 60
 # ---------------------------------------------------------------------------
 
 
+def signed_num(value: Any, nd: int = 2, suffix: str = "") -> str:
+    """Format angka dengan tanda +/- untuk pesan teks ("—" bila tidak tersedia)."""
+    f = num(value, nd)
+    if f is None:
+        return "—"
+    return f"{f:+.{nd}f}{suffix}"
+
+
 def strip_suffix(ticker: str) -> str:
     """Hapus suffix bursa (.JK) untuk tampilan."""
     t = str(ticker or "").upper()
@@ -733,156 +741,186 @@ def compute_signal(df: pd.DataFrame, trend: dict, sr_zones: List[dict], candles:
     }
 
 
+# ---------------------------------------------------------------------------
+# Bobot skor beli v2 (September 2026) — direvisi dari AUDIT BACKTEST, bukan selera.
+#
+# Uji 5 tahun (897 saham, 865.659 observasi, Des 2021 - Jun 2026) pada saham likuid
+# (nilai transaksi >= Rp10 miliar/hari, point-in-time). alpha20 = keunggulan rata-rata
+# 20 hari vs rata-rata universe pada tanggal yang sama; t-stat lintas tanggal:
+#
+#   komponen (versi lama)        alpha20 / t     keputusan di v2
+#   Harga > SMA20                +0.26 / +3.1    dipertahankan, bobot 15
+#   Harga > SMA50                +0.15 / +2.0    dipertahankan, bobot 10
+#   Golden Cross SMA20/50<=5h    +0.08 / +0.3    DIBUANG (tanpa edge)
+#   RSI zona tengah 40-65        -0.31 / -8.7    DIBALIK -> RSI > 60 (kekuatan)
+#   MACD bullish (hist>0&naik)   +0.22 / +3.0    dipertahankan, bobot 10
+#   Volume vs VolumeMA20         +0.33 / +5.5    bobot dinaikkan 10 -> 15 (terkuat)
+#   Pola candlestick             -0.01 / -0.1    DIBUANG (tanpa edge)
+#   Dekat support (<=2x ATR)     -0.42 / -7.9    DIBUANG (bias mean-reversion)
+#   Momentum 5 hari sehat        +0.14 / +2.1    dipertahankan, bobot 5
+#   + BARU: Breakout high 20h    +1.91 / +3.9    bobot 15 (sinyal likuid terbaik)
+#   + BARU: SMA20 > SMA50        +0.56 / +5.0    bobot 5 (struktur tren)
+#
+# Hasil: skor >= 70 pada saham likuid punya alpha20 +0.48% (t=+2.96) vs versi lama
+# -0.01% (t=-0.03); Top-10 skor harian +1.81% (t=+3.87) vs +0.59% (t=+1.88). Pada
+# uji holdout waktu (60% awal vs 40% akhir) keunggulannya tetap positif.
+#
+# CATATAN JUJUR: alpha = menang relatif terhadap universe, BUKAN jaminan harga naik
+# (hijau 20 hari hanya ~43%). Sebagai portofolio, skor ini pun belum mengalahkan
+# keranjang rata-rata saham likuid setelah biaya. Jadi pakai sebagai penilai KUALITAS
+# SETUP + peringkat relatif, bukan sebagai ramalan imbal hasil.
 BUY_SCORE_WEIGHTS = {
-    "Trend naik (harga > SMA20/SMA50)": 20,
-    "Golden Cross SMA20/50 (<=5 hari)": 10,
-    "RSI di zona sehat (40-65, bonus 50-60)": 15,
+    "Harga > SMA20": 15,
+    "Harga > SMA50": 10,
+    "SMA20 > SMA50 (struktur tren)": 5,
+    "RSI kuat (>60; 50-60 separuh)": 10,
     "MACD bullish (hist > 0 & naik)": 10,
-    "Volume > VolumeMA20": 10,
-    "Pola candlestick bullish": 10,
-    "Dekat support (<=2x ATR)": 10,
-    "Momentum 5 hari sehat (0-12%)": 5,
+    "Volume vs VolumeMA20 (>=1.5x bonus)": 15,
+    "Breakout high 20 hari": 15,
+    "Momentum 5 hari sehat (0-20%)": 5,
+    "Likuiditas (nilai rata-rata 20 hari)": 15,
+}
+
+# Bonus yang HANYA ada di jalur live (compute_buy_score): tidak bisa di-backtest
+# sebagai deret waktu, jadi tidak masuk total 100 poin di versi vektor.
+BUY_SCORE_BONUS_WEIGHTS = {
     "Launch Pad / Drop Base Rally": 10,
     "Bandarmology ACC (bila ada)": 15,
-    "Likuiditas (nilai rata-rata 20 hari)": 10,
 }
 
 
-def _buy_score_series(df: pd.DataFrame) -> pd.Series:
-    """Skor komposit sinyal beli 0-100 per bar (vektor, untuk backtest).
+# Nama komponen skor beli (dipakai untuk audit & backtest per komponen).
+BUY_SCORE_LABELS = {
+    "trend20": "Harga > SMA20",
+    "trend50": "Harga > SMA50",
+    "align": "SMA20 > SMA50 (struktur tren)",
+    "rsi": "RSI kuat (>60; 50-60 separuh)",
+    "macd": "MACD bullish (hist > 0 & naik)",
+    "volume": "Volume vs VolumeMA20 (>=1.5x bonus)",
+    "breakout": "Breakout high 20 hari",
+    "momentum": "Momentum 5 hari sehat (0-20%)",
+    "liquidity": "Likuiditas (nilai rata-rata 20 hari)",
+}
 
-    Komponen yang bisa dihitung vektor; tanpa S&R cluster & bandarmology
-    (tidak ada riwayat). Dipakai juga oleh compute_buy_score untuk bar terakhir.
+
+def breakout_20_series(df: pd.DataFrame) -> pd.Series:
+    """True bila Close menembus HIGH tertinggi 20 bar SEBELUMNYA (breakout 20 hari).
+
+    Bukti backtest 5 tahun (897 saham, 865.659 observasi) pada saham likuid >= Rp10
+    miliar/hari, point-in-time: alpha20 +1,94% (t=+3,95), abs20 +1,42%, dan STABIL
+    di uji holdout waktu (+1,94% paruh awal vs +1,93% paruh akhir) — sinyal likuid
+    paling kuat yang kami uji. Dipakai dua tempat agar tidak pernah berbeda:
+    (1) kriteria screener "breakout", (2) komponen skor beli v2 (15 poin).
+
+    Catatan: memakai HIGH mentah (bukan adjusted), sama seperti indikator lain di
+    aplikasi ini; aksi korporasi (split) yang jarang bisa memunculkan sinyal palsu.
+    """
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    return (c > h.rolling(20).max().shift(1)).fillna(False)
+
+
+def buy_score_components(df: pd.DataFrame) -> pd.DataFrame:
+    """Rincian skor beli v2 PER KOMPONEN (vektor, per bar) + kolom 'total' 0-100.
+
+    Dipisah dari totalnya supaya setiap komponen bisa diaudit dan di-backtest
+    sendiri-sendiri (lihat tabel bukti di BUY_SCORE_WEIGHTS). Dua komponen yang
+    terbukti ber-edge NEGATIF — "RSI zona tengah 40-65" (t=-8,7) dan "Dekat
+    support" (t=-7,9) — sudah dibuang; keduanya menghukum saham yang sedang kuat
+    dan menghargai yang sedang lemah, kebalikan dari yang dibutuhkan.
+
+    Nilai 'total' = jumlah komponen, dipotong di 100.
     """
     close = df["Close"].astype(float)
     vol = df["Volume"].astype(float)
-    o = df["Open"].astype(float)
-    h = df["High"].astype(float)
-    l = df["Low"].astype(float)
     s20 = sma(close, 20)
     s50 = sma(close, 50)
     r = rsi(close, 14)
     _, _, hist = macd(close)
     vma = sma(vol, 20)
-    atr14 = atr(df, 14)
     ret5 = close.pct_change(5) * 100
-
-    golden = (s20 > s50) & (s20.shift(1) <= s50.shift(1))
-    gc5 = golden.rolling(5).max().fillna(0)
-
-    body = (close - o).abs()
-    rng = (h - l)
-    lo = pd.concat([o, close], axis=1).min(axis=1)
-    hi = pd.concat([o, close], axis=1).max(axis=1)
-    lower_sh = lo - l
-    upper_sh = h - hi
-    hammer = (rng > 0) & (lower_sh >= 2 * body) & (upper_sh <= 0.35 * body)
-    engulf = (close.shift(1) < o.shift(1)) & (close > o) & (body > body.shift(1)) & (body.shift(1) > 0)
-    candle = (hammer | engulf).fillna(False).astype(float)
-
-    low20 = close.rolling(20).min()
-    near_low = ((close - low20) <= 2 * atr14).fillna(False).astype(float)
-
-    pts = pd.Series(0.0, index=df.index)
-    pts = pts + np.where((close > s20).fillna(False), 12, 0)
-    pts = pts + np.where((close > s50).fillna(False), 8, 0)
-    pts = pts + gc5 * 10
-    pts = pts + np.where((r >= 40) & (r <= 65), 10, np.where((r >= 30) & (r < 40), 5, 0))
-    pts = pts + np.where((r >= 50) & (r <= 60), 5, 0)
-    pts = pts + np.where((hist > 0) & (hist >= hist.shift(1)), 10, np.where(hist > 0, 5, 0))
-    pts = pts + np.where(vol > vma, 10, np.where(vol > 0.8 * vma, 5, 0))
-    pts = pts + candle * 10
-    pts = pts + near_low * 10
-    pts = pts + np.where((ret5 >= 0) & (ret5 <= 12), 5, np.where((ret5 > 12) & (ret5 <= 20), 2, 0))
-    # Likuiditas: saham dengan nilai transaksi rata-rata tinggi = mudah masuk/keluar.
     val20 = _value_series(df).rolling(20).mean()
-    pts = pts + np.where(val20 >= 10e9, 10, np.where(val20 >= 1e9, 7,
-                                                     np.where(val20 >= 100e6, 4, 0)))
-    return pts.clip(upper=100)
+
+    # Breakout high 20 hari (logika bersama dengan kriteria screener "breakout").
+    breakout = breakout_20_series(df)
+    macd_rising = ((hist > 0) & (hist >= hist.shift(1))).fillna(False)
+    vr = vol / vma.replace(0, np.nan)
+
+    out = pd.DataFrame(index=df.index)
+    out["trend20"] = np.where((close > s20).fillna(False), 15.0, 0.0)
+    out["trend50"] = np.where((close > s50).fillna(False), 10.0, 0.0)
+    out["align"] = np.where((s20 > s50).fillna(False), 5.0, 0.0)
+    out["rsi"] = (np.where((r > 60).fillna(False), 10.0, 0.0)
+                  + np.where(((r > 50) & (r <= 60)).fillna(False), 5.0, 0.0))
+    out["macd"] = (np.where(macd_rising, 10.0, 0.0)
+                   + np.where(((hist > 0) & ~macd_rising).fillna(False), 5.0, 0.0))
+    out["volume"] = (np.where((vr >= 1.5).fillna(False), 15.0, 0.0)
+                     + np.where(((vr >= 1.0) & (vr < 1.5)).fillna(False), 10.0, 0.0)
+                     + np.where(((vr >= 0.8) & (vr < 1.0)).fillna(False), 4.0, 0.0))
+    out["breakout"] = breakout.astype(float) * 15.0
+    out["momentum"] = np.where(((ret5 >= 0) & (ret5 <= 20)).fillna(False), 5.0, 0.0)
+    out["liquidity"] = (np.where((val20 >= 10e9).fillna(False), 15.0, 0.0)
+                         + np.where(((val20 >= 1e9) & (val20 < 10e9)).fillna(False), 10.0, 0.0)
+                         + np.where(((val20 >= 100e6) & (val20 < 1e9)).fillna(False), 5.0, 0.0))
+    out = out.fillna(0.0)
+    out["total"] = out.sum(axis=1).clip(upper=100.0)
+    return out
+
+
+def _buy_score_series(df: pd.DataFrame) -> pd.Series:
+    """Skor komposit sinyal beli 0-100 per bar (vektor, untuk backtest)."""
+    return buy_score_components(df)["total"]
 
 
 def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> dict:
-    """Skor komposit KUALITAS BELI 0-100 untuk bar terakhir (optimasi screener & analisis).
+    """Skor komposit KUALITAS BELI 0-100 untuk bar terakhir (screener & analisis).
 
-    Gabungan konfirmasi ala buku (trend, cross, RSI, MACD, volume, candlestick,
-    dekat support, momentum, special pattern) + bandarmology ACC bila tersedia.
-    BEDA dari sinyal (BUY/SELL/HOLD): skor menilai KUALITAS saham, sinyal menilai
-    momentum saat ini — skor tinggi + sinyal SELL = saham kuat sedang koreksi.
+    v2 (September 2026): komponen & bobot IDENTIK dengan buy_score_components (jalur
+    vektor) supaya live dan backtest tidak pernah berbeda — lihat tabel bukti di
+    BUY_SCORE_WEIGHTS. Bonus yang HANYA ada di jalur live: pola Launch Pad / Drop Base
+    Rally (+10) dan bandarmology ACC (+15), keduanya belum bisa di-backtest sebagai
+    deret waktu (fungsi live, bukan vektor).
+
+    BEDA dari sinyal (BUY/SELL/HOLD): skor menilai KUALITAS SETUP saham, sinyal
+    menilai momentum saat ini — skor tinggi + sinyal SELL = saham kuat sedang koreksi.
     Label: >=70 KUALITAS BELI KUAT · 50-69 KUALITAS BELI (KONFIRMASI) ·
     30-49 KUALITAS NETRAL · <30 KUALITAS HINDARI.
     """
-    s = _buy_score_series(df)
-    score = float(s.iloc[-1]) if len(s) else 0.0
-
     comps: Dict[str, float] = {}
-    close = df["Close"].astype(float)
-    last = float(close.iloc[-1])
-    n = len(df)
-    ret5 = (last / float(close.iloc[-6]) - 1) * 100 if n >= 6 and close.iloc[-6] > 0 else 0.0
-    atr14 = float(atr(df, 14).iloc[-1]) or last * 0.02
-    cr = cross_events(df)
-
     pts = 0.0
-    t = 0.0
-    s20 = float(sma(close, 20).iloc[-1]); s50 = float(sma(close, 50).iloc[-1])
-    if not np.isnan(s20) and last > s20:
-        t += 12
-    if not np.isnan(s50) and last > s50:
-        t += 8
-    comps["Trend naik (harga > SMA20/SMA50)"] = t; pts += t
-
-    g = 10.0 if cr.get("golden_cross_days_ago") is not None else 0.0
-    comps["Golden Cross SMA20/50 (<=5 hari)"] = g; pts += g
-
-    r = float(rsi(close, 14).iloc[-1])
-    rp = 0.0
-    if 40 <= r <= 65:
-        rp = 10.0
-    elif 30 <= r < 40 or 65 < r <= 70:
-        rp = 5.0
-    if 50 <= r <= 60:
-        rp = min(rp + 5.0, 15.0)
-    comps["RSI di zona sehat (40-65, bonus 50-60)"] = rp; pts += rp
-
-    macd_line, sig_line, hist = macd(close)
-    h_now = float(hist.iloc[-1]); h_prev = float(hist.iloc[-2]) if n >= 2 else h_now
-    m = 10.0 if h_now > 0 and h_now >= h_prev else (5.0 if h_now > 0 else 0.0)
-    comps["MACD bullish (hist > 0 & naik)"] = m; pts += m
-
-    vol_s = df["Volume"].astype(float)
-    vma = float(sma(vol_s, 20).iloc[-1]) if n >= 20 else float(vol_s.mean())
-    vr = float(vol_s.iloc[-1]) / vma if vma > 0 else 0.0
-    v = 10.0 if vr > 1.0 else (5.0 if vr > 0.8 else 0.0)
-    comps["Volume > VolumeMA20"] = v; pts += v
-
-    pats = detect_candlestick_patterns(df).get("patterns", [])
-    cnd = 10.0 if any(p["type"] == "bullish" for p in pats) else 0.0
-    comps["Pola candlestick bullish"] = cnd; pts += cnd
-
-    sr = find_sr_zones(df)
-    supports = [z["price"] for z in sr if z["type"] == "support" and z["price"] < last]
-    near = 10.0 if supports and (last - max(supports)) <= 2 * atr14 else 0.0
-    comps["Dekat support (<=2x ATR)"] = near; pts += near
-
-    mo = 5.0 if 0 <= ret5 <= 12 else (2.0 if 12 < ret5 <= 20 else 0.0)
-    comps["Momentum 5 hari sehat (0-12%)"] = mo; pts += mo
+    comp_v = buy_score_components(df)
+    if len(comp_v):
+        row = comp_v.iloc[-1]
+        for key, lab in BUY_SCORE_LABELS.items():
+            if key in row.index:
+                val = float(row[key])
+                comps[lab] = val
+                pts += val
 
     lp = launch_pad(df)
     dbr = drop_base_rally(df)
-    sp = 10.0 if (lp.get("detected") or dbr.get("detected")) else 0.0
+    sp = (BUY_SCORE_BONUS_WEIGHTS["Launch Pad / Drop Base Rally"]
+          if (lp.get("detected") or dbr.get("detected")) else 0.0)
     comps["Launch Pad / Drop Base Rally"] = sp; pts += sp
 
     bd = 0.0
     bstatus = str((bandarmology or {}).get("status") or "")
     if bstatus.startswith("ACC"):
-        bd = 15.0
+        bd = float(BUY_SCORE_BONUS_WEIGHTS["Bandarmology ACC (bila ada)"])
     comps["Bandarmology ACC (bila ada)"] = bd; pts += bd
 
-    val20 = float(_value_series(df).rolling(20).mean().iloc[-1]) if n >= 20 else float(_value_series(df).mean())
-    liq = 10.0 if val20 >= 10e9 else (7.0 if val20 >= 1e9 else (4.0 if val20 >= 100e6 else 0.0))
-    comps["Likuiditas (nilai rata-rata 20 hari)"] = liq; pts += liq
-
     score = min(100.0, pts)
+
+    close = df["Close"].astype(float)
+    last = float(close.iloc[-1])
+    n = len(df)
+    ret5 = (last / float(close.iloc[-6]) - 1) * 100 if n >= 6 and close.iloc[-6] > 0 else 0.0
+    r = float(rsi(close, 14).iloc[-1])
+    vol_s = df["Volume"].astype(float)
+    vma = float(sma(vol_s, 20).iloc[-1]) if n >= 20 else float(vol_s.mean())
+    vr = float(vol_s.iloc[-1]) / vma if vma > 0 else 0.0
+    _val = _value_series(df)
+    val20 = float(_val.rolling(20).mean().iloc[-1]) if n >= 20 else float(_val.mean())
     label = ("KUALITAS BELI KUAT" if score >= 70 else
              "KUALITAS BELI (KONFIRMASI)" if score >= 50 else
              "KUALITAS NETRAL" if score >= 30 else "KUALITAS HINDARI")
@@ -894,7 +932,7 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
         "ret5_pct": num(ret5, 2),
         "volume_ratio": num(vr, 2),
         "liquidity_grade": _liquidity_grade(val20),
-        "note": "Skor komposit KUALITAS BELI (0-100): >=70 KUALITAS BELI KUAT, 50-69 KUALITAS BELI (KONFIRMASI), <50 tunggu. Berbeda dari Sinyal (BUY/SELL/HOLD): skor menilai kualitas saham, sinyal menilai momentum saat ini.",
+        "note": "Skor komposit KUALITAS BELI v2 (0-100): >=70 KUALITAS BELI KUAT, 50-69 KUALITAS BELI (KONFIRMASI), <50 tunggu. Berbeda dari Sinyal (BUY/SELL/HOLD): skor menilai kualitas setup, sinyal menilai momentum saat ini. Bobotnya hasil audit backtest 5 tahun (lihat tabel bukti di kode): komponen 'RSI zona tengah' dan 'dekat support' terbukti ber-edge negatif dan sudah dibuang; breakout high 20 hari + volume ditambahkan.",
     }
 
 
@@ -936,6 +974,65 @@ def _liquidity_metrics(df: pd.DataFrame) -> dict:
         "grade": grade,
         "note": ("Kelas likuiditas dari nilai transaksi rata-rata 20 hari: "),
     }
+
+
+# --- Ukuran tiket (nilai per transaksi) sebagai PENYARING kualitas likuiditas ---
+# Sumber: ringkasan harian IDX resmi (research/idx_daily_summary.py, 1.610 tanggal
+# 2020-2026) + uji kombinasi 5 tahun (research/combo_study.py, Bagian D).
+# Temuan: efek ini TIDAK eksklusif kelas SANGAT LIKUID. Di DALAM setiap kelas
+# likuiditas, saham bertiket terkecil setelah dibersihkan dari ukuran memang
+# tertinggal. IC blok tidak tumpang-tindih h5: SANGAT LIKUID +0,064 (t=+4,9),
+# LIKUID +0,074 (t=+7,3), CUKUP +0,049 (t=+5,0). Setelah ukuran-dalam-kelas
+# dikeluarkan lewat residual ganda, IC-nya TETAP positif (t=+9,5 s/d +19,0) — jadi
+# ini BUKAN proksi ukuran. Kuintilnya tidak monoton (Q1 terendah, tapi Q5 bukan
+# yang terbaik), jadi dipakai sebagai PENYARING (buang kuintil terendah), bukan
+# peringkat saham.
+# Produksi menganalisis SATU saham, sehingga kuintil lintas-saham tidak bisa
+# dihitung saat permintaan datang. Karena itu dipakai ambang TETAP per kelas,
+# yaitu kuintil-20 resid DI DALAM kelas itu sendiri.
+TICKET_REG_INTERCEPT = 6.6712   # log(tiket) = 6,6712 + 0,3681 * log(nilai 20 hari)
+TICKET_REG_SLOPE = 0.3681
+TICKET_RESID_FLOOR = -0.5176    # ambang lama (kuintil-20 lintas kelas); dipertahankan
+TICKET_RESID_FLOOR_BY_GRADE = {
+    "SANGAT LIKUID": TICKET_RESID_FLOOR,   # TIDAK diubah: sudah live & tervalidasi
+    "LIKUID": -0.5056,                     # kuintil-20 resid kelas LIKUID (Rp 1-10 M)
+    "CUKUP": -0.2853,                      # kuintil-20 resid kelas CUKUP (Rp 100jt-1 M)
+}
+
+
+def avg_ticket_size(df: pd.DataFrame) -> Optional[dict]:
+    """Rata-rata ukuran tiket = nilai transaksi / jumlah transaksi (20 sesi terakhir).
+
+    Butuh kolom Freq (jumlah transaksi) yang sudah ada di payload /api/history,
+    jadi TIDAK menambah permintaan apa pun. Mengembalikan None bila Freq tidak ada
+    (mis. data dari yfinance), agar tidak ada kesimpulan dari data yang tak lengkap.
+    """
+    try:
+        if "Freq" not in df.columns or "Value" not in df.columns:
+            return None
+        w = df.tail(20)
+        val = pd.to_numeric(w["Value"], errors="coerce").fillna(0.0)
+        frq = pd.to_numeric(w["Freq"], errors="coerce").fillna(0.0)
+        v_sum, f_sum = float(val.sum()), float(frq.sum())
+        if v_sum <= 0 or f_sum <= 0:
+            return None
+        ticket = v_sum / f_sum
+        v20 = float(val.mean())
+        resid = math.log(ticket) - (TICKET_REG_INTERCEPT + TICKET_REG_SLOPE * math.log(v20))
+        grade = _liquidity_grade(v20)
+        floor = TICKET_RESID_FLOOR_BY_GRADE.get(grade)
+        small = bool(floor is not None and resid <= floor)
+        return {
+            "ticket": ticket, "v20": v20, "resid": resid,
+            "small": small, "grade": grade, "days": int(len(w)),
+            "floor": floor,
+            "note": ("Rata-rata nilai per transaksi (20 sesi). Tiket kecil "
+                     "mencerminkan transaksi ritel berukuran tipis; di kelas "
+                     "likuiditas yang sama historis ia tertinggal ~0,4-1,3 poin "
+                     "persen per 20 hari dari kandidat lain."),
+        }
+    except Exception:
+        return None
 
 
 def risk_management(last_price: float, sr_zones: List[dict], action: str, atr_value: float,
@@ -2029,6 +2126,10 @@ def fetch_idx_history(ticker: str, limit: int = 200) -> Optional[pd.DataFrame]:
                 "Low": float(r["low"]), "Close": float(r["close"]),
                 "Volume": float(r["volume"]),
                 "Value": float(r.get("value") or 0.0),
+                # Freq = jumlah transaksi harian (papan reguler). Sudah ikut di payload
+                # /api/history yang sama, jadi dipakai untuk ukuran tiket tanpa
+                # permintaan tambahan (nol kuota).
+                "Freq": float(r.get("freq") or 0.0),
                 "n_foreign": float(r.get("n_foreign") or 0.0),
             })
         except Exception:
@@ -2082,11 +2183,48 @@ def fetch_idx_broker_summary(ticker: str) -> Optional[dict]:
     return analysis
 
 
-def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
-    """Deret harian nilai akumulasi bandar (/api/broker-accumulation/{code}).
+# Batas usia data akumulasi broker. API mengembalikan data BASI untuk emiten yang
+# sudah tidak aktif (mis. MTRA: seluruh titiknya Februari 2020) -- 123 dari 951
+# emiten (12,9%). Tanpa penjaga ini aplikasi menampilkan bandarmologi bertahun-tahun
+# lalu seolah data hari ini, dan kriteria swing bisa menyala dari data 2020.
+IDX_ACC_MAX_STALE_DAYS = 10
 
-    BandarValue harian = jumlah seluruh net value (nval) broker per tanggal;
-    dipakai untuk kriteria Swing Watchlist buku: BandarValue vs MA10/MA20.
+# Ambang "akumulator diam-diam": satu broker yang konsisten net beli.
+IDX_ACC_SILENT_WINDOW = 10
+IDX_ACC_SILENT_CONS = 0.7    # minimal 70% hari harus net beli
+IDX_ACC_SILENT_RATIO = 0.5   # net/gross minimal 0,5 (tidak bolak-balik)
+
+
+def _idx_acc_stale(last_date: str, max_age_days: int = IDX_ACC_MAX_STALE_DAYS) -> bool:
+    """True bila titik data broker terakhir sudah terlalu tua untuk dipercaya.
+
+    Ambang 10 hari kalender cukup longgar untuk akhir pekan & libur bursa biasa,
+    tapi tetap menangkap data yang macet berminggu-minggu. Kasus basi di lapangan
+    berjarak BULANAN/TAHUNAN, jadi ambang berapa pun di rentang 5-30 hari memberi
+    pemisahan yang sama; yang penting data 2020 tidak lolos sebagai data hari ini.
+    """
+    try:
+        import datetime
+        d = pd.Timestamp(str(last_date)[:10]).date()
+        now = (datetime.datetime.utcnow() + datetime.timedelta(hours=7)).date()
+        return (now - d).days > max_age_days
+    except Exception:
+        return False
+
+
+def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
+    """Deret harian akumulasi bandar (/api/broker-accumulation/{code}).
+
+    BandarValue harian = nval broker TERBESAR pada tanggal itu, BUKAN jumlah seluruh
+    broker. Versi penjumlahan (tetap disediakan sebagai `bandar_sum_series`) saling
+    menutupi: arus broker lain bisa membatalkan akumulasi satu broker. Contoh nyata
+    PTBA 20 Mei-11 Sep 2026: AK/UBS net +463,86 M, tapi jumlah seluruh broker hanya
+    +227,56 M; BBRI: YU/CGS +372,80 M vs jumlah +135,59 M.
+
+    Catatan kejujuran: metrik ini TIDAK terbukti punya daya prediksi. Riset 77 hari
+    bursa (research/bandar_study.py) menunjukkan versi jumlah maupun versi
+    broker-dominan sama-sama tidak berbeda dari noise. Yang diperbaiki di sini
+    adalah KEBENARAN INFORMASI ("siapa yang mengakumulasi"), bukan edge.
     """
     if ".JK" not in ticker.upper():
         return None
@@ -2096,30 +2234,59 @@ def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
     if not data or not isinstance(data.get("series"), list):
         return None
 
-    by_date: Dict[str, float] = {}
+    by_date: Dict[str, float] = {}    # jumlah seluruh broker (referensi saja)
+    dom_date: Dict[str, float] = {}   # broker terbesar per tanggal (yang dipakai)
     top: Dict[str, dict] = {}
+    per_broker: List[dict] = []
     for br in data["series"]:
         bc = str(br.get("broker_code") or "?")
+        nm = br.get("broker_name") or bc
+        vals: List[float] = []
         for pt in br.get("points") or []:
             d = str(pt.get("date"))
             nv = float(pt.get("nval") or 0)
             by_date[d] = by_date.get(d, 0.0) + nv
+            if d not in dom_date or nv > dom_date[d]:
+                dom_date[d] = nv
+            vals.append(nv)
             if bc not in top or abs(nv) > abs(top[bc].get("nval", 0)):
-                top[bc] = {"nval": nv, "cum": float(pt.get("cum_nval") or 0),
-                           "name": br.get("broker_name") or bc}
-    if not by_date:
+                top[bc] = {"nval": nv, "cum": float(pt.get("cum_nval") or 0), "name": nm}
+        recent = vals[-IDX_ACC_SILENT_WINDOW:]
+        if recent:
+            buys = sum(1 for v in recent if v > 0)
+            net = sum(recent)
+            gross = sum(abs(v) for v in recent)
+            per_broker.append({
+                "broker": bc, "name": nm, "days_buy": buys, "window": len(recent),
+                "net": net, "net_ratio": (net / gross) if gross else 0.0,
+                "consistency": round(buys / len(recent), 3),
+            })
+
+    if not dom_date:
+        return None
+    last_date = max(dom_date)
+    if _idx_acc_stale(last_date):
+        # Data basi -> jangan dikembalikan, supaya tidak tampil sebagai data terkini.
         return None
 
-    series = pd.Series({pd.Timestamp(d): v for d, v in by_date.items()}).sort_index()
-    accum = [float(x) for x in series.clip(lower=0).tolist()]
-    dates = [d.strftime("%Y-%m-%d") for d in series.index]
+    dom = pd.Series({pd.Timestamp(d): v for d, v in dom_date.items()}).sort_index()
+    total = pd.Series({pd.Timestamp(d): v for d, v in by_date.items()}).sort_index()
     top_broker = max(top.items(), key=lambda kv: kv[1]["cum"]) if top else None
+    cands = [b for b in per_broker
+             if b["consistency"] >= IDX_ACC_SILENT_CONS
+             and b["net_ratio"] >= IDX_ACC_SILENT_RATIO and b["net"] > 0]
+    silent = max(cands, key=lambda b: b["net"]) if cands else None
     return {
-        "bandar_value_series": [float(x) for x in series.tolist()],
-        "bandar_accum_series": accum,
-        "dates": dates,
-        "last_bandar_value": float(series.iloc[-1]) if len(series) else 0.0,
+        # Kriteria swing memakai seri ini (broker dominan), bukan penjumlahan.
+        "bandar_value_series": [float(x) for x in dom.tolist()],
+        "bandar_sum_series": [float(x) for x in total.tolist()],
+        "bandar_accum_series": [float(x) for x in dom.clip(lower=0).tolist()],
+        "dates": [d.strftime("%Y-%m-%d") for d in dom.index],
+        "data_last_date": last_date,
+        "last_bandar_value": float(dom.iloc[-1]) if len(dom) else 0.0,
+        "last_bandar_sum": float(total.iloc[-1]) if len(total) else 0.0,
         "top_accumulating_broker": {"broker": top_broker[0], **top_broker[1]} if top_broker else None,
+        "silent_accumulator": silent,
     }
 
 
@@ -2374,6 +2541,191 @@ def _ihsg_regime() -> dict:
         "note": ("Filter regime: sinyal beli hanya diproses saat IHSG di ATAS MA200 "
                  "(pasar bullish). Saat IHSG di bawah MA200, peluang sinyal palsu naik."),
     }
+
+
+def _daily_index(s: pd.Series) -> pd.Series:
+    """Normalisasi index deret harian ke TANGGAL (tanpa jam/timezone).
+
+    Penting agar kalender saham & IHSG selaras: satu sumber bisa memberi index
+    00:00 dan sumber lain 09:00 WIB, sehingga reindex(ffill) bisa mengambil bar
+    hari sebelumnya (off-by-one) dan RS line jadi salah.
+    """
+    idx = pd.to_datetime(s.index)
+    if getattr(idx, "tz", None) is not None:
+        idx = idx.tz_localize(None)
+    out = s.copy()
+    out.index = idx.normalize()
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
+def _ihsg_close_series() -> Optional[pd.Series]:
+    """Close IHSG harian (index tanggal) untuk perbandingan kekuatan relatif."""
+    df = fetch_ihsg("max")
+    if df is None or df.empty:
+        return None
+    s = _daily_index(df["Close"].astype(float)).dropna()
+    return s if len(s) else None
+
+
+def relative_strength(df: pd.DataFrame, ticker: str = "",
+                      benchmark: Optional[pd.Series] = None,
+                      regime: Optional[dict] = None) -> dict:
+    """Kekuatan RELATIF saham terhadap IHSG ("RS line" — konsep O'Neil / IBD).
+
+    Menjawab pertanyaan: "IHSG merah, tapi apakah saham INI justru naik?" RS line =
+    harga saham ÷ indeks. Bila RS line mencetak REKOR baru DAN harga di atas RS-MA20
+    saat indeks melemah, berarti uang besar memilih saham itu -> dia LEADER pasar
+    (kandidat terkuat di pasar bear), bukan sekadar ikut-ikutan indeks.
+
+    Contoh nyata (TINS vs IHSG, Sep 2026): IHSG di bawah MA200 (bearish) tetapi RS
+    line TINS mencetak rekor 20 hari pada 4, 7, 9, 10, dan 11 Sep — beberapa hari
+    SEBELUM harga memuncak, dengan alpha 5 hari +9,9% terhadap IHSG.
+    """
+    out: dict = {
+        "available": False,
+        "benchmark": "IHSG (^JKSE)",
+        "score": None,
+        "label": "TIDAK TERSEDIA",
+        "type": "unknown",
+        "is_leader": False,
+        "note": "Data IHSG tidak tersedia sehingga kekuatan relatif tidak dapat dihitung.",
+    }
+    try:
+        bm = benchmark if benchmark is not None else _ihsg_close_series()
+        if bm is None or len(bm) == 0:
+            return out
+        close = _daily_index(df["Close"].astype(float)).dropna()
+        bm = _daily_index(bm).dropna()
+        if close.empty or bm.empty:
+            return out
+        # Selaraskan kalender IHSG ke tanggal saham (ffill utk perbedaan hari libur).
+        bm_al = bm.reindex(close.index, method="ffill")
+        pair = pd.DataFrame({"s": close, "b": bm_al}).dropna()
+        if len(pair) < 25:
+            out["note"] = "Riwayat saham/IHSG terlalu pendek untuk menghitung RS (butuh >= 25 bar)."
+            return out
+
+        rs = pair["s"] / pair["b"]
+        rs_ma20_s = rs.rolling(20).mean()
+        last = float(pair["s"].iloc[-1])
+        rs_last = float(rs.iloc[-1])
+        rs_ma20 = float(rs_ma20_s.iloc[-1]) if not np.isnan(rs_ma20_s.iloc[-1]) else None
+        above_ma20 = bool(rs_ma20 is not None and rs_last > rs_ma20)
+        new_high20 = bool(rs_last >= float(rs.tail(20).max()) - 1e-12)
+        new_high60 = bool(len(rs) >= 60 and rs_last >= float(rs.tail(60).max()) - 1e-12)
+
+        def _alpha(n: int) -> Optional[float]:
+            """Return saham minus return IHSG pada periode sama (alpha, %)."""
+            if len(pair) <= n:
+                return None
+            sr = float(pair["s"].iloc[-1]) / float(pair["s"].iloc[-1 - n]) - 1.0
+            br = float(pair["b"].iloc[-1]) / float(pair["b"].iloc[-1 - n]) - 1.0
+            return num((sr - br) * 100.0, 2)
+
+        a5, a20, a60 = _alpha(5), _alpha(20), _alpha(60)
+
+        # "Red-day wins": hari IHSG turun tapi saham naik (bukti langsung lawan pasar).
+        tail = pair.tail(20)
+        chg_s = tail["s"].pct_change()
+        chg_b = tail["b"].pct_change()
+        red = chg_b < 0
+        red_days = int(red.sum())
+        red_wins = int((red & (chg_s > 0)).sum())
+        red_ratio = (red_wins / red_days) if red_days else None
+
+        score = 0.0
+        if new_high20:
+            score += 25
+        if new_high60:
+            score += 10
+        if above_ma20:
+            score += 15
+        if a5 is not None and a5 > 0:
+            score += 10
+        if a5 is not None and a5 >= 5:
+            score += 5
+        if a20 is not None and a20 > 0:
+            score += 15
+        if a20 is not None and a20 >= 10:
+            score += 10
+        if red_ratio is not None and red_ratio >= 0.6:
+            score += 10
+        if len(close) >= 20:
+            s20 = float(sma(close, 20).iloc[-1])
+            if not np.isnan(s20) and last > s20:
+                score += 5
+        if len(close) >= 50:
+            s50 = float(sma(close, 50).iloc[-1])
+            if not np.isnan(s50) and last > s50:
+                score += 5
+        score = min(100.0, score)
+
+        # Dua jalur kepemimpinan, keduanya sah sebagai "naik saat IHSG turun":
+        #  (1) RS line mencetak REKOR 20 hari -> kepemimpinan baru (konsep O'Neil);
+        #  (2) OUTPERFORMANCE nyata vs IHSG (alpha 5h >= 5%, atau alpha 20h >= 10%,
+        #      atau menang di >= 50% hari IHSG merah) selama RS masih di atas RS-MA20.
+        # Tanpa jalur (2), saham yang sudah melonjak lebih dulu (RS line jadi di bawah
+        # rekor lamanya) ikut terbuang padahal masih jauh lebih kuat daripada pasar.
+        outperform = bool(
+            (a5 is not None and a5 >= 5)
+            or (a20 is not None and a20 >= 10)
+            or (red_ratio is not None and red_ratio >= 0.5)
+        )
+        is_leader = bool(above_ma20 and a5 is not None and a5 > 0 and score >= 60
+                         and (new_high20 or outperform))
+        if is_leader:
+            typ, label = "leader", "RS LEADER (KUAT LAWAN PASAR)"
+            why = ("RS line mencetak rekor 20 hari" if new_high20
+                   else "outperformance nyata vs IHSG (alpha positif)")
+            note = (f"Leader lawan pasar: {why} dan harga di atas RS-MA20 — uang besar "
+                    "memilih saham ini walau IHSG melemah. Kandidat terkuat saat pasar "
+                    "bear, tetapi tetap wajib konfirmasi volume.")
+        elif score >= 50:
+            typ, label = "strong", "RS KUAT"
+            note = ("Saham mengalahkan IHSG, namun belum mencetak rekor RS baru — pantau "
+                    "sampai RS line menembus high 20 hari.")
+        elif score >= 30:
+            typ, label = "neutral", "RS NETRAL"
+            note = "Pergerakan saham kurang lebih searah IHSG (belum ada keunggulan relatif)."
+        else:
+            typ, label = "laggard", "LAGGARD (LEMAH VS PASAR)"
+            note = ("Saham lebih lemah daripada IHSG — berisiko tertinggal saat indeks menguat "
+                    "dan jatuh lebih dulu saat indeks melemah.")
+
+        rg = regime if regime is not None else _ihsg_regime()
+        if rg and rg.get("trend") == "bear" and is_leader:
+            note += (" Catatan: filter regime IHSG sedang BEARISH (IHSG < MA200); saham ini "
+                     "lolos justru karena kekuatan relatifnya.")
+        return {
+            "available": True,
+            "benchmark": "IHSG (^JKSE)",
+            "score": num(score, 0),
+            "label": label,
+            "type": typ,
+            "is_leader": is_leader,
+            "rs_line": num(rs_last, 4),
+            "rs_ma20": num(rs_ma20, 4),
+            "rs_above_ma20": above_ma20,
+            "rs_new_high_20d": new_high20,
+            "rs_new_high_60d": new_high60,
+            "alpha_5d_pct": a5,
+            "alpha_20d_pct": a20,
+            "alpha_60d_pct": a60,
+            "red_day_wins": red_wins,
+            "red_days_20": red_days,
+            "red_day_win_ratio": num(red_ratio, 2),
+            "market_trend": (rg or {}).get("trend"),
+            "market_regime_close": (rg or {}).get("close"),
+            "market_regime_ma200": (rg or {}).get("ma200"),
+            "note": note,
+            "rule": ("RS Leader = RS di atas RS-MA20 + alpha 5 hari positif + skor >= 60 + salah "
+                     "satu: RS line rekor 20 hari, ATAU outperformance (alpha 5h >= 5% / alpha "
+                     "20h >= 10% / menang >= 50% hari IHSG merah). Alpha = return saham − "
+                     "return IHSG pada periode sama."),
+        }
+    except Exception:
+        out["note"] = "Gagal menghitung kekuatan relatif vs IHSG."
+        return out
 
 
 def _weekly_trend_series(df: pd.DataFrame) -> pd.Series:
@@ -3299,31 +3651,65 @@ def _scan_action_plan(df: pd.DataFrame, action: str,
 
 
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
-                 include_bandarmology: bool):
-    """Proses 1 ticker (dijalankan paralel via ThreadPoolExecutor)."""
+                 include_bandarmology: bool, with_rs: bool = False,
+                 silent_min_net: float = 2e9):
+    """Proses 1 ticker (dijalankan paralel via ThreadPoolExecutor).
+
+    with_rs=True memaksa perhitungan kekuatan relatif vs IHSG walau kriteria bukan
+    "rs" (dipakai oleh rs_bypass supaya leader tetap lolos saat pasar bearish).
+    silent_min_net = ambang nilai akumulasi bersih (Rp) agar kriteria "silent"
+    berarti; tanpa ambang ini saham tipis (net ratusan juta) ikut muncul.
+    """
     df, src = _get_ticker_data(tk, period)
     if df is None:
         return {"tk": tk, "skipped": True}
 
     bandar_series = None
-    if criteria in ("swing", "bandar", "all") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+    acc_info = None
+    if criteria in ("swing", "bandar", "all", "silent") and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
         acc = fetch_idx_accumulation(tk)
-        if acc and acc.get("bandar_accum_series"):
-            bandar_series = acc["bandar_accum_series"]
+        if acc:
+            acc_info = acc
+            if acc.get("bandar_accum_series"):
+                bandar_series = acc["bandar_accum_series"]
 
     result = run_screener(df, criteria, bandar_series)
     item = {"ticker": tk, "source": src, **result["metrics"], "criteria_met": result["criteria_met"],
             "book_confirm": result.get("book_confirm")}
     item["data_date"] = (str(df.index[-1].date()) if hasattr(df.index[-1], "date")
                           else str(df.index[-1]))
+    # Ukuran tiket: penyaring kualitas likuiditas (buang kuintil terendah).
+    # Dipasang DI SINI supaya semua jalur (termasuk breakout) mendapatkannya.
+    ticket = avg_ticket_size(df)
+    if ticket:
+        item["avg_ticket_idr"] = num(ticket["ticket"], 0)
+        item["ticket_resid"] = num(ticket["resid"], 3)
+        item["ticket_small"] = bool(ticket["small"])
+        # Ambang yang BENAR-BENAR dipakai untuk kelas saham ini (None = kelas di luar
+        # cakupan filter, mis. KURANG LIKUID). Dilaporkan supaya keputusannya bisa diaudit.
+        item["ticket_floor"] = (float(ticket["floor"]) if ticket.get("floor") is not None else None)
+        item["ticket_note"] = ticket["note"]
     if include_signal or criteria == "koreksi":
         item["signal"] = quick_signal(df)
+
+    # Kekuatan relatif vs IHSG ("RS line"): dihitung untuk kriteria "rs" atau bila
+    # pemanggil memintanya (rs_bypass). Menangkap saham yang NAIK saat indeks turun.
+    rs_info = None
+    if criteria == "rs" or with_rs:
+        rs_info = relative_strength(df, ticker=tk)
+        if rs_info.get("available"):
+            item["relative_strength"] = rs_info
 
     # Broker Summary (Bab 3-7): ditampilkan bila lolos kriteria, atau wajib untuk
     # kriteria "bandar" (ACC + value share Top Buyer >= 60% per buku) dan
     # "koreksi" (butuh AVG bandar & status ACC/DIS untuk level pantauan).
     bandar_used = 0
-    need_bandar = criteria in ("bandar", "koreksi") or (include_bandarmology and result["eligible"])
+    # Kriteria "silent" memakai deret akumulasi broker (sudah diambil di atas),
+    # bukan Broker Summary harian — jadi jangan panggil broker-summary per kandidat
+    # (itu membakar kuota tanpa menambah informasi).
+    need_bandar = criteria in ("bandar", "koreksi") or (
+        include_bandarmology and criteria != "silent"
+        and (bool(result["eligible"]) or bool((rs_info or {}).get("is_leader"))))
     if need_bandar and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
         bs = fetch_idx_broker_summary(tk)
         if bs:
@@ -3342,13 +3728,40 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 
     def _attach_plan(eligible: bool, act: str = "") -> None:
         """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
-        if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing"):
+        if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing", "rs",
+                                            "breakout", "silent"):
             return
         action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
         plan = _scan_action_plan(df, action, item.get("bandarmology"),
                                  (item.get("buy_score") or {}).get("liquidity_grade"))
         if plan:
             item["action_plan"] = plan
+
+    if criteria == "silent":
+        # AKUMULASI DIAM-DIAM: satu broker yang konsisten net BELI selama jendela
+        # 10 hari (>=70% hari beli, net/gross >= 0,5) — pertanyaan "siapa yang
+        # mengakumulasi", yang TIDAK terlihat dari penjumlahan semua broker karena
+        # arus broker lain saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah
+        # seluruh broker cuma +227,56 M).
+        # BUKAN sinyal beli: uji 77 hari bursa (research/bandar_study.py) tidak
+        # menemukan daya prediksi, dan riwayat API cuma 80 hari (tidak cukup untuk
+        # menguji sinyal berhorizon bulanan).
+        sil = (acc_info or {}).get("silent_accumulator")
+        sil_net = float((sil or {}).get("net") or 0.0)
+        sil_ok = bool(sil) and sil_net >= silent_min_net
+        item["silent_info"] = ({
+            "broker": sil.get("broker"),
+            "broker_name": sil.get("name"),
+            "days_buy": sil.get("days_buy"),
+            "window": sil.get("window"),
+            "net": num(sil_net, 0),
+            "net_ratio": round(float(sil.get("net_ratio") or 0.0), 3),
+            "data_last_date": (acc_info or {}).get("data_last_date"),
+        } if sil else None)
+        item["criteria_met"] = ["AKUMULASI DIAM-DIAM"] if sil_ok else []
+        _attach_plan(sil_ok, act=str(item.get("signal") or "HOLD"))
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": sil_ok, "bandar_used": bandar_used}
 
     if criteria == "bandar":
         # Kriteria Bandarmology buku (Bab 3-7): akumulasi + value share Top Buyer >= 60%.
@@ -3393,6 +3806,45 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": koreksi_ok, "bandar_used": bandar_used}
 
+    if criteria == "rs":
+        # RS LEADER: saham yang kuat LAWAN pasar (RS line rekor 20 hari + alpha
+        # positif). Bisa lolos walau IHSG di bawah MA200 — memang itu tujuannya:
+        # menemukan saham yang naik saat pasar merah (mis. TINS vs IHSG).
+        rs = item.get("relative_strength") or {}
+        rs_ok = bool(rs.get("is_leader"))
+        item["criteria_met"] = ["RS LEADER"] if rs_ok else []
+        _attach_plan(rs_ok, act=str(item.get("signal") or "HOLD"))
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": rs_ok, "bandar_used": bandar_used}
+
+    if criteria == "breakout":
+        # BREAKOUT 20 HARI: harga menembus HIGH tertinggi 20 bar sebelumnya.
+        # Bukti 5 tahun pada saham likuid (>= Rp10 miliar/hari): alpha20 +1,94%
+        # (t=+3,95), stabil di uji holdout dua paruh waktu. Volume ditampilkan
+        # sebagai konteks (breakout + volume >=1,5x punya alpha lebih tinggi
+        # +2,28% tapi peluang entry jauh lebih sedikit), TIDAK dijadikan syarat.
+        close_s = df["Close"].astype(float)
+        high_s = df["High"].astype(float)
+        vol_s = df["Volume"].astype(float)
+        brk = breakout_20_series(df)
+        last = float(close_s.iloc[-1])
+        prev_high20 = float(high_s.rolling(20).max().shift(1).iloc[-1])
+        vma = sma(vol_s, 20)
+        v20 = float(vma.iloc[-1]) if len(vma) and not np.isnan(vma.iloc[-1]) else 0.0
+        vr = float(vol_s.iloc[-1]) / v20 if v20 > 0 else 0.0
+        brk_ok = bool(brk.iloc[-1]) if len(brk) else False
+        item["breakout_info"] = {
+            "is_breakout": brk_ok,
+            "high20": num(prev_high20, 2),
+            "above_pct": num((last / prev_high20 - 1) * 100, 1) if prev_high20 > 0 else None,
+            "volume_ratio": num(vr, 2),
+            "volume_confirmed": bool(vr >= 1.0),
+        }
+        item["criteria_met"] = ["BREAKOUT"] if brk_ok else []
+        _attach_plan(brk_ok, act=str(item.get("signal") or "BUY"))
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": brk_ok, "bandar_used": bandar_used}
+
     _attach_plan(bool(result["eligible"]))
     return {"tk": tk, "skipped": False, "item": item,
             "eligible": bool(result["eligible"]), "bandar_used": bandar_used}
@@ -3400,16 +3852,22 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 
 def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
           include_bandarmology: bool = True, require_confirm: bool = False,
-          require_regime: bool = False) -> dict:
+          require_regime: bool = False, rs_bypass: bool = False,
+          silent_min_net: float = 2e9, skip_small_ticket: bool = False) -> dict:
     matched: List[dict] = []
-    scanned = skipped = bandar_used = 0
+    scanned = skipped = bandar_used = ticket_filtered = 0
     # Filter kondisi pasar (IHSG vs MA200) — dihitung sekali, berlaku untuk semua saham.
     regime = _ihsg_regime() if require_regime else None
     regime_blocked = bool(require_regime and regime and regime.get("trend") == "bear")
+    # rs_bypass: saat pasar bearish, saham berstatus RS LEADER (kuat lawan pasar)
+    # tetap diloloskan dan ditandai rs_bypass=True — inilah yang menangkap kasus
+    # "IHSG merah tapi saham X naik" (mis. TINS 4590 -> 4790, Sep 2026).
+    with_rs = bool(rs_bypass)
     workers = min(8, max(1, len(tickers)))
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = [ex.submit(_scan_worker, tk, criteria, period,
-                             include_signal, include_bandarmology) for tk in tickers]
+                             include_signal, include_bandarmology, with_rs,
+                             silent_min_net) for tk in tickers]
         for f in futures:
             try:
                 out = f.result()
@@ -3423,13 +3881,22 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
             bandar_used += out.get("bandar_used", 0)
             if out.get("eligible"):
                 if regime_blocked:
-                    continue  # IHSG di bawah MA200: tahan semua sinyal beli
+                    rs_leader = bool((out["item"].get("relative_strength") or {}).get("is_leader"))
+                    if not (rs_bypass and rs_leader):
+                        continue  # IHSG di bawah MA200: tahan sinyal beli
+                    out["item"]["rs_bypass"] = True
                 if require_confirm and not (out["item"].get("book_confirm") or {}).get("ok"):
+                    continue
+                # Penyaring ukuran tiket: hanya berlaku untuk kelas SANGAT LIKUID
+                # (di sanalah efeknya divalidasi) — saham kelas lain tidak dibuang.
+                if skip_small_ticket and out["item"].get("ticket_small"):
+                    ticket_filtered += 1
                     continue
                 matched.append(out["item"])
     return {
         "scanned": scanned,
         "skipped": skipped,
+        "ticket_filtered": ticket_filtered,
         "bandarmology_checked": bandar_used,
         "market_regime": regime,
         "regime_blocked": regime_blocked,
@@ -3593,6 +4060,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     bull_div, _ = _divergence_series(df)
 
     bscore = _buy_score_series(df) if criteria == "buy" else None
+    brk_s = breakout_20_series(df) if criteria == "breakout" else None
 
     # Filter regime IHSG: sejajarkan close & MA200 IHSG ke index df (ffill).
     ihsg_ok = None
@@ -3617,6 +4085,9 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         elif criteria == "buy":
             # Optimasi sinyal beli: skor komposit multi-konfirmasi (vektor).
             hit = float(bscore.iloc[i]) >= 70.0
+        elif criteria == "breakout":
+            # Breakout high 20 hari (logika sama dengan kriteria screener "breakout").
+            hit = bool(brk_s.iloc[i]) if brk_s is not None else False
         else:  # swing (proksi nilai transaksi)
             hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                    and float(value_ma20.iloc[i]) >= 10e9
@@ -3740,6 +4211,7 @@ def _matrix_one(tk: str, criteria: str, years: int,
     bb_up, _, bb_lo = bollinger_bands(close, 20, 2.0)
     bull_div, _ = _divergence_series(sub)
     bscore = _buy_score_series(sub) if criteria == "buy" else None
+    brk_s = breakout_20_series(sub) if criteria == "breakout" else None
     weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
     ihsg_ok = None
     if ihsg_align is not None and len(ihsg_align):
@@ -3770,6 +4242,8 @@ def _matrix_one(tk: str, criteria: str, years: int,
                 hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
             elif criteria == "buy":
                 hit = float(bscore.iloc[i]) >= 70.0
+            elif criteria == "breakout":
+                hit = bool(brk_s.iloc[i]) if brk_s is not None else False
             else:
                 hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                        and float(value_ma20.iloc[i]) >= 10e9
@@ -4469,7 +4943,13 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
                 "last_bandar_value": num(acc.get("last_bandar_value"), 0),
                 "bandar_value_last_10": [num(x, 0) for x in (acc.get("bandar_value_series") or [])[-10:]],
                 "top_accumulating_broker": acc.get("top_accumulating_broker"),
-                "note": "BandarValue harian = jumlah net value seluruh broker (kriteria swing: vs MA10/MA20).",
+                "silent_accumulator": acc.get("silent_accumulator"),
+                "data_last_date": acc.get("data_last_date"),
+                "note": ("BandarValue harian = nval broker TERBESAR hari itu (bukan jumlah "
+                         "seluruh broker, yang bisa saling menutupi). silent_accumulator = "
+                         "broker yang konsisten net beli tanpa banyak jual. Ini INFORMASI "
+                         "bandarmology, bukan sinyal beli: uji 77 hari bursa tidak menemukan "
+                         "daya prediksi (lihat research/bandar_study.py)."),
             }
         if "n_foreign" in df.columns:
             nf = df["n_foreign"].astype(float)
@@ -4498,7 +4978,23 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
                  "(close > SMA20 mingguan) agar tidak melawan arus jangka menengah."),
     }
     regime = _ihsg_regime()
+    # Kekuatan relatif vs IHSG ("RS line"): menangkap saham yang NAIK saat indeks
+    # turun — kasus "IHSG merah tapi TINS naik" yang tidak terlihat oleh filter regime.
+    if ".JK" in ticker.upper():
+        rs_vs_ihsg = relative_strength(df, ticker=ticker, regime=regime)
+    else:
+        rs_vs_ihsg = {
+            "available": False, "benchmark": "IHSG (^JKSE)", "score": None,
+            "label": "TIDAK BERLAKU", "type": "unknown", "is_leader": False,
+            "note": ("Kekuatan relatif dihitung terhadap IHSG, jadi hanya berlaku untuk "
+                     "saham IDX (akhiran .JK)."),
+        }
+    if data_warning:
+        rs_vs_ihsg = {**rs_vs_ihsg, "available": False, "score": None, "is_leader": False,
+                      "label": "TIDAK TERSEDIA", "type": "unknown",
+                      "note": "Dihitung dari data historis yang tidak sinkron — tidak dipakai."}
     liquidity = _liquidity_metrics(df)
+    _ticket = avg_ticket_size(df)   # ukuran tiket (nilai/transaksi) dari Freq IDX Edge
     data_date = str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1])
 
     # Panduan aksi: syarat konfirmasi + level harga nyata (tunggu apa, di harga berapa).
@@ -4616,10 +5112,20 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
             "avg_value_20d": num(liquidity["avg_value_20d"], 0),
             "avg_volume_20d": num(liquidity["avg_volume_20d"], 0),
             "grade": liquidity["grade"],
+            "avg_ticket_idr": (num(_ticket["ticket"], 0) if _ticket else None),
+            "ticket_resid": (num(_ticket["resid"], 3) if _ticket else None),
+            "ticket_small": (bool(_ticket["small"]) if _ticket else None),
+            # Ambang yang dipakai untuk kelas likuiditas saham ini (None = di luar
+            # cakupan filter, mis. KURANG LIKUID) — supaya keputusannya bisa diaudit.
+            "ticket_floor": ((float(_ticket["floor"]) if _ticket.get("floor") is not None
+                              else None) if _ticket else None),
+            "ticket_note": (_ticket["note"] if _ticket else
+                            "Ukuran tiket tidak tersedia (jumlah transaksi tidak ada di sumber data ini)."),
             "note": "Kelas likuiditas dari nilai transaksi rata-rata 20 hari (IDR).",
         },
         "weekly": weekly,
         "market_regime": regime,
+        "relative_strength": rs_vs_ihsg,
         "fundamentals": (None if fund_level == "off"
                          else fetch_fundamentals(ticker, last_price,
                                                  light=fund_level == "ringkas")),
@@ -4755,8 +5261,22 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
         rsi = (d.get("indicators") or {}).get("rsi14")
         sig = (d.get("signal") or {}).get("action", "")
         plan_txt = _telegram_action_plan(d.get("action_plan"), max_steps=2)
+        # Kekuatan relatif vs IHSG ikut di notifikasi portofolio: posisi yang LEBIH
+        # LEMAH dari pasar (laggard) diberi peringatan rotasi, dan sinyal jual
+        # dilengkapi keterangan RS supaya keputusan tidak buta konteks pasar.
+        rs = d.get("relative_strength") or {}
+        rs_line = None
+        if rs.get("available"):
+            rs_line = (
+                "RS vs IHSG: {} (skor {}, alpha 5h {}, 20h {})".format(
+                    rs.get("label"), num(rs.get("score"), 0),
+                    signed_num(rs.get("alpha_5d_pct"), 1, "%"),
+                    signed_num(rs.get("alpha_20d_pct"), 1, "%"),
+                )
+            )
         base = {"ticker": strip_suffix(tk), "price": num(price, 2),
-                "qty": h.get("qty"), "avg": h.get("avg")}
+                "qty": h.get("qty"), "avg": h.get("avg"),
+                "relative_strength": rs if rs.get("available") else None}
         out: List[dict] = []
         # TP/SL server dihitung relatif harga pasar SEKARANG, bukan harga beli (avg),
         # dan TP bisa hanya +1% di atas harga (saat harga menempel resistance). Agar
@@ -4776,8 +5296,17 @@ def _portfolio_alerts(portfolio: List[dict]) -> List[dict]:
         if rsi is not None and rsi > 70:
             out.append({**base, "type": "OB", "rsi": num(rsi, 1),
                         "message": f"⚠️ {strip_suffix(tk)} overbought (RSI {num(rsi, 1)}) — waspada koreksi"})
+        # Posisi yang lebih lemah daripada IHSG: uang cenderung berpindah ke leader
+        # (mis. pasar merah tetapi TINS/MGNA naik). Peringatan rotasi, bukan sinyal jual.
+        if rs.get("available") and rs.get("type") == "laggard":
+            out.append({**base, "type": "RS", "signal": "LAGGARD",
+                        "message": (f"🐌 {strip_suffix(tk)} LEMAH vs IHSG — {rs_line}. "
+                                    "Harga bisa naik sesaat bersama indeks, tetapi saham ini "
+                                    "tertinggal dari pasar; pertimbangkan rotasi ke RS leader.")})
         if sig in ("SELL", "STRONG SELL"):
             msg = f"⬇️ {strip_suffix(tk)} sinyal {sig} — pertimbangkan take profit / cut loss"
+            if rs_line:
+                msg += "\n" + rs_line
             if plan_txt:
                 msg += "\n\n" + plan_txt
             out.append({**base, "type": "SELL", "signal": sig,
@@ -4972,6 +5501,71 @@ def cron_koreksi(request: Request, secret: str = Query("")):
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
 
+@app.get("/api/cron/rs")
+def cron_rs(request: Request, secret: str = Query(""),
+            universe: str = Query("liquid", pattern="^(all|liquid)$"),
+            limit: int = Query(45, ge=5, le=100),
+            top: int = Query(5, ge=1, le=20)):
+    """Cron: pindai KEKUATAN RELATIF vs IHSG dan kirim daftar RS LEADER ke Telegram.
+
+    Dijalankan setelah bursa tutup (~17:30 WIB) supaya data hari itu sudah final.
+    Inilah yang menangkap kasus "IHSG merah tapi saham X naik" (mis. TINS 4590 ->
+    4790 pada Sep 2026): RS line saham mencetak rekor baru walau indeks melemah.
+    Kriteria "rs" sengaja TIDAK diblokir filter regime IHSG — justru dirancang
+    untuk pasar bearish. Dedupe sekali per hari.
+    """
+    auth = request.headers.get("authorization", "")
+    bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
+    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
+        raise HTTPException(403, "Forbidden")
+
+    tickers = load_idx_tickers(universe)[:limit]
+    scan = _scan(tickers, "rs", "6mo", True, False, False, False, False)
+    rg = _ihsg_regime()
+    leaders = sorted(
+        scan["results"],
+        key=lambda r: -float(((r.get("relative_strength") or {}).get("score") or 0)),
+    )[:top]
+
+    today = time.strftime("%Y-%m-%d")
+    sent = 0
+    if leaders and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        dedupe = f"ci:notif:rs:{today}"
+        if not _upstash_get(dedupe):
+            head = (f"📈 RS LEADER — SAHAM KUAT LAWAN PASAR ({today})\n"
+                    f"IHSG {num(rg.get('close'), 0)} vs MA200 {num(rg.get('ma200'), 0)} "
+                    f"= {str(rg.get('trend') or '?').upper()}\n")
+            lines: List[str] = []
+            for i, r in enumerate(leaders, 1):
+                rsd = r.get("relative_strength") or {}
+                parts = [f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
+                         f"{num(r.get('price'), 2)} "
+                         f"({signed_num(r.get('day_return_pct'), 2, '%')})",
+                         f"RS skor {num(rsd.get('score'), 0)}"]
+                if rsd.get("rs_new_high_20d"):
+                    parts.append("RS line rekor 20h")
+                if rsd.get("alpha_5d_pct") is not None:
+                    parts.append(f"alpha 5h {signed_num(rsd.get('alpha_5d_pct'), 1, '%')}")
+                if rsd.get("alpha_20d_pct") is not None:
+                    parts.append(f"20h {signed_num(rsd.get('alpha_20d_pct'), 1, '%')}")
+                lines.append(" · ".join(parts))
+            msg = (head + "\n".join(lines)
+                   + "\n\nRS line = harga saham ÷ IHSG. Rekor RS saat IHSG melemah = "
+                     "uang besar memilih saham itu. Tetap cek volume & Broker Summary sebelum entry.")
+            if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                _upstash_set(dedupe, "1", ttl=86400)
+                sent = 1
+
+    return {"scanned": scan["scanned"], "skipped": scan["skipped"],
+            "leaders": len(leaders), "telegram_sent": sent,
+            "market_regime": rg,
+            "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+            "results": [{k: r.get(k) for k in
+                         ("ticker", "price", "day_return_pct", "signal", "relative_strength")}
+                        for r in leaders],
+            "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
+
+
 @app.get("/api/cron/alerts")
 def cron_alerts(request: Request, secret: str = Query("")):
     """Cron (mis. Vercel Cron tiap 15 menit): cek semua portofolio tersinkron dan
@@ -5015,7 +5609,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -5150,7 +5744,7 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
@@ -5214,6 +5808,8 @@ class ScreenerRequest(BaseModel):
     include_bandarmology: bool = True
     require_confirm: bool = False
     require_regime: Optional[bool] = None
+    rs_bypass: bool = False
+    silent_min_net: float = 2e9   # kriteria "silent": ambang akumulasi bersih (Rp)
 
 
 @app.get("/api/screener/tickers")
@@ -5230,15 +5826,31 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    spread: Optional[bool] = Query(None, description=(
+        "Saat limit < jumlah emiten, ambil sampel yang TERSEBAR MERATA di seluruh "
+        "daftar (bukan `limit` emiten pertama secara alfabet). Default: aktif untuk "
+        "universe=all. Set false untuk paginasi offset berurutan.")),
+    silent_min_net: float = Query(2e9, ge=0, description=(
+        "Kriteria 'silent': ambang nilai akumulasi bersih (Rp) agar hasil berarti")),
     period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"),
     include_signal: bool = Query(True),
     include_bandarmology: bool = Query(True),
     require_confirm: bool = Query(False),
-    require_regime: Optional[bool] = Query(None, description="Hanya saham saat IHSG di atas MA200. Default: aktif otomatis untuk kriteria swing/buy/koreksi."),
+    require_regime: Optional[bool] = Query(None, description="Hanya saham saat IHSG di atas MA200. Default: aktif otomatis untuk kriteria swing/buy/koreksi (tidak untuk rs)."),
+    rs_bypass: bool = Query(False, description="Saat pasar bearish, loloskan saham RS LEADER (kuat lawan pasar) walau filter IHSG aktif."),
+    skip_small_ticket: bool = Query(True, description=(
+        "Buang saham yang ukuran tiketnya (nilai/transaksi) ada di kuintil 20% "
+        "terendah DI KELAS LIKUIDITASNYA setelah dibersihkan dari ukuran "
+        "(SANGAT LIKUID, LIKUID, CUKUP; kelas KURANG LIKUID tidak disentuh). "
+        "Bukti: 1.610 tanggal IDX resmi lintas rezim + uji kombinasi 5 tahun "
+        "(research/combo_study.py). Alpha 20 hari naik pada SETIAP sinyal di "
+        "SETIAP kelas dan membaik di KEDUA paruh holdout. SANGAT LIKUID: RS "
+        "Leader +1,04% -> +1,49%. LIKUID: +2,07% -> +2,76%. CUKUP: +2,90% -> "
+        "+3,44%. Set false untuk mematikan.")),
 ):
     """Scan saham dengan kriteria screener Coachinvestasi.
 
@@ -5247,22 +5859,74 @@ def screener(
     memproses sinyal saat IHSG di atas MA200 (tidak mengejar pasar bear). Bila
     tidak diisi (None), filter regime otomatis AKTIF untuk kriteria swing/buy/
     koreksi karena strategi itu sebaiknya tidak melawan pasar bear.
+    Kriteria "rs" mencari RS LEADER: saham yang NAIK saat IHSG turun (RS line
+    mencetak rekor baru). Kriteria ini tidak memakai filter regime karena memang
+    dirancang untuk pasar bearish; rs_bypass=True memakai logika yang sama untuk
+    kriteria swing/buy/koreksi.
+    Kriteria "breakout" mencari saham yang menembus HIGH tertinggi 20 hari
+    sebelumnya (alpha20 +1,94%, t=+3,95 pada uji 5 tahun saham likuid, stabil di
+    uji holdout dua paruh waktu). Filter regime juga tidak dipakai: breakout tetap
+    bekerja saat IHSG bearish — justru itulah periode uji holdout-nya.
+    skip_small_ticket=True (default) membuang saham yang tiket rata-ratanya
+    terendah (banyak transaksi ritel kecil) DI DALAM kelas likuiditasnya sendiri —
+    SANGAT LIKUID (>= Rp10 M/hari), LIKUID (Rp 1-10 M), CUKUP (Rp 100jt-1 M).
+    Kelas KURANG LIKUID tidak disentuh. Penyaring ini berlaku untuk SEMUA kriteria
+    lewat jalur pemindaian yang sama (RS, swing, bandar, breakout, koreksi, buy).
+    Bukti terukur (research/combo_study.py, 5 tahun, alpha 20 hari vs universe yang
+    sama). RS Leader: SANGAT LIKUID +1,04% -> +1,49%, LIKUID +2,07% -> +2,76%,
+    CUKUP +2,90% -> +3,44%. Skor beli app >=70: +0,67% -> +1,23%, +1,52% -> +2,63%,
+    +3,44% -> +3,83%. Pada SETIAP kelas dan SETIAP sinyal, filter memperbaiki KEDUA
+    paruh holdout. Kontrol "hanya tiket kecil" negatif di LIKUID (-0,79%) dan CUKUP
+    (-0,51%), jadi kelompok yang dibuang memang buruk, bukan sekadar dipindah.
+    Residual tiket tetap memprediksi setelah ukuran-dalam-kelas dikeluarkan
+    (IC +0,044 s/d +0,092, t=+9,5 s/d +19,0), jadi ini BUKAN proksi ukuran.
+    CATATAN KUAT: kelas CUKUP adalah yang paling lemah dasarnya (IC h20 blok
+    t=+1,7). Kalau ragu, matikan filter untuk kelas itu dengan
+    skip_small_ticket=false atau batasi sendiri ke kelas atas.
+    Jumlah yang dibuang dilaporkan di field ticket_filtered.
+    Kriteria "silent" mencari AKUMULATOR DIAM-DIAM: satu broker yang konsisten net
+    beli (>=70% hari, net/gross >= 0,5) selama 10 hari — informasi "siapa yang
+    mengakumulasi" yang hilang bila nilai seluruh broker dijumlahkan. Ini INFORMASI
+    bandarmology, BUKAN sinyal beli (uji 77 hari: tidak ada daya prediksi). Kuota
+    per pemindaian tinggi (1 permintaan per saham), jadi pakai limit kecil atau
+    spread=true.
     Gunakan offset/limit berulang-ulang untuk memindai SELURUH kode saham
     (total_tickers & next_offset disediakan untuk paginasi).
     """
     if require_regime is None:
         require_regime = criteria in ("swing", "buy", "koreksi")
+    if spread is None:
+        spread = universe == "all"
     all_tickers = load_idx_tickers(universe)
-    window = all_tickers[offset:offset + limit]
+
+    # Saat limit < jumlah emiten, ambil sampel yang TERSEBAR MERATA di seluruh daftar,
+    # bukan `limit` emiten pertama secara alfabet. Tanpa ini, "pindai seluruh pasar"
+    # dengan limit=100 sebenarnya hanya memeriksa A-B: hasil BANDAR universe=all
+    # isinya cuma AHAP, AIMS, AKSI, ... BMSR. spread=false mengembalikan perilaku
+    # lama (offset/limit berurutan) untuk pemindaian sistematis penuh.
+    if spread and 0 < limit < len(all_tickers):
+        n = len(all_tickers)
+        window = [all_tickers[(i * n) // limit] for i in range(limit)]
+    else:
+        window = all_tickers[offset:offset + limit]
     if not window:
         raise HTTPException(404, "Offset melebihi jumlah ticker.")
 
     scan = _scan(window, criteria, period, include_signal, include_bandarmology,
-                 require_confirm, require_regime)
+                 require_confirm, require_regime, rs_bypass, silent_min_net,
+                 skip_small_ticket)
     return {
         "criteria": criteria,
         "require_confirm": require_confirm,
         "require_regime": require_regime,
+        "rs_bypass": rs_bypass,
+        "spread": spread,
+        "silent_min_net": silent_min_net,
+        "skip_small_ticket": skip_small_ticket,
+        "ticket_filtered": scan.get("ticket_filtered", 0),
+        "ticket_filter_note": ("Penyaring ukuran tiket: membuang saham dengan tiket "
+                              "terendah (kuintil 20%) di dalam kelas likuiditasnya "
+                              "(SANGAT LIKUID / LIKUID / CUKUP). Bukan sinyal beli."),
         "universe": universe,
         "period": period,
         "requested": len(window),
@@ -5272,7 +5936,8 @@ def screener(
         "market_regime": scan.get("market_regime"),
         "regime_blocked": scan.get("regime_blocked"),
         "total_tickers": len(all_tickers),
-        "next_offset": offset + limit if offset + limit < len(all_tickers) else None,
+        "next_offset": (None if spread else
+                        (offset + limit if offset + limit < len(all_tickers) else None)),
         "results": scan["results"],
         "bandarmology_note": _screener_bandar_note(),
         "disclaimer": DISCLAIMER,
@@ -5340,11 +6005,13 @@ def screener_post(payload: ScreenerRequest):
         require_regime = payload.criteria in ("swing", "buy", "koreksi")
     scan = _scan(tickers, payload.criteria, payload.period,
                  payload.include_signal, payload.include_bandarmology,
-                 payload.require_confirm, require_regime)
+                 payload.require_confirm, require_regime, payload.rs_bypass,
+                 payload.silent_min_net)
     return {
         "criteria": payload.criteria,
         "require_confirm": payload.require_confirm,
         "require_regime": require_regime,
+        "rs_bypass": payload.rs_bypass,
         "period": payload.period,
         "requested": len(tickers),
         "scanned": scan["scanned"],
