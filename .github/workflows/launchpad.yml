@@ -7,6 +7,14 @@ name: Pindai The Launch Pad (pola buku Bab 6.2)
 # breakout + volume ≥1,5× MA20 — hanya benar di SATU titik waktu, jadi melewatkan
 # sehari berarti sinyalnya hilang, bukan tertunda.
 #
+# CAKUPAN: semula hanya LQ45 (45 nama), sehingga sebagian besar sinyal se-pasar
+# terlewat — pola ini ~1,2 kejadian/hari SE-PASAR, jadi memindai 45 dari ~900 emiten
+# berarti sebagian besar hari melaporkan nol tanpa alasan yang benar. Sekarang
+# universe=all&limit=300 -> sampel tersebar merata se-pasar (spread_pick), bukan 300
+# emiten pertama alfabetis. Bukti pola ini dihitung di kelas SANGAT LIKUID, jadi
+# endpoint memberi LABEL kelas tiap kandidat dan ringkasan per kelas; min_grade
+# dikosongkan supaya tidak ada kandidat yang hilang tanpa jejak.
+#
 # Dijalankan setelah bursa tutup (~17:40 WIB) supaya data hari itu sudah final.
 on:
   schedule:
@@ -24,7 +32,7 @@ jobs:
           echo "Memindai The Launch Pad pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           code=$(curl -sS --max-time 300 -o resp_launchpad.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/launchpad?universe=liquid&limit=45")
+            "https://sahambuku.vercel.app/api/cron/launchpad?universe=all&limit=300")
           echo "HTTP $code"
           cat resp_launchpad.json
           echo

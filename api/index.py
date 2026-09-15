@@ -1824,6 +1824,34 @@ def _unwrap_json(raw: Optional[str], default):
     return d
 
 
+# Riwayat pemindaian cron harian. Disimpan sebagai satu daftar JSON di Redis (GET/SET
+# biasa) supaya tidak butuh perintah list. Berguna justru karena mencatat hari yang
+# NOL kandidat: tanpa itu, "polanya jarang" hanya klaim, bukan data.
+SCAN_HISTORY_KEY = "ci:hist:launchpad"
+SCAN_HISTORY_MAX = 400
+
+
+def scan_history_load() -> List[dict]:
+    """Baca riwayat pemindaian (terlama -> terbaru). [] bila kosong/gagal."""
+    raw = _upstash_get(SCAN_HISTORY_KEY)
+    d = _unwrap_json(raw, [])
+    return [h for h in d if isinstance(h, dict)] if isinstance(d, list) else []
+
+
+def scan_history_append(record: dict) -> bool:
+    """Tambah satu baris riwayat (satu baris per tanggal; tanggal sama ditimpa)."""
+    if not SYNC_ENABLED:
+        return False
+    hist = [h for h in scan_history_load() if h.get("date") != record.get("date")]
+    hist.append(record)
+    # Urutkan menurut TANGGAL sebelum dipangkas. Tanpa ini, menjalankan ulang tanggal
+    # lama akan menaruhnya di ujung daftar sehingga pemangkasan membuang tanggal yang
+    # justru lebih baru.
+    hist.sort(key=lambda h: str(h.get("date") or ""))
+    hist = hist[-SCAN_HISTORY_MAX:]
+    return _upstash_set(SCAN_HISTORY_KEY, json.dumps(hist, ensure_ascii=False))
+
+
 def _normalize_holdings(portfolio: Optional[list]) -> Optional[list]:
     """Normalisasi posisi: qty SELALU disimpan dalam LEMBAR.
 
@@ -2010,6 +2038,21 @@ def load_idx_tickers(universe: str = "all") -> List[str]:
     tickers = [f"{c}.JK" for c in codes]
     TICKER_CACHE["all"] = {"ts": now, "tickers": tickers}
     return tickers
+
+
+def spread_pick(tickers: List[str], limit: int) -> List[str]:
+    """Ambil `limit` kode yang TERSEBAR MERATA di sepanjang daftar.
+
+    Tanpa ini, "pindai seluruh pasar" dengan limit kecil sebenarnya hanya memeriksa
+    emiten berawalan A-B. Dipakai screener DAN cron Launch Pad supaya keduanya
+    mewakili pasar, bukan satu sudut abjad. limit >= jumlah ticker -> semuanya.
+    """
+    n = len(tickers)
+    if limit <= 0 or n == 0:
+        return []
+    if limit >= n:
+        return list(tickers)
+    return [tickers[min(n - 1, (i * n) // limit)] for i in range(limit)]
 
 
 def _download_github_csv(ticker: str, max_rows: Optional[int] = 500) -> Optional[pd.DataFrame]:
@@ -4925,6 +4968,7 @@ def api_info():
             "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "GET  /api/pattern-sim  (simulasi portofolio tiga pola buku: launchpad/reversal/volsr)",
+            "GET  /api/scan-history  (riwayat pemindaian cron Launch Pad, termasuk hari kosong)",
             "POST /api/screener",
         ],
         "docs": "/docs",
@@ -4953,6 +4997,39 @@ def pattern_sim():
     out = dict(_PATTERN_SIM)
     out["available"] = True
     return out
+
+
+@app.get("/api/scan-history")
+def scan_history(limit: int = Query(120, ge=1, le=400)):
+    """Riwayat pemindaian cron harian (Launch Pad) — termasuk hari tanpa kandidat.
+
+    Hari nol sengaja ikut disimpan: kalau tidak, "pola ini jarang" hanya klaim.
+    Respons juga memuat ringkasan seberapa sering kosong, supaya harapan pemakai
+    tentang frekuensi sinyal tidak dibentuk oleh beberapa hari yang kebetulan ada isi.
+    """
+    hist = scan_history_load()
+    if not hist:
+        return {"available": False, "records": [], "count": 0,
+                "note": ("Belum ada riwayat. Riwayat terisi otomatis setiap kali "
+                         "/api/cron/launchpad dijalankan (butuh penyimpanan Upstash "
+                         "aktif).")}
+    recs = sorted(hist, key=lambda h: str(h.get("date") or ""))[-limit:]
+    days = len(recs)
+    with_hits = sum(1 for h in recs if int(h.get("hits") or 0) > 0)
+    total_hits = sum(int(h.get("hits") or 0) for h in recs)
+    by_grade: Dict[str, int] = {}
+    for h in recs:
+        for g, n in (h.get("hits_by_grade") or {}).items():
+            if int(n or 0) > 0:
+                by_grade[str(g)] = by_grade.get(str(g), 0) + int(n)
+    return {
+        "available": True, "count": len(hist), "records": recs,
+        "summary": {"days": days, "days_with_hits": with_hits,
+                    "days_empty": days - with_hits,
+                    "empty_pct": (days - with_hits) / days * 100 if days else None,
+                    "total_hits": total_hits,
+                    "hits_by_grade": by_grade},
+    }
 
 
 @app.get("/dashboard")
@@ -6082,10 +6159,17 @@ def cron_rs(request: Request, secret: str = Query(""),
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
 
+GRADE_RANK = {"SANGAT LIKUID": 0, "LIKUID": 1, "CUKUP": 2, "KURANG LIKUID": 3,
+             "tidak diketahui": 4}
+
+
 @app.get("/api/cron/launchpad")
 def cron_launchpad(request: Request, secret: str = Query(""),
                    universe: str = Query("liquid", pattern="^(all|liquid)$"),
-                   limit: int = Query(45, ge=5, le=100)):
+                   limit: int = Query(45, ge=5, le=900),
+                   min_grade: str = Query("", description=(
+                       "Kosongkan = laporkan semua kelas likuiditas. Isi 'SANGAT LIKUID' "
+                       "untuk hanya melaporkan kelas yang menjadi dasar bukti pola ini."))):
     """Cron: pindai pola THE LAUNCH PAD (buku Bab 6.2) dan kirim kandidatnya ke Telegram.
 
     Alasan pola ini dipindai otomatis, bukan sekadar jadi komponen skor: buktinya
@@ -6095,7 +6179,13 @@ def cron_launchpad(request: Request, secret: str = Query(""),
     melewatkan sehari berarti sinyalnya hilang — bukan tertunda.
 
     Dedupe sekali per hari supaya tidak mengirim berulang bila dijalankan berkali-kali.
-    Cakupan buktinya kelas SANGAT LIKUID (nilai >= Rp10 M/hari).
+    Cakupan buktinya kelas SANGAT LIKUID (nilai >= Rp10 M/hari). Konsekuensinya penting:
+    memindai lebih luas TANPA menyebut kelas likuiditas akan memunculkan kandidat yang
+    tidak punya dasar bukti. Karena itu `universe=all` memakai `spread_pick()` (tersebar
+    merata, bukan 100 emiten pertama alfabetis), dan tiap kandidat diberi label kelasnya
+    berikut ringkasan per kelas di respons — deteksi tetap luas, tetapi kelemahan
+    buktinya terlihat, bukan disembunyikan. `min_grade='SANGAT LIKUID'` membatasi ke
+    kelas bukti saja (kandidat berkelas tak diketahui tetap dilaporkan, dan dihitung).
     Penyaring tiket DIPAKAI (default aplikasi). Semula tidak, karena bukti awal
     polanya dihitung tanpa filter itu — tetapi uji kombinasi (research/combo_study.py
     Bagian M, 5 tahun) menunjukkan kandidat Launch Pad yang tiketnya dibuang justru
@@ -6109,23 +6199,75 @@ def cron_launchpad(request: Request, secret: str = Query(""),
     if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
         raise HTTPException(403, "Forbidden")
 
-    tickers = load_idx_tickers(universe)[:limit]
+    all_tickers = load_idx_tickers(universe)
+    # universe=all -> sampel tersebar merata se-pasar; liquid -> LQ45 (45 nama, utuh).
+    tickers = (spread_pick(all_tickers, limit) if universe == "all"
+               else all_tickers[:limit])
     scan = _scan(tickers, "launchpad", "6mo", True, False, False, False, False,
                  skip_small_ticket=False)
     hits = scan["results"]
 
+    # Labeli kelas likuiditas tiap kandidat, lalu urutkan dari yang paling likuid.
+    for r in hits:
+        r["liquidity_grade"] = str(r.get("liquidity_grade") or "tidak diketahui")
+    hits.sort(key=lambda r: GRADE_RANK.get(str(r["liquidity_grade"]), 9))
+    by_grade: Dict[str, int] = {}
+    for r in hits:
+        by_grade[str(r["liquidity_grade"])] = by_grade.get(str(r["liquidity_grade"]), 0) + 1
+    dropped_min_grade = 0
+    if min_grade:
+        # Kelas tak diketahui IKUT diloloskan (data nilai transaksi tidak tersedia) dan
+        # dihitung terpisah supaya tidak ada sinyal yang hilang tanpa jejak.
+        keep = [r for r in hits if str(r["liquidity_grade"]).lower() == min_grade.lower()
+                or str(r["liquidity_grade"]).lower().startswith("tidak")]
+        dropped_min_grade = len(hits) - len(keep)
+        hits = keep
+
+    # Rezim IHSG ikut dilaporkan: uji Bagian N (research/combo_study.py --part regime)
+    # menemukan Launch Pad saat IHSG di atas MA200 jauh lebih ringan risikonya
+    # (MDD -14,9% vs -43,6% tanpa batasan rezim), sedangkan saat bear justru merugi
+    # (-17,1%). Sinyalnya tetap dilaporkan semua supaya tidak ada yang hilang tanpa
+    # jejak — tetapi konteksnya harus ikut, bukan disimpulkan sendiri oleh pemakai.
+    rg = _ihsg_regime()
+
     today = time.strftime("%Y-%m-%d")
+    # Catat SELALU (termasuk saat nol kandidat) — riwayat yang hanya berisi hari-hari
+    # ada sinyal akan menyesatkan tentang seberapa jarang pola ini muncul.
+    history_saved = scan_history_append({
+        "date": today, "universe": universe, "requested": len(tickers),
+        "scanned": scan["scanned"], "skipped": scan["skipped"],
+        "hits": len(hits), "hits_by_grade": by_grade,
+        "tickers": [strip_suffix(str(r.get("ticker") or "")) for r in hits][:20],
+        "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+    })
     sent = 0
     if hits and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         dedupe = f"ci:notif:launchpad:{today}"
         if not _upstash_get(dedupe):
+            lowest = max((GRADE_RANK.get(str(r["liquidity_grade"]), 9) for r in hits),
+                         default=0)
+            # Kelas likuiditas ikut disebut karena bukti pola ini hanya dihitung di
+            # SANGAT LIKUID: kandidat kelas bawah bukan "sinyal lemah", melainkan
+            # "tidak ada dasar buktinya". Pemakai berhak tahu itu sebelum entry.
+            caveat = ("" if lowest == 0 else
+                      f"\n⚠️ Bukti pola ini dihitung di kelas SANGAT LIKUID, sedangkan "
+                      f"kandidat di bawah berasal dari kelas yang belum diuji.")
+            trend = str((rg or {}).get("trend") or "?").upper()
+            regime_note = ("" if trend != "BEAR" else
+                           "\n📉 IHSG di BAWAH MA200 (bear). Uji rezim: sinyal Launch Pad "
+                           "saat bear historis MERUGI (-17,1%), sedangkan saat bull MDD-nya "
+                           "jauh lebih ringan (-14,9% vs -43,6%).")
             head = (f"🔥 THE LAUNCH PAD — pola buku Bab 6.2 ({today})\n"
+                    f"Rezim IHSG: {trend} ({(rg or {}).get('close')} vs MA200 "
+                    f"{(rg or {}).get('ma200')}). "
+                    f"Pindai {scan['scanned']} saham ({universe}). "
                     f"Uji 5 tahun: alpha20 +6,05% (blok t=+2,52), absolut +5,06% "
-                    f"(rata-rata saham likuid -0,37%).\n")
+                    f"(rata-rata saham likuid -0,37%).{caveat}{regime_note}\n")
             lines: List[str] = []
             for i, r in enumerate(hits, 1):
                 li = r.get("launchpad_info") or {}
                 parts = [f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
+                         f"[{r['liquidity_grade']}] "
                          f"{num(r.get('price'), 2)} ({signed_num(r.get('day_return_pct'), 2, '%')})",
                          f"naik {num(li.get('prior_gain_pct'), 1)}% sebelum base",
                          f"kontraksi {num(li.get('contraction_ratio'), 2)}",
@@ -6144,7 +6286,18 @@ def cron_launchpad(request: Request, secret: str = Query(""),
     return {"scanned": scan["scanned"], "skipped": scan["skipped"],
             "launch_pad_hits": len(hits), "telegram_sent": sent,
             "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
-            "results": [{k: r.get(k) for k in ("ticker", "price", "day_return_pct", "launchpad_info")}
+            "universe": universe, "requested": len(tickers),
+            "history_saved": history_saved,
+            "min_grade": min_grade or None,
+            "dropped_min_grade": dropped_min_grade,
+            "hits_by_grade": by_grade,
+            "market_regime": rg,
+            "evidence_note": ("Bukti pola ini dihitung di kelas SANGAT LIKUID; kandidat "
+                              "kelas lain dilaporkan tetapi belum diuji. Uji rezim "
+                              "(Bagian N): saat IHSG bull MDD -14,9% vs -43,6% tanpa "
+                              "batasan; saat bear historis merugi -17,1%."),
+            "results": [{k: r.get(k) for k in ("ticker", "price", "day_return_pct",
+                                               "liquidity_grade", "launchpad_info")}
                         for r in hits],
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
@@ -6558,8 +6711,7 @@ def screener(
     # isinya cuma AHAP, AIMS, AKSI, ... BMSR. spread=false mengembalikan perilaku
     # lama (offset/limit berurutan) untuk pemindaian sistematis penuh.
     if spread and 0 < limit < len(all_tickers):
-        n = len(all_tickers)
-        window = [all_tickers[(i * n) // limit] for i in range(limit)]
+        window = spread_pick(all_tickers, limit)
     else:
         window = all_tickers[offset:offset + limit]
     if not window:

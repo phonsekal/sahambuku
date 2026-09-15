@@ -493,7 +493,8 @@ def print_breakdown(R: pd.DataFrame) -> None:
 
 def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
                     top_n: int = 10, hold: int = 5, cost: float = 0.003,
-                    rank_col: Optional[str] = "score", min_names: int = 5) -> dict:
+                    rank_col: Optional[str] = "score", min_names: int = 5,
+                    quiet: bool = False) -> dict:
     """Portofolio non-overlapping: tiap `hold` hari bursa pilih N nama teratas (bila
     rank_col=None -> SELURUH nama yang lolos mask, bobot sama), biaya 0,3% x turnover.
     Pembanding: IHSG buy&hold dan universe sama-rata.
@@ -509,7 +510,8 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
     cols = ["date", "tk", f"abs{hold}", f"ih{hold}"] + ([rank_col] if rank_col else [])
     sel = R.loc[mask.fillna(False), cols].dropna()
     if sel.empty:
-        print(f"\n{label}: tidak ada sinyal.")
+        if not quiet:
+            print(f"\n{label}: tidak ada sinyal.")
         return {}
     allw = R[["date", f"abs{hold}", f"ih{hold}"]].dropna()
     uni_w = {pd.Timestamp(k): float(v) for k, v in
@@ -567,17 +569,18 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
         return cagr * 100, vol * 100, sharpe, mdd * 100
 
     mode = f"top-{top_n} by {rank_col}" if rank_col else "seluruh sinyal (bobot sama)"
-    print(f"\nEKUITAS: {label} — {mode}, hold {hold} hari, biaya 0,3% x turnover")
-    print(f"   {'strategi':<22}{'total':>10}{'CAGR%':>9}{'vol%':>8}{'Sharpe':>8}{'MDD%':>8}")
-    for name, path in (("Sinyal", eqs), ("IHSG (benchmark)", bhs), ("Universe sama-rata", uqs)):
-        cagr, vol, sharpe, mdd = stats(path)
-        tot = (path[-1] - 1) * 100 if path else float("nan")
-        print(f"   {name:<22}{tot:>+9.1f}%{cagr:>9.1f}{vol:>8.1f}{sharpe:>8.2f}{mdd:>8.1f}")
-    if turns:
-        print(f"   turnover rata-rata per rebalance: {np.mean(turns) * 100:.0f}%  "
-              f"(biaya per rebalance ~{np.mean(turns) * cost * 100:.2f}%)")
-    print(f"   window: {invested}/{windows} terisi ({invested / max(windows, 1) * 100:.0f}%), "
-          f"~{ppy:.0f} rebalance/tahun, durasi {years:.1f} tahun")
+    if not quiet:
+        print(f"\nEKUITAS: {label} — {mode}, hold {hold} hari, biaya 0,3% x turnover")
+        print(f"   {'strategi':<22}{'total':>10}{'CAGR%':>9}{'vol%':>8}{'Sharpe':>8}{'MDD%':>8}")
+        for name, path in (("Sinyal", eqs), ("IHSG (benchmark)", bhs), ("Universe sama-rata", uqs)):
+            cagr, vol, sharpe, mdd = stats(path)
+            tot = (path[-1] - 1) * 100 if path else float("nan")
+            print(f"   {name:<22}{tot:>+9.1f}%{cagr:>9.1f}{vol:>8.1f}{sharpe:>8.2f}{mdd:>8.1f}")
+        if turns:
+            print(f"   turnover rata-rata per rebalance: {np.mean(turns) * 100:.0f}%  "
+                  f"(biaya per rebalance ~{np.mean(turns) * cost * 100:.2f}%)")
+        print(f"   window: {invested}/{windows} terisi ({invested / max(windows, 1) * 100:.0f}%), "
+              f"~{ppy:.0f} rebalance/tahun, durasi {years:.1f} tahun")
     sc, bc, uc = stats(eqs), stats(bhs), stats(uqs)
     return {
         "label": label,

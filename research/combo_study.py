@@ -406,6 +406,33 @@ BAGIAN M — KOMBINASI DUA POLA + FILTER TIKET: tidak ada sinergi, dan simulasi
      Konsekuensi pemakaian: ketiga kriteria pola ini dipakai sebagai PENYARING KANDIDAT
      (lalu dikonfirmasi manual/Broker Summary), bukan sebagai mesin beli otomatis.
 
+BAGIAN N — POLA SEBAGAI SISTEM, DIBATASI REZIM IHSG (MA200): dugaan lama "portofolio
+  merugi mungkin karena seluruh jendela uji pasar turun" ternyata TIDAK berlaku di
+  data harga, dan jawabannya berbeda per pola. Jendela uji justru berimbang:
+  549 tanggal bull vs 532 bear (dari 1.081).
+
+    pola           varian          n     total   Sharpe    MDD   window
+    Launch Pad     semua rezim   182   +80,2%    0,54   -43,6%   30/204
+    Launch Pad     bull saja     115  +116,5%    0,92   -14,9%   15/204
+    Launch Pad     bear saja      67   -17,1%    0,08   -43,6%   15/204
+    Role reversal  bull saja    4407   -36,4%   -0,42   -42,3%  109/204
+    S&R volume     bull saja    8952    +0,5%    0,10   -45,8%  110/204
+    S&R volume     bear saja    4564   -22,0%   -0,14   -42,9%   94/204
+
+  Yang paling berarti: untuk LAUNCH PAD, membatasi ke rezim bull memotong MDD dari
+  -43,6% menjadi -14,9% dan menaikkan Sharpe 0,54 -> 0,92, sementara varian bear
+  memang merugi (-17,1%). Jadi dugaan "pasar turun yang membuatnya jelek" BENAR untuk
+  Launch Pad. TETAPI sampelnya cuma 15 dari 204 window -- ~15 keputusan independen
+  dalam 4 tahun. Arahnya masuk akal secara teori (breakout momentum butuh pasar naik)
+  dan konsisten, namun jangan dikutip sebagai angka presisi.
+  Untuk dua pola lain jawabannya TIDAK: role reversal tetap -36,4% di rezim bull, dan
+  S&R volume hanya +0,5% (praktis nol) walau kerugian bear-nya (-22,0%) memang
+  menjelaskan sebagian besar totalnya. Keduanya tidak menjadi layak hanya karena
+  disaring rezim.
+  Konsekuensi di produksi: cron Launch Pad MELAPORKAN semuanya (tidak menyaring diam-
+  diam) tetapi menyebut rezim IHSG + angka bull/bear di notifikasi, supaya pemakai tahu
+  konteksnya dan bisa memutuskan sendiri.
+
 Aturan bukti yang dipakai script ini
 ------------------------------------
 - alpha = excess return vs IHSG, di-cluster per tanggal (t-stat dari sebaran
@@ -1782,15 +1809,13 @@ def part_volume_sr(years: int, workers: int) -> None:
 # portofolio (bukan cuma alpha) karena pola yang jarang punya masalah praktis lain:
 # modal sering menganggur dan turnover mahal.
 
-def part_combo_patterns(years: int, workers: int, export: str = "") -> None:
-    """Bagian M + ekspor opsional ke `api/pattern_sim.json`.
+def build_pattern_frame(years: int, workers: int):
+    """Bangun frame SANGAT LIKUID + penanda tiga pola produksi + rezim IHSG.
 
-    `export` diisi path -> hasil simulasi portofolio tiga pola (launchpad, reversal,
-    volsr) ditulis sebagai JSON dan dibaca aplikasi, supaya dashboard bisa
-    menampilkan angka yang BENAR-BENAR dihitung, bukan yang diketik ulang.
+    Dikembalikan (ih, Rl, regime_bull) supaya Bagian M dan Bagian N memakai definisi
+    sinyal YANG SAMA PERSIS (kalau diduplikasi, keduanya bisa berbeda diam-diam).
+    `regime_bull` = Series boolean per tanggal: IHSG > MA200-nya, tanpa look-ahead.
     """
-    print("== BAGIAN M: kombinasi Launch Pad x role reversal x filter tiket ==")
-
     M.BUDGET = 0
     T = build_ticket(M.fetch_range(years, workers, False))
     ih, data = B.load_data(years, "all", workers)
@@ -1816,6 +1841,27 @@ def part_combo_patterns(years: int, workers: int, export: str = "") -> None:
     R["small"] = R["small"].fillna(False)
     sgt = (R["val20"] >= 10e9).fillna(False)
     Rl = R[sgt].copy()
+
+    # Rezim IHSG point-in-time: MA200 memakai data sampai tanggal itu saja.
+    ihx = ih.copy()
+    ihx.index = pd.to_datetime(ihx.index).normalize()
+    ia = ihx["Adj"].astype(float) if "Adj" in ihx else ihx["Close"].astype(float)
+    ma200 = ia.rolling(200, min_periods=200).mean()
+    bull_series = (ia > ma200).fillna(False)
+    regime_bull = Rl["date"].map(bull_series).fillna(False).astype(bool)
+    return ih, Rl, regime_bull
+
+
+def part_combo_patterns(years: int, workers: int, export: str = "") -> None:
+    """Bagian M + ekspor opsional ke `api/pattern_sim.json`.
+
+    `export` diisi path -> hasil simulasi portofolio tiga pola (launchpad, reversal,
+    volsr) ditulis sebagai JSON dan dibaca aplikasi, supaya dashboard bisa
+    menampilkan angka yang BENAR-BENAR dihitung, bukan yang diketik ulang.
+    """
+    print("== BAGIAN M: kombinasi Launch Pad x role reversal x filter tiket ==")
+
+    ih, Rl, _ = build_pattern_frame(years, workers)
     unil = pd.Series(True, index=Rl.index)
     lp, rr = Rl["lp_prod"], Rl["role_reversal"]
     vsr = Rl["vsr_support"]
@@ -1905,12 +1951,76 @@ def _export_pattern_sim(sims: List[dict], Rl: pd.DataFrame, path: str) -> None:
     print(f"\n  Ekspor -> {path}  ({len(sims)} pola, hold 5)")
 
 
+def part_regime(years: int, workers: int, export: str = "") -> None:
+    """Bagian N: apakah pola buku layak jadi SISTEM bila hanya diambil saat IHSG bull?
+
+    Pertanyaan aslinya: "kalau pola ini bagus tapi portofolionya merugi, mungkin karena
+    seluruh jendela uji adalah pasar turun -- coba batasi ke rezim IHSG di atas MA200.
+    Itu dugaan yang masuk akal, jadi diuji alih-alih dipercaya.
+
+    Catatan metodologis yang penting: pembanding (IHSG & universe) TETAP berjalan tiap
+    window, sedangkan strategi hanya berisi window saat rezimnya cocok. Jadi yang
+    dibandingkan adalah "strategi + banyak duduk di kas" vs "buy & hold penuh" -- itu
+    memang pilihan yang tersedia bagi pemakai. %window terisi menunjukkan berapa sering
+    modalnya benar-benar bekerja.
+    """
+    print("== BAGIAN N: pola buku sebagai SISTEM, dibatasi rezim IHSG (MA200) ==")
+    ih, Rl, bull = build_pattern_frame(years, workers)
+    n_dates = int(Rl["date"].nunique())
+    bull_dates = int(Rl.loc[bull, "date"].nunique())
+    print(f"  {len(Rl):,} saham-hari | {n_dates} tanggal | rezim BULL "
+          f"{bull_dates} tanggal ({bull_dates / max(n_dates, 1) * 100:.0f}%) · "
+          f"BEAR {n_dates - bull_dates}")
+
+    patterns = (("Launch Pad", Rl["lp_prod"]),
+                ("Role reversal", Rl["role_reversal"]),
+                ("S&R volume", Rl["vsr_support"]))
+    res: List[dict] = []
+    print("\n  Portofolio hold 5 hari, bobot sama, biaya 0,3% x turnover:")
+    print(f"  {'pola':<15}{'varian':<13}{'n':>6}{'total':>10}{'CAGR%':>9}"
+          f"{'Sharpe':>8}{'MDD%':>8}{'terisi':>8}")
+    for lab, mask in patterns:
+        for sub, m in (("semua rezim", mask), ("bull saja", mask & bull),
+                       ("bear saja", mask & ~bull)):
+            s = B.simulate_equity(Rl, m, f"{lab} · {sub}", top_n=10, hold=5,
+                                  cost=0.003, rank_col=None, min_names=1, quiet=True)
+            s["pattern"] = lab
+            s["regime"] = sub
+            res.append(s)
+            if not s:
+                print(f"  {lab:<15}{sub:<13}{'-':>6}  (tidak ada sinyal)")
+                continue
+            print(f"  {lab:<15}{sub:<13}{s['n_events']:>6}{s['total_pct']:>+9.1f}%"
+                  f"{s['cagr_pct']:>9.1f}{s['sharpe']:>8.2f}{s['mdd_pct']:>8.1f}"
+                  f"{s['fill_pct']:>7.0f}%")
+        print()
+
+    if export:
+        try:
+            with open(export, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except Exception:
+            doc = {"meta": {}, "patterns": []}
+        doc["regime"] = {
+            "note": ("Varian 'bull saja' = sinyal HANYA saat IHSG di atas MA200-nya; "
+                     "varian 'bear saja' sebaliknya. Pembanding (IHSG & universe) tetap "
+                     "berjalan penuh, jadi yang dibandingkan adalah 'strategi + duduk di "
+                     "kas' vs 'buy & hold'."),
+            "dates": {"total": n_dates, "bull": bull_dates,
+                      "bear": n_dates - bull_dates},
+            "results": res,
+        }
+        with open(export, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+        print(f"  Rezim ditambahkan ke {export}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
                     choices=["ticket", "silent", "swing", "bands", "calib", "audit",
                              "special", "reversal", "lpweight", "brokercombo",
-                             "volsr", "combopattern"])
+                             "volsr", "combopattern", "regime"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -1945,6 +2055,8 @@ def main() -> None:
         part_volume_sr(args.years, args.workers)
     elif args.part == "combopattern":
         part_combo_patterns(args.years, args.workers, export=args.export)
+    elif args.part == "regime":
+        part_regime(args.years, args.workers, export=args.export)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)
