@@ -1,0 +1,56 @@
+name: Kalibrasi Ambang Penyaring Tiket — BULANAN
+
+# Penyaring ukuran tiket di api/index.py membuang saham yang ukuran tiketnya
+# (nilai / jumlah transaksi) ada di kuintil 20% terendah DI DALAM kelas
+# likuiditasnya. Ambangnya angka TETAP, sedangkan distribusi residual bergeser
+# seiring waktu.
+#
+# Uji out-of-sample (research/combo_study.py Bagian E) menunjukkan ambang tetap
+# KALAH dari potong-20%-lintas-saham di ketiga kelas likuiditas. Produksi tidak
+# bisa menghitung kuintil lintas-saham (menganalisis satu saham per permintaan),
+# jadi ambangnya dikalibrasi ulang secara berkala di sini.
+#
+# Hasilnya ditulis ke api/ticket_thresholds.json dan otomatis dipakai aplikasi
+# saat dimuat. Kalau job ini tidak pernah jalan, aplikasi tetap memakai angka
+# bawaan -- tidak ada yang rusak, hanya tidak ikut menyesuaikan.
+
+on:
+  schedule:
+    # Tanggal 1 tiap bulan, 02:00 UTC (09:00 WIB) — setelah data bulan sebelumnya lengkap.
+    - cron: "0 2 1 * *"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  kalibrasi:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pasang dependensi
+        run: pip install -r requirements.txt
+
+      - name: Hitung ambang dari data IDX resmi terbaru
+        # Pacing sopan: workers 2 + delay 0.30 terbukti ~300 permintaan tanpa 429.
+        # Skrip hanya menulis berkas bila sampel tiap kelas cukup besar.
+        run: python scripts/calibrate_ticket_thresholds.py --days 250 --workers 2 --delay 0.30 --budget 400
+
+      - name: Commit bila ambang berubah
+        run: |
+          set -euo pipefail
+          if git diff --quiet -- api/ticket_thresholds.json; then
+            echo "Ambang tidak berubah — tidak ada yang perlu di-commit."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add api/ticket_thresholds.json
+          git commit -m "Kalibrasi bulanan ambang penyaring tiket dari data IDX terbaru"
+          git push

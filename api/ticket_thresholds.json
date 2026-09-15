@@ -1,0 +1,28 @@
+{
+  "floors": {
+    "SANGAT LIKUID": -0.5072896426106019,
+    "LIKUID": -0.5590664076850504,
+    "CUKUP": -0.29375298929457294
+  },
+  "meta": {
+    "quantile": 0.2,
+    "samples": {
+      "SANGAT LIKUID": 38012,
+      "LIKUID": 60383,
+      "CUKUP": 62530
+    },
+    "reg_intercept": 6.6712,
+    "reg_slope": 0.3681,
+    "data_from": "2025-08-28",
+    "data_to": "2026-09-14",
+    "n_stock_days": 211876,
+    "generated_at": "2026-09-15T09:29:46",
+    "days_requested": 250,
+    "calibrated": [
+      "CUKUP",
+      "LIKUID",
+      "SANGAT LIKUID"
+    ],
+    "note": "Ambang = kuantil resid tiket per kelas likuiditas dari data IDX resmi terbaru. Kelas yang tidak tercantum di `calibrated` masih memakai angka bawaan api/index.py."
+  }
+}

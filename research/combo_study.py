@@ -28,6 +28,9 @@ Cara menjalankan
   # Bagian E: kalibrasi per kelas vs global, out-of-sample (0 kuota IDX)
   .venv/bin/python research/combo_study.py --part calib
 
+  # Bagian G: audit SCALPING & BSJP (0 kuota IDX)
+  .venv/bin/python research/combo_study.py --part audit
+
 HASIL (dijalankan 14 Sep 2026)
 -----------------------------
 BAGIAN A — filter tiket: POSITIF dan tahan uji. Universe SANGAT LIKUID, alpha
@@ -149,8 +152,19 @@ BAGIAN E — KALIBRASI PER KELAS: TIDAK LEBIH BAIK. JANGAN DIULANG.
   2. Ambang TETAP produksi kalah dari potong-20%-lintas-saham di ketiga kelas
      (mis. LIKUID +3,04% vs +3,37%). Artinya ambangnya melenceng seiring waktu,
      karena distribusi residual bergeser. Produksi tidak bisa menghitung kuintil
-     lintas-saham saat menganalisis satu saham, jadi ini hanya bisa diperbaiki
-     dengan penkalibrasian ulang berkala — BELUM dikerjakan.
+     lintas-saham saat menganalisis satu saham, jadi perbaikannya adalah
+     penkalibrasian ulang berkala.
+     SUDAH DIKERJAKAN: scripts/calibrate_ticket_thresholds.py menghitung kuintil-20
+     per kelas dari 250 hari bursa terakhir (sumber IDX resmi, tanpa kuota pihak
+     ketiga) dan menulis api/ticket_thresholds.json, yang otomatis menggantikan
+     angka bawaan saat aplikasi dimuat (fallback ke bawaan bila berkas hilang/rusak).
+     .github/workflows/ticket-thresholds.yml menjalankannya tiap tanggal 1.
+     Contoh hasil pertama (15 Sep 2026): SANGAT -0,5176 -> -0,5073;
+     LIKUID -0,5056 -> -0,5591; CUKUP -0,2853 -> -0,2938.
+     CATATAN: jendela 250 hari jauh lebih stabil daripada 90 hari (yang memberi
+     -0,585/-0,622/-0,359) — jangan kalibrasi dari jendela terlalu pendek.
+     Angka di atas BELUM di-backtest ulang; yang terbukti adalah bahwa potong-20%
+     mengalahkan ambang tetap, bukan bahwa ambang hasil kalibrasi ini optimal.
 
 BAGIAN B — akumulator diam-diam: TIDAK BISA DIUJI, bukan "gagal".
   Data broker hanya tersedia 80-90 hari terakhir dan yang SEGAR mulai
@@ -161,6 +175,48 @@ BAGIAN B — akumulator diam-diam: TIDAK BISA DIUJI, bukan "gagal".
   Kesimpulan: kombinasi tiket x akumulator-diam-diam tidak bisa diuji dari sini;
   yang bisa dikatakan hanya bahwa akumulator diam-diam SENDIRI sudah tidak punya
   daya prediksi (research/bandar_study.py, 77 hari).
+
+BAGIAN G — AUDIT SCALPING & BSJP (kriteria yang belum pernah diukur).
+  Keduanya murni kondisi harga+volume, jadi bisa direplikasi 5 tahun (berbeda dari
+  BANDAR yang butuh data broker). 833.343 saham-hari, 897 emiten, 1.081 tanggal.
+
+  JEBAKAN YANG HAMPIR MENYESATKAN SAYA: alpha diukur terhadap SELURUH pasar, dan
+  rata-rata pasar itu dinaikkan oleh mikro-cap yang premnya besar di IDX. Jadi
+  "alpha negatif" TIDAK berarti kandidatnya turun. Return absolut (yang menentukan
+  bagi trader) menunjukkan hal yang berlawanan arah:
+                     abs1      abs5      abs20
+    seluruh pasar   +0,07%    +0,42%    +1,69%
+    SCALPING pasar  +0,13%    +1,06%    +1,86%
+    SCALPING+likuid+tiket +0,51% +1,84%  +1,96%
+    BSJP pasar      -0,19%    +0,39%    +1,59%
+    BSJP+likuid+tiket +0,53%  +1,53%    +2,77%
+  Kesimpulan: kedua kriteria TIDAK membuang uang. Yang benar-benar bermasalah hanya
+  satu hal spesifik di bawah ini.
+
+  1) PREMIS BSJP GAGAL DI SELURUH PASAR. BSJP = "beli sore, jual pagi", jadi ukuran
+     yang relevan adalah return HARI BERIKUTNYA. Di seluruh pasar: abs1 -0,19%
+     (baseline +0,07%), excess -0,49% t=-3,51 -> NYATA dan negatif. Artinya membeli
+     saat close lalu menjual pagi harinya RATA-RATA RUGI. Baru setelah dibatasi ke
+     SANGAT LIKUID + buang tiket kecil, abs1 berbalik positif (+0,53%).
+
+  2) DI DALAM universe SANGAT LIKUID keduanya memang positif (pembanding dibatasi
+     ke kelas yang sama, jadi bukan premi ukuran):
+       h5 : SCALPING penuh +0,82% (blok +2,09) -> +buang tiket +1,55% (blok +5,31)
+            BSJP penuh     +0,72% (blok +2,13) -> +buang tiket +1,48% (blok +3,68)
+       h20: SCALPING+buang tiket +3,05% (blok +2,90); BSJP+buang tiket +3,87% (+4,94)
+     Holdout h5 kedua kriteria: KEDUA paruh positif. Jadi penyaring tiket kurang
+     lebih MENGGANDAKAN hasilnya (+0,82 -> +1,55 dan +0,72 -> +1,48).
+
+  3) SYARAT TAMBAHANNYA NYARIS TIDAK BERGUNA. Di SANGAT LIKUID: hanya syarat
+     momentum (return harian >= 10%) sudah memberi h5 +0,73% (blok +2,11);
+     SCALPING penuh (yang menambah nilai >= Rp1 M & harga > 50) hanya +0,82%.
+     Jadi ambang nilai/harga itu tidak menambah apa pun yang berarti.
+
+  KEPUTUSAN: TIDAK ada kode produksi yang diubah untuk kriteria ini. Yang ditemukan
+  bukan bug, melainkan (a) premis BSJP lemah di seluruh pasar -- itu sifat strategi,
+  bukan kesalahan implementasi, dan (b) ambang nilai/harga yang mubazir. Keduanya
+  perlu keputusan produk (batasi ke likuid akan membuat daftarnya nyaris selalu
+  kosong), bukan perubahan senyap. Datanya ada di sini kalau mau diputuskan.
 
 Aturan bukti yang dipakai script ini
 ------------------------------------
@@ -710,6 +766,144 @@ def part_calib(years: int, workers: int, top: int) -> None:
                   f"t={r['t']:>+5.2f} blok {bt:>+6.2f}")
 
 
+# ---------------------------------------------------------------------------
+# 3d. BAGIAN G — AUDIT KRITERIA SCREENER YANG BELUM PERNAH DIUJI
+# ---------------------------------------------------------------------------
+# SCALPING dan BSJP adalah dua kriteria buku yang sudah lama ada di aplikasi tetapi
+# BELUM PERNAH diukur daya prediksinya. Keduanya murni kondisi harga+volume, jadi
+# bisa direplikasi di backtest 5 tahun (beda dengan BANDAR yang butuh data broker).
+
+def scalp_bsjp_flags(tk: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Replika persis kondisi harga/volume SCALPING dan BSJP (api/index.py).
+
+    SCALPING : nilai >= Rp1 M  & return harian >= 10% & harga > 50
+    BSJP     : nilai >= Rp5 M  & return harian >= 8%  & volume >= 2x VolumeMA20
+    `nilai` = close nominal x volume -- sama dengan jalur cadangan aplikasi ketika
+    kolom Value dari API tidak ada (di backtest memang tidak ada).
+    """
+    c = df["Close"].astype(float)
+    v = df["Volume"].astype(float).fillna(0.0)
+    val = c * v
+    ret = c.pct_change() * 100.0
+    vr = v / v.rolling(20).mean().replace(0, np.nan)
+    out = pd.DataFrame({
+        "scalping": ((val >= 1e9) & (ret >= 10.0) & (c > 50)).fillna(False),
+        "bsjp": ((val >= 5e9) & (ret >= 8.0) & (vr >= 2.0)).fillna(False),
+    })
+    out["tk"] = tk
+    return out.reset_index().rename(columns={"index": "date"})
+
+
+def part_audit(years: int, workers: int, top: int) -> None:
+    print("== BAGIAN G: audit SCALPING & BSJP (kriteria yang belum pernah diukur) ==")
+
+    M.BUDGET = 0
+    T = build_ticket(M.fetch_range(years, workers, False))
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = scalp_bsjp_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        frames.append(r.merge(f, on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    R = attach_ticket(R, T)
+    have = R["v20"].notna()
+    R["small"] = R["small"].fillna(False)
+    for col in ("scalping", "bsjp"):
+        R[col] = R[col].fillna(False)
+    print(f"  observasi: {len(R):,} saham-hari, {R['code'].nunique()} emiten, "
+          f"{R['date'].nunique()} tanggal ({R['date'].min().date()} s/d {R['date'].max().date()})")
+
+    sgt = have & (R["v20"] >= SGT_LIKUID)
+    print("\n  jumlah kandidat (dari total saham-hari):")
+    for col in ("scalping", "bsjp"):
+        n = int(R[col].sum())
+        print(f"    {col:<9} {n:>7,} ({n/len(R)*100:.2f}%)  · di SANGAT LIKUID: "
+              f"{int((R[col] & sgt).sum()):,}")
+
+    # Pembanding = SELURUH pasar (kriteria ini tidak mensyaratkan likuiditas), jadi
+    # universe_mask = semua True. Harus Series boolean, bukan DataFrame.
+    uni = pd.Series(True, index=R.index)
+    for col in ("scalping", "bsjp"):
+        specs = [
+            (f"{col.upper()} (semua pasar)", R[col]),
+            (f"{col.upper()} + SANGAT LIKUID", R[col] & sgt),
+            (f"{col.upper()} + buang tiket kecil", R[col] & ~R["small"]),
+            (f"{col.upper()} + SANGAT LIKUID + tiket", R[col] & sgt & ~R["small"]),
+        ]
+        print(f"\n=== {col.upper()} ===")
+        compare(R, specs, uni, horizons=(1, 5, 20))
+        print(f"\n  Holdout paruh waktu ({col.upper()}):")
+        for h in (5, 20):
+            for lab, m in specs:
+                print(f"    {lab:<34} h{h:<2} {holdout_split(R, m, uni, h)}")
+        print(f"\n  Alpha per tahun ({col.upper()}, horizon 5):")
+        for lab, m in specs[:2]:
+            print(f"    {lab:<34} {per_year(R, m, uni, 5)}")
+
+    # Kendali penting: apakah "naik >=10% hari ini" saja sudah cukup? Kalau ya,
+    # syarat nilai/harga/volume tidak menambah apa pun.
+    # PENTING: "alpha negatif" != "kandidatnya turun". Pembanding seluruh pasar
+    # didominasi mikro-cap yang premnya besar, jadi kriteria bisa kalah dari rata-rata
+    # pasar TETAPI tetap naik secara absolut. Bagi trader, absolut yang menentukan.
+    print("\n=== RETURN ABSOLUT (bukan excess) — apakah kandidatnya naik? ===")
+    abs_rows = [("seluruh pasar (baseline)", pd.Series(True, index=R.index))]
+    for col in ("scalping", "bsjp"):
+        abs_rows.append((col.upper() + " (semua pasar)", R[col]))
+        abs_rows.append((col.upper() + " + SANGAT LIKUID", R[col] & sgt))
+        abs_rows.append((col.upper() + " + SANGAT LIKUID + tiket", R[col] & sgt & ~R["small"]))
+    print(f"  {'variasi':<36} {'n':>7} {'abs1':>7} {'abs5':>7} {'abs20':>7}")
+    for lab, m in abs_rows:
+        sel = R.loc[m.fillna(False)]
+        if not len(sel):
+            print(f"  {lab:<36} {'-':>7}")
+            continue
+        v = " ".join(f"{sel[f'abs{h}'].mean():>+6.2f}%" for h in (1, 5, 20))
+        print(f"  {lab:<36} {len(sel):>7,} {v}")
+
+    print("\n=== KENDALI: apakah syarat tambahan menambah sesuatu? (seluruh pasar) ===")
+    ctrl = R["ret"] * 100.0 if "ret" in R.columns else None
+    if ctrl is not None:
+        specs = [
+            ("tanpa syarat apa pun (seluruh pasar)", pd.Series(True, index=R.index)),
+            ("hanya return harian >= 10%", (ctrl >= 10.0).fillna(False)),
+            ("hanya return >= 10% & volume >= 2x",
+             ((ctrl >= 10.0) & (R["vr"] >= 2.0)).fillna(False)),
+            ("SCALPING penuh", R["scalping"]),
+            ("BSJP penuh", R["bsjp"]),
+        ]
+        compare(R, specs, uni, horizons=(1, 5))
+
+    # KELEMBAPAN PENTING: pada uji di atas pembandingnya SELURUH pasar, sehingga
+    # "menang" bisa cuma premi ukuran (saham likuid memang mengalahkan mikro-cap).
+    # Di sini pembandingnya DIBATASI ke SANGAT LIKUID, jadi yang terukur adalah
+    # apakah kriteria itu menambah sesuatu DI DALAM kelas yang bisa ditransaksikan.
+    print("\n=== UJI ULANG DI DALAM UNIVERSE SANGAT LIKUID (pembanding = SANGAT LIKUID) ===")
+    Rl = R[sgt]
+    unil = pd.Series(True, index=Rl.index)
+    if ctrl is not None:
+        cl = ctrl.loc[Rl.index]
+        specs = [
+            ("SANGAT LIKUID (tanpa kriteria)", unil),
+            ("hanya return harian >= 10%", (cl >= 10.0).fillna(False)),
+            ("hanya return >= 10% & volume >= 2x",
+             ((cl >= 10.0) & (Rl["vr"] >= 2.0)).fillna(False)),
+            ("SCALPING penuh", Rl["scalping"]),
+            ("SCALPING + buang tiket kecil", Rl["scalping"] & ~Rl["small"]),
+            ("BSJP penuh", Rl["bsjp"]),
+            ("BSJP + buang tiket kecil", Rl["bsjp"] & ~Rl["small"]),
+        ]
+        compare(Rl, specs, unil, horizons=(1, 5, 20))
+        print("\n  Holdout paruh waktu (di dalam SANGAT LIKUID):")
+        for h in (5, 20):
+            for lab, m in specs:
+                print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m, unil, h)}")
+
+
 def swing_flags(tk: str, df: pd.DataFrame) -> pd.DataFrame:
     """Replika jalur PROKSI kriteria SWING (api/index.py, tanpa data Broker Summary).
 
@@ -786,7 +980,7 @@ def part_swing(years: int, workers: int, top: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
-                    choices=["ticket", "silent", "swing", "bands", "calib"])
+                    choices=["ticket", "silent", "swing", "bands", "calib", "audit"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -805,6 +999,8 @@ def main() -> None:
         part_bands(args.years, args.workers, args.top)
     elif args.part == "calib":
         part_calib(args.years, args.workers, args.top)
+    elif args.part == "audit":
+        part_audit(args.years, args.workers, args.top)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)

@@ -993,11 +993,91 @@ def _liquidity_metrics(df: pd.DataFrame) -> dict:
 TICKET_REG_INTERCEPT = 6.6712   # log(tiket) = 6,6712 + 0,3681 * log(nilai 20 hari)
 TICKET_REG_SLOPE = 0.3681
 TICKET_RESID_FLOOR = -0.5176    # ambang lama (kuintil-20 lintas kelas); dipertahankan
-TICKET_RESID_FLOOR_BY_GRADE = {
+TICKET_RESID_FLOOR_BY_GRADE_DEFAULT = {
     "SANGAT LIKUID": TICKET_RESID_FLOOR,   # TIDAK diubah: sudah live & tervalidasi
     "LIKUID": -0.5056,                     # kuintil-20 resid kelas LIKUID (Rp 1-10 M)
     "CUKUP": -0.2853,                      # kuintil-20 resid kelas CUKUP (Rp 100jt-1 M)
 }
+# Ambang di atas adalah angka TETAP, sedangkan distribusi residual bergeser seiring
+# waktu. Uji out-of-sample (research/combo_study.py Bagian E) menunjukkan potong-
+# 20%-lintas-saham mengalahkan ambang tetap di KETIGA kelas (mis. LIKUID +3,37% vs
+# +3,04%). Produksi menganalisis satu saham sehingga kuintil lintas-saham tidak bisa
+# dihitung saat itu -- jadi solusinya adalah MENKALIBRASI ULANG berkala: skrip
+# scripts/calibrate_ticket_thresholds.py menulis api/ticket_thresholds.json, dan
+# berkas itu menggantikan angka bawaan di atas saat ada. Bila berkas tidak ada atau
+# rusak, aplikasi tetap jalan dengan angka bawaan (tidak pernah gagal karena ini).
+TICKET_THRESHOLDS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                      "ticket_thresholds.json")
+
+
+def _load_ticket_floors() -> Tuple[Dict[str, float], dict]:
+    """Baca ambang hasil kalibrasi. Mengembalikan (floors, meta) — ({}, {}) bila gagal."""
+    try:
+        with open(TICKET_THRESHOLDS_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        floors = {k: float(v) for k, v in (d.get("floors") or {}).items()
+                  if isinstance(v, (int, float))}
+        return floors, (d.get("meta") or {})
+    except Exception:
+        return {}, {}
+
+
+_CALIBRATED_FLOORS, _CALIBRATED_META = _load_ticket_floors()
+TICKET_RESID_FLOOR_BY_GRADE = {**TICKET_RESID_FLOOR_BY_GRADE_DEFAULT, **_CALIBRATED_FLOORS}
+
+
+def calibrate_ticket_floors(idx: pd.DataFrame, quantile: float = 0.20,
+                            max_gap_days: int = 10) -> dict:
+    """Hitung ambang tiket per kelas likuiditas dari ringkasan harian IDX.
+
+    `idx` butuh kolom: code, date, value (nilai REGULER), freq (jumlah transaksi).
+    v20 & tiket dihitung per 20 sesi TERKONTIGU (cache/penarikan bisa berlubang;
+    rata-rata yang melintasi lubang memakai baris yang tidak berurutan dan
+    menghasilkan tiket palsu). Mengembalikan {"floors": {...}, "meta": {...}}.
+
+    Fungsi ini dipakai oleh scripts/calibrate_ticket_thresholds.py supaya definisi
+    kelas likuiditas dan konstanta regresinya TIDAK terduplikasi di dua tempat.
+    """
+    if idx is None or not len(idx):
+        return {"floors": {}, "meta": {}}
+    d = idx[["code", "date", "value", "freq"]].copy()
+    d["date"] = pd.to_datetime(d["date"]).dt.normalize()
+    d = d[(d["freq"] > 0) & (d["value"] > 0)].sort_values(["code", "date"])
+    if not len(d):
+        return {"floors": {}, "meta": {}}
+    gap = d.groupby("code")["date"].diff().dt.days
+    d["seg"] = (gap.isna() | (gap > max_gap_days)).groupby(d["code"]).cumsum()
+    g = d.groupby(["code", "seg"], sort=False)
+    d["v20"] = g["value"].transform(lambda s: s.rolling(20, min_periods=20).mean())
+    sv = g["value"].transform(lambda s: s.rolling(20, min_periods=20).sum())
+    sf = g["freq"].transform(lambda s: s.rolling(20, min_periods=20).sum())
+    d["ticket"] = sv / sf.replace(0, np.nan)
+    ok = (d["v20"] > 0) & (d["ticket"] > 0)
+    d["resid"] = np.where(
+        ok,
+        np.log(d["ticket"].where(ok))
+        - (TICKET_REG_INTERCEPT + TICKET_REG_SLOPE * np.log(d["v20"].where(ok))),
+        np.nan,
+    )
+    d["grade"] = d["v20"].map(_liquidity_grade)
+    floors, samples = {}, {}
+    for grade in ("SANGAT LIKUID", "LIKUID", "CUKUP"):
+        sub = d.loc[(d["grade"] == grade) & d["resid"].notna(), "resid"]
+        samples[grade] = int(len(sub))
+        if len(sub) >= 2000:          # cukup besar supaya kuintil stabil
+            floors[grade] = float(sub.quantile(quantile))
+    return {
+        "floors": floors,
+        "meta": {
+            "quantile": quantile,
+            "samples": samples,
+            "reg_intercept": TICKET_REG_INTERCEPT,
+            "reg_slope": TICKET_REG_SLOPE,
+            "data_from": str(d["date"].min().date()),
+            "data_to": str(d["date"].max().date()),
+            "n_stock_days": int(len(d)),
+        },
+    }
 
 
 def avg_ticket_size(df: pd.DataFrame) -> Optional[dict]:
@@ -2193,6 +2273,9 @@ IDX_ACC_MAX_STALE_DAYS = 10
 IDX_ACC_SILENT_WINDOW = 10
 IDX_ACC_SILENT_CONS = 0.7    # minimal 70% hari harus net beli
 IDX_ACC_SILENT_RATIO = 0.5   # net/gross minimal 0,5 (tidak bolak-balik)
+# Berapa broker yang riwayat hariannya dikirim ke dashboard. API hanya mengirim
+# broker teratas (median 6), jadi 8 sudah mencakup hampir semua yang ada.
+IDX_ACC_BROKER_DAILY_MAX = 8
 
 
 def _idx_acc_stale(last_date: str, max_age_days: int = IDX_ACC_MAX_STALE_DAYS) -> bool:
@@ -2238,6 +2321,8 @@ def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
     dom_date: Dict[str, float] = {}   # broker terbesar per tanggal (yang dipakai)
     top: Dict[str, dict] = {}
     per_broker: List[dict] = []
+    # nval harian PER BROKER, untuk menampilkan riwayat harian di dashboard.
+    bseries: Dict[str, Dict[str, float]] = {}
     for br in data["series"]:
         bc = str(br.get("broker_code") or "?")
         nm = br.get("broker_name") or bc
@@ -2246,6 +2331,7 @@ def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
             d = str(pt.get("date"))
             nv = float(pt.get("nval") or 0)
             by_date[d] = by_date.get(d, 0.0) + nv
+            bseries.setdefault(bc, {})[d] = nv
             if d not in dom_date or nv > dom_date[d]:
                 dom_date[d] = nv
             vals.append(nv)
@@ -2276,7 +2362,24 @@ def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
              if b["consistency"] >= IDX_ACC_SILENT_CONS
              and b["net_ratio"] >= IDX_ACC_SILENT_RATIO and b["net"] > 0]
     silent = max(cands, key=lambda b: b["net"]) if cands else None
+    # Riwayat harian per broker: N broker terbesar menurut |net| jendela terakhir,
+    # masing-masing dengan nilai tiap hari. Cukup kecil (mis. 8 broker x 10 hari)
+    # tetapi inilah yang membuat "siapa mengakumulasi" bisa dilihat harian, bukan
+    # cuma satu angka rekap.
+    recent_dates = [d.strftime("%Y-%m-%d") for d in dom.index][-IDX_ACC_SILENT_WINDOW:]
+    ranked = sorted(per_broker, key=lambda b: -abs(b["net"]))[:IDX_ACC_BROKER_DAILY_MAX]
+    broker_daily = [{
+        "broker": b["broker"],
+        "name": b["name"],
+        "days_buy": b["days_buy"],
+        "window": b["window"],
+        "net": b["net"],
+        "net_ratio": round(float(b["net_ratio"]), 3),
+        "daily": [float(bseries.get(b["broker"], {}).get(d, 0.0)) for d in recent_dates],
+    } for b in ranked]
     return {
+        "broker_daily": broker_daily,
+        "broker_daily_dates": recent_dates,
         # Kriteria swing memakai seri ini (broker dominan), bukan penjumlahan.
         "bandar_value_series": [float(x) for x in dom.tolist()],
         "bandar_sum_series": [float(x) for x in total.tolist()],
@@ -4957,6 +5060,18 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
                 "top_accumulating_broker": acc.get("top_accumulating_broker"),
                 "silent_accumulator": acc.get("silent_accumulator"),
                 "data_last_date": acc.get("data_last_date"),
+                # Riwayat harian PER BROKER (bukan rekap) supaya pola "broker ini beli
+                # terus tanpa jual" terlihat harian, bukan cuma satu angka.
+                "broker_daily_dates": acc.get("broker_daily_dates") or [],
+                "broker_daily": [{
+                    "broker": b.get("broker"),
+                    "name": b.get("name"),
+                    "days_buy": b.get("days_buy"),
+                    "window": b.get("window"),
+                    "net": num(b.get("net"), 0),
+                    "net_ratio": b.get("net_ratio"),
+                    "daily": [num(x, 0) for x in (b.get("daily") or [])],
+                } for b in (acc.get("broker_daily") or [])],
                 "note": ("BandarValue harian = nval broker TERBESAR hari itu (bukan jumlah "
                          "seluruh broker, yang bisa saling menutupi). silent_accumulator = "
                          "broker yang konsisten net beli tanpa banyak jual. Ini INFORMASI "
@@ -5937,6 +6052,15 @@ def screener(
         "skip_small_ticket": skip_small_ticket,
         "ticket_filtered": scan.get("ticket_filtered", 0),
         "ticket_by_grade": scan.get("ticket_by_grade", {}),
+        # Ambang yang SEDANG dipakai + asalnya, supaya keputusan penyaring bisa
+        # diaudit (apakah masih angka bawaan atau hasil kalibrasi terbaru).
+        "ticket_thresholds": {
+            "floors": {k: round(float(v), 4) for k, v in TICKET_RESID_FLOOR_BY_GRADE.items()},
+            "source": ("hasil kalibrasi (api/ticket_thresholds.json)"
+                       if _CALIBRATED_FLOORS else "angka bawaan api/index.py"),
+            "calibrated_files": sorted(_CALIBRATED_FLOORS),
+            "meta": _CALIBRATED_META or None,
+        },
         "ticket_filter_note": ("Penyaring ukuran tiket: membuang saham dengan tiket "
                               "terendah (kuintil 20%) di dalam kelas likuiditasnya "
                               "(SANGAT LIKUID / LIKUID / CUKUP). Bukan sinyal beli."),

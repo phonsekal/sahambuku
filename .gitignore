@@ -6,3 +6,4 @@ __pycache__/
 .fmpkey.tmp
 .cache/
 research/.cache/
+scripts/.cache/

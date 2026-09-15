@@ -1069,7 +1069,30 @@ function renderAnalyze(d) {
         ${kv("Share Top Buyer", pct(b.top_buyer_value_share_pct), b.value_share_significant ? "text-emerald-400" : "")}
       </div>
       ${b.net_foreign ? `<div class="text-xs text-slate-400 mb-3">Net Foreign: hari ini <b class="${b.net_foreign.today > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.today)}</b> · 5 hari <b class="${b.net_foreign.sum_5d > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.sum_5d)}</b> · 20 hari <b class="${b.net_foreign.sum_20d > 0 ? "text-emerald-400" : "text-rose-400"}">${fmtIdr(b.net_foreign.sum_20d)}</b></div>` : ""}
-      ${b.bandar_accumulation ? `<div class="text-xs text-slate-400 mb-4">Broker dominan hari ini: <b class="tabular text-slate-200">${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.data_last_date ? ` <span class="text-slate-500">(data s/d ${esc(b.bandar_accumulation.data_last_date)})</span>` : ""}${b.bandar_accumulation.top_accumulating_broker ? ` · Top: <b>${esc(b.bandar_accumulation.top_accumulating_broker.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})</span>` : ""}${b.bandar_accumulation.silent_accumulator ? `<div class="mt-1">🕵️ Akumulator diam-diam: <b>${esc(b.bandar_accumulation.silent_accumulator.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.silent_accumulator.name || "")})</span> — ${b.bandar_accumulation.silent_accumulator.days_buy}/${b.bandar_accumulation.silent_accumulator.window} hari net beli, net <b class="tabular text-emerald-400">${fmtIdr(b.bandar_accumulation.silent_accumulator.net)}</b>, net/gross ${Number(b.bandar_accumulation.silent_accumulator.net_ratio || 0).toFixed(2)} <span class="text-slate-500">· informasi, bukan sinyal beli</span></div>` : ""}</div>` : ""}
+      ${b.bandar_accumulation ? `${(b.bandar_accumulation.broker_daily || []).length ? (() => {
+        const bd = b.bandar_accumulation.broker_daily, dts = b.bandar_accumulation.broker_daily_dates || [];
+        const dlabel = dts.map(x => esc(String(x).slice(5)));
+        // Sel: hijau bila net beli, merah bila net jual, dengan kilau sesuai besar-kecilnya.
+        const cell = v => {
+          if (!v) return `<td class="px-1 text-center tabular text-slate-600">·</td>`;
+          const cls = v > 0 ? "text-emerald-400" : "text-rose-400";
+          const sym = v > 0 ? "+" : "−";
+          const abs = Math.abs(v);
+          const mag = abs >= 1e11 ? "font-bold" : (abs >= 1e10 ? "" : "opacity-70");
+          return `<td class="px-1 text-right tabular ${cls} ${mag}" title="${fmtIdr(v)}">${sym}${fmtIdr(abs).replace(/^Rp\s?/, "")}</td>`;
+        };
+        return `<div class="text-xs text-slate-400 mb-4">🕵️ <b class="text-slate-300">Akumulasi per broker — riwayat harian</b>`
+          + `<div class="mt-1 overflow-x-auto"><table class="text-[10px] border-separate border-spacing-x-0">`
+          + `<thead><tr><th class="px-1 text-left font-medium text-slate-500">Broker</th>`
+          + `<th class="px-1 text-right font-medium text-slate-500">net (jendela)</th>`
+          + dlabel.map(x => `<th class="px-1 font-medium text-slate-500">${x}</th>`).join("")
+          + `</tr></thead><tbody>`
+          + bd.map(r => `<tr><td class="px-1 whitespace-nowrap">${r.days_buy === r.window ? "🕵️ " : ""}<b>${esc(r.broker)}</b> <span class="text-slate-500">${esc(String(r.name || "").slice(0, 16))}</span> <span class="text-slate-600">${r.days_buy}/${r.window}</span></td>`
+              + `<td class="px-1 text-right tabular ${r.net > 0 ? "text-emerald-400" : "text-rose-400"}">${r.net > 0 ? "+" : "−"}${fmtIdr(Math.abs(r.net)).replace(/^Rp\s?/, "")}</td>`
+              + (r.daily || []).map(cell).join("") + `</tr>`).join("")
+          + `</tbody></table></div>`
+          + `<div class="mt-1 text-slate-500">🕵️ = broker yang net beli di SEMUA hari jendela (tanpa satu pun hari jual). Kolom tanggal = net harian (hijau beli, merah jual). Ini informasi bandarmology, <b>bukan sinyal beli</b> — uji 80 hari tidak menemukan daya prediksi.</div></div>`;
+      })() : ""}<div class="text-xs text-slate-400 mb-4">Broker dominan hari ini: <b class="tabular text-slate-200">${fmtIdr(b.bandar_accumulation.last_bandar_value)}</b>${b.bandar_accumulation.data_last_date ? ` <span class="text-slate-500">(data s/d ${esc(b.bandar_accumulation.data_last_date)})</span>` : ""}${b.bandar_accumulation.top_accumulating_broker ? ` · Top: <b>${esc(b.bandar_accumulation.top_accumulating_broker.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.top_accumulating_broker.name || "")})</span>` : ""}${b.bandar_accumulation.silent_accumulator ? `<div class="mt-1">🕵️ Akumulator diam-diam: <b>${esc(b.bandar_accumulation.silent_accumulator.broker)}</b> <span class="text-slate-500">(${esc(b.bandar_accumulation.silent_accumulator.name || "")})</span> — ${b.bandar_accumulation.silent_accumulator.days_buy}/${b.bandar_accumulation.silent_accumulator.window} hari net beli, net <b class="tabular text-emerald-400">${fmtIdr(b.bandar_accumulation.silent_accumulator.net)}</b>, net/gross ${Number(b.bandar_accumulation.silent_accumulator.net_ratio || 0).toFixed(2)} <span class="text-slate-500">· informasi, bukan sinyal beli</span></div>` : ""}</div>` : ""}
       <div class="grid md:grid-cols-2 gap-4">
         <div><h3 class="text-[11px] uppercase tracking-wider text-slate-500 mb-2">Top Buyers</h3>
           <table class="w-full text-sm"><thead><tr class="text-slate-500 text-xs border-b border-slate-700/60"><th class="text-left py-1.5">Broker</th><th class="text-right">Harga</th><th class="text-right">Nilai</th></tr></thead>

@@ -78,6 +78,22 @@ berhorizon bulanan -- jangan ulangi uji ini tanpa data riwayat yang lebih panjan
    didominasi ikatan nilai, sehingga IC-nya tidak bisa dipercaya (IC positif tetapi
    kuintilnya justru menurun). Jangan pakai ng_share sebagai proksi akumulasi.
 
+4) UJI DI REZIM BULL: TIDAK MUNGKIN, dan itu diperiksa bukan diasumsikan.
+   Jendela data broker (2026-05-13 s/d 2026-09-11) berisi NOL sesi bull menurut
+   MA200 -- IHSG di bawah MA200 di 80 dari 80 sesi, dan bull terakhir 2026-03-02
+   (di luar jendela). Jadi pertanyaan "apakah BANDAR bekerja saat pasar naik"
+   TIDAK BISA dijawab dari sumber gratis: API hanya menyimpan 80 hari terakhir.
+
+   Versi terdekat yang BISA diuji: pantulan jangka pendek (IHSG > MA20 / MA50),
+   dengan pembanding di REZIM YANG SAMA. Hasilnya tetap tidak ada bedanya:
+     IHSG > MA20 (51 tgl, 11 blok) : BANDAR +0,05% (t=+0,13) vs kontrol -0,04%
+     IHSG < MA20 (26 tgl,  6 blok) : BANDAR +0,01% (t=+0,01) vs kontrol +0,10%
+     IHSG > MA50 (38 tgl,  8 blok) : BANDAR -0,02% (t=-0,22)
+     IHSG < MA50 (39 tgl,  8 blok) : BANDAR -0,40% (t=-0,35) vs kontrol +0,14%
+   Tidak satu pun berbeda dari nol. TETAPI ini tetap BUKAN uji rezim bull
+   sungguhan -- seluruh jendela berada di bawah MA200. Jangan mengutip angka ini
+   sebagai "BANDAR tidak bekerja saat pasar naik".
+
 Jalankan:
   .venv/bin/python research/bandar_study.py --budget 3000
   .venv/bin/python research/bandar_study.py --codes PTBA,TINS,BBRI --budget 50
@@ -411,7 +427,8 @@ def bandar_flag_frame(L: pd.DataFrame, win: int = 20) -> pd.DataFrame:
     return out
 
 
-def test_bandar_criteria(L: pd.DataFrame, D: pd.DataFrame, win: int = 20) -> pd.DataFrame:
+def test_bandar_criteria(L: pd.DataFrame, D: pd.DataFrame, idx=None,
+                         win: int = 20) -> pd.DataFrame:
     """Uji daya prediksi kriteria BANDAR itu sendiri (bukan hanya flag 'silent').
 
     Semua angka memakai blok tidak tumpang-tindih (stride = horizon), karena
@@ -455,6 +472,33 @@ def test_bandar_criteria(L: pd.DataFrame, D: pd.DataFrame, win: int = 20) -> pd.
     for lab, sub in D[D["acc"]].groupby("share_bin", observed=True):
         evaluate_flag(D, (D["acc"] & (D["share_bin"] == lab)).fillna(False), "exc20",
                       f"    ACC & {lab} -> exc20 [blok]", stride=20)
+
+    print("\n  d) apakah hasilnya berbeda saat pasar jangka pendek NAIK vs TURUN?")
+    if idx is None or idx.empty:
+        print("    IHSG tidak tersedia — lewati.")
+    else:
+        ih = idx.copy()
+        ih.index = pd.to_datetime(ih.index).normalize()
+        ih = ih[~ih.index.duplicated(keep="last")].sort_index()
+        print("    PENTING — seluruh jendela ini TETAP bear menurut MA200 (IHSG di bawah")
+        print("    MA200 di 80 dari 80 sesi; terakhir bull 2026-03-02). Jadi yang diuji di")
+        print("    bawah ini 'pantulan jangka pendek', BUKAN rezim bull sungguhan.")
+        for n in (20, 50):
+            ma = ih.rolling(n, min_periods=max(10, n // 2)).mean()
+            up = (ih > ma).reindex(D["date"]).fillna(False).to_numpy()
+            for lab, mask in (("naik", up), ("turun", ~up)):
+                sub = D[mask]
+                n_blk = len(np.sort(sub["date"].unique())[::5]) if len(sub) else 0
+                print(f"\n    --- IHSG vs MA{n} {lab}: {sub['date'].nunique()} tanggal, "
+                      f"{int(sub['bandar_flag'].sum())} flagged, {n_blk} blok 5-hari ---")
+                if n_blk < 6:
+                    print("      blok terlalu sedikit -> tidak disimpulkan.")
+                    continue
+                # Pembanding = universe di REZIM YANG SAMA, bukan seluruh pasar.
+                evaluate_flag(sub, sub["bandar_flag"] == 1.0, "exc5",
+                              f"      BANDAR -> exc5 [blok]", stride=5)
+                evaluate_flag(sub, sub["bandar_flag"] == 0.0, "exc5",
+                              f"      (kontrol) bukan BANDAR -> exc5 [blok]", stride=5)
     return D
 
 
@@ -588,7 +632,7 @@ def main() -> None:
         quintile(D, f"silent_rel{w}", "exc20")
         quintile(D, f"bandar_rel{w}", "exc20")
 
-    D = test_bandar_criteria(L, D, win=20)
+    D = test_bandar_criteria(L, D, idx=idx, win=20)
 
     print("\n-- BATASAN --")
     print("  * Jendela inti ~80 hari perdagangan (batas API) -> satu rezim. Ini penyaringan,")
