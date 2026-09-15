@@ -97,6 +97,7 @@
         <option value="breakout">🚀 Breakout 20 hari</option>
         <option value="launchpad">🔥 Launch Pad (pola buku: base rapat → breakout)</option>
         <option value="reversal">🔄 Role Reversal S&R (resistance jadi support)</option>
+        <option value="volsr">📊 S&R Volume (buku Bab 11)</option>
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
@@ -147,6 +148,7 @@
           <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
           <option value="launchpad">🔥 Launch Pad (pola buku Bab 6.2)</option>
           <option value="reversal">🔄 Role Reversal S&R (buku Bab 1.4)</option>
+          <option value="volsr">📊 S&R Volume (buku Bab 11)</option>
         </select>
         <select id="btUniverse" onchange="btUniverseChanged()" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="liquid" selected>Liquid (LQ45)</option>
@@ -1041,6 +1043,7 @@ function renderAnalyze(d) {
 
   const lp = d.special_patterns.launch_pad, dbr = d.special_patterns.drop_base_rally;
   const rr = d.special_patterns.role_reversal || {};
+  const vsr = d.special_patterns.volume_sr || {};
   const lpc = (lp && lp.broker_confirm) || {};
   h += `<div class="grid md:grid-cols-2 gap-4 mb-4">`;
   h += card("Pola Khusus (Buku)", `
@@ -1057,7 +1060,12 @@ function renderAnalyze(d) {
       <span class="text-sm font-semibold ${rr.detected ? "text-cyan-400" : "text-slate-500"}">${rr.detected ? `🔄 Retest ${fmt(rr.broken_resistance)}` : "—"}</span>
     </div>
     ${rr.detected ? `<div class="text-[11px] text-slate-400 pt-1">Resistance 60 hari yang ditembus ${rr.days_since_breakout} bar lalu kini diuji dari atas (${rr.distance_to_level_pct != null ? pct(rr.distance_to_level_pct) : "—"}). Zona level: ${(rr.zona || []).map(v => fmt(v)).join(" – ")}. Uji 5 tahun: alpha20 +1,16% (blok t=+5,96), positif di semua tahun.</div>` : ""}
-    ${lpc.same_top_buyer ? `<div class="text-[11px] text-amber-300/90 pt-1">Broker yang mengulang akumulasi di fase base: <b>${esc((lpc.same_brokers || []).join(", "))}</b> — syarat Bab 6.2 (informasi, belum tervalidasi).</div>` : ""}`);
+    ${lpc.same_top_buyer ? `<div class="text-[11px] text-amber-300/90 pt-1">Broker yang mengulang akumulasi di fase base: <b>${esc((lpc.same_brokers || []).join(", "))}</b> — syarat Bab 6.2 (informasi, belum tervalidasi).</div>` : ""}
+    <div class="flex items-center justify-between py-2 border-t border-slate-800/60">
+      <span class="text-sm">S&amp;R Volume <span class="text-[10px] text-slate-500">(Bab 11)</span></span>
+      <span class="text-sm font-semibold ${vsr.detected ? "text-lime-400" : "text-slate-500"}">${vsr.detected ? `📊 Uji support ${fmt(vsr.volume_support)}` : (vsr.volume_support != null ? `support ${fmt(vsr.volume_support)} · resistance ${fmt(vsr.volume_resistance)}` : "—")}</span>
+    </div>
+    ${vsr.detected ? `<div class="text-[11px] text-slate-400 pt-1">Support dari low candle volume terbesar (jarak ${vsr.distance_to_support_pct != null ? pct(vsr.distance_to_support_pct) : "—"}). Uji 5 tahun: alpha20 +0,90% · kontrol candle volume terkecil hanya +0,27% dan gagal holdout.</div>` : ""}`);
   const RM = d.risk_management || {};
   h += card("Risk Management (Bab 8)",
     `<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
@@ -1344,8 +1352,9 @@ function renderScan(d) {
   const isSilent = d.criteria === "silent";
   const isLaunchpad = d.criteria === "launchpad";
   const isReversal = d.criteria === "reversal";
+  const isVolSr = d.criteria === "volsr";
   // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
-  const nCols = 15 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 3 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0);
+  const nCols = 15 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 3 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0);
   let h = isKoreksi
     ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
     : (isRS
@@ -1359,6 +1368,8 @@ function renderScan(d) {
     <div class="mt-1.5 pt-1.5 border-t border-orange-500/20 text-amber-300/90">⚠️ Polanya <b>jarang</b> (sekitar 1 kejadian/hari se-pasar) — daftar kosong itu normal. Tetap cek Broker Summary (buku Bab 6.2: "TERPENTING! baca Broker Summary") dan pakai cut-loss bila harga <b>close di bawah base/support</b>. Versi buku yang lebih ketat (naik ≥20% dulu + base tak menembus high/low lama) diuji hanya 44 kejadian dan tidak lebih baik, jadi tidak dipakai.</div></div>`;
   if (isReversal) h += `<div class="mb-3 text-[11px] text-cyan-300/90 bg-cyan-500/10 border border-cyan-500/30 rounded-xl px-3.5 py-2.5">🔄 <b>Role Reversal S&R</b> (buku Bab 1.4 — "salah satu prinsip paling kuat"): <b>resistance yang sudah ditembus berubah peran jadi support</b>, dan harga sedang mengujinya dari atas. Resistance dihitung dari <b>high tertinggi 60 hari</b>; retest yang dihitung adalah 2-20 hari setelah breakout, selama harga belum pernah close &gt;3% di bawah level itu (kalau tembus, peran baliknya gagal).
     <div class="mt-1.5 pt-1.5 border-t border-cyan-500/20 text-amber-300/90">Uji 5 tahun universe SANGAT LIKUID (897 emiten, 833 rb saham-hari): alpha20 <b>+1,16%</b> (blok t=+5,96), absolut <b>+0,68%</b> (rata-rata saham likuid −0,37%), <b>holdout dua paruh positif</b>, dan <b>positif di semua tahun</b> (2022-2026). Dua temuan yang membedakannya dari "dekat support" biasa: (1) pembanding <b>pullback ke SMA20 GAGAL holdout</b> (−0,50% di paruh akhir), (2) menambah syarat volume ≥1,5× justru <b>merusak</b> (alpha5 −0,74%) — retest yang sehat itu sepi. ⚠️ Kata "alpha" = keunggulan vs pasar, bukan jaminan harga naik.</div></div>`;
+  if (isVolSr) h += `<div class="mb-3 text-[11px] text-lime-300/90 bg-lime-500/10 border border-lime-500/30 rounded-xl px-3.5 py-2.5">📊 <b>S&amp;R berbasis VOLUME</b> (buku Bab 11): support diambil dari <b>low candle dengan volume terbesar</b> (kuantil-90 dari 250 bar), lalu dicari harga yang <b>menguji ulang</b> level itu dalam tren naik (di atas SMA50, SMA50 menanjak).
+    <div class="mt-1.5 pt-1.5 border-t border-lime-500/20 text-amber-300/90">Uji 5 tahun universe SANGAT LIKUID (897 emiten, 833 rb saham-hari): alpha20 <b>+0,90%</b> (blok t=+3,93), absolut <b>+1,00%</b> (rata-rata saham likuid −0,37%), <b>holdout dua paruh positif</b>. Yang membuat ini masuk akal adalah <b>kontrolya</b>: geometri sama persis tetapi levelnya dari candle bervolume <b>TERKECIL</b> hanya memberi +0,27% dan <b>gagal holdout</b> — jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga menyentuh harga lama". Pembanding support biasa (pullback SMA20) +0,47% dan juga gagal holdout. ⚠️ Sisi resistance-nya (+0,68%, blok t=+1,18) sengaja tidak dijadikan syarat.</div></div>`;
   if (isSilent) h += `<div class="mb-3 text-[11px] text-violet-300/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕵️ <b>Akumulasi diam-diam</b>: satu broker yang konsisten net BELI (≥70% hari, net/gross ≥ 0,5) selama 10 hari. Ini menjawab "siapa yang mengakumulasi" — pertanyaan yang gagal dijawab bila nilai seluruh broker dijumlahkan, karena arus broker lain bisa saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah semua broker hanya +227,56 M).
     <div class="mt-1.5 pt-1.5 border-t border-violet-500/20 text-amber-300/90">⚠️ <b>Informasi bandarmology, BUKAN sinyal beli.</b> Uji 77 hari bursa (seluruh pasar): tidak ada daya prediksi — versi broker-dominan maupun versi jumlah sama-sama tidak berbeda dari noise. Riwayat API hanya 80 hari, tidak cukup untuk menguji sinyal berhorizon bulanan. Pemindaian ini memakai <b>1 permintaan API per saham</b>, jadi mulai dari limit kecil.</div></div>`;
   // Kandidat setup swing siap-entry: setup valid (pullback/breakout) + RRR ≥ 1:2.
@@ -1377,6 +1388,7 @@ function renderScan(d) {
       ${isBreakout ? `<th class="text-right px-3" title="High tertinggi 20 hari sebelumnya — level yang baru ditembus, dan jarak harga di atasnya">High 20h</th>` : ""}
       ${isLaunchpad ? `<th class="text-right px-3" title="Syarat pola Launch Pad: kenaikan sebelum base, seberapa rapat base-nya (semakin kecil semakin baik, ≤0,80), harga breakout base, dan volume vs MA20">Launch Pad</th>` : ""}
       ${isReversal ? `<th class="text-right px-3" title="Level resistance 60 hari yang sudah ditembus dan kini diuji dari atas — zona entry. Jarak = posisi harga terhadap level itu.">Level jadi Support</th>` : ""}
+      ${isVolSr ? `<th class="text-right px-3" title="Low candle dengan volume terbesar (kuantil-90 dari 250 bar) = support, dan high-nya = resistance. Jarak = posisi harga terhadap support itu.">S&R Volume</th>` : ""}
       ${isSilent ? `<th class="text-left px-3" title="Broker yang konsisten net beli tanpa banyak jual. Informasi bandarmology, bukan sinyal beli.">Akumulator</th>` : ""}
       ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
       ${isKoreksi ? `<th class="text-center px-3" title="Pantau: Telegram memberi tahu saat konfirmasi reversal (SELL→BUY)">🔔</th>` : ""}
@@ -1404,6 +1416,7 @@ function renderScan(d) {
       ${isBreakout ? `<td class="px-3 text-right tabular">${bi.high20 ? `${fmt(bi.high20)}<div class="text-[10px] text-emerald-400">${bi.above_pct != null ? "+" + fmt(bi.above_pct, 1) + "%" : ""}</div>` : "—"}</td>` : ""}
       ${isLaunchpad ? (() => { const li = r.launchpad_info || {}; return `<td class="px-3 text-right tabular">${li.breakout_price ? `${fmt(li.breakout_price)}<div class="text-[10px] text-orange-300">naik ${fmt(li.prior_gain_pct, 1)}% · rapat ${Number(li.contraction_ratio || 0).toFixed(2)} · vol ${fmt(li.volume_ratio, 1)}×</div>` : "—"}</td>`; })() : ""}
       ${isReversal ? (() => { const ri = r.reversal_info || {}; return `<td class="px-3 text-right tabular">${ri.broken_resistance ? `${fmt(ri.broken_resistance)}<div class="text-[10px] text-cyan-300">${ri.distance_to_level_pct != null ? pct(ri.distance_to_level_pct) : ""} · retest hari ke-${ri.days_since_breakout}</div>` : "—"}</td>`; })() : ""}
+      ${isVolSr ? (() => { const vi = r.volume_sr_info || {}; return `<td class="px-3 text-right tabular">${vi.volume_support ? `${fmt(vi.volume_support)}<div class="text-[10px] text-lime-300">${vi.distance_to_support_pct != null ? pct(vi.distance_to_support_pct) : ""} · R ${vi.volume_resistance != null ? fmt(vi.volume_resistance) : "—"}</div>` : "—"}</td>`; })() : ""}
       ${isSilent ? `<td class="px-3 text-xs">${si.broker ? `<b>${esc(si.broker)}</b><div class="text-[10px] text-slate-500">${si.days_buy}/${si.window} hari · <span class="tabular text-emerald-400">${fmtIdr(si.net)}</span> · net/gross ${Number(si.net_ratio || 0).toFixed(2)}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>` : ""}

@@ -649,6 +649,78 @@ def role_reversal_info(df: pd.DataFrame, lookback: int = 60) -> dict:
     return info
 
 
+def _volume_sr_state(df: pd.DataFrame, lookback: int = 250, q: float = 0.90):
+    """Level S&R dari candle bervolume besar (Bab 11) per bar + penanda retest.
+
+    "Volume besar" = volume >= kuantil-90 dari `lookback` bar terakhir — proksi vektor
+    dari "top-3 volume tertinggi" yang dipakai `volume_sr_levels()`. Level = LOW candle
+    volume besar TERAKHIR (ffill), jadi selalu point-in-time dan tidak melihat masa depan.
+    """
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    l = df["Low"].astype(float)
+    v = df["Volume"].astype(float).fillna(0.0)
+    win = max(int(lookback), 60)
+    big = (v >= v.rolling(win, min_periods=50).quantile(q)).fillna(False)
+    sup = l.where(big).ffill()
+    res = h.where(big).ffill()
+    s50 = c.rolling(50).mean()
+    s50_up = s50 > s50.shift(20)
+    near_sup = ((c / sup - 1.0).abs() <= 0.02)
+    retest = (near_sup & (c > s50) & s50_up).fillna(False)
+    return retest, sup, res
+
+
+def volume_sr_series(df: pd.DataFrame, lookback: int = 250) -> pd.Series:
+    """Deret vektor: True saat harga RETEST support dari candle bervolume besar.
+
+    Strategi Volume untuk S&R (buku Bab 11): support diambil dari LOW candle dengan
+    volume TERBESAR — "level support dan resistance yang sangat kuat" karena di situ
+    pertempuran besar terjadi. Diuji 5 tahun (research/combo_study.py Bagian L,
+    897 emiten, 833 rb saham-hari, universe SANGAT LIKUID): n=13.516, alpha20 +0,90%
+    (blok t=+3,93), absolut abs20 +1,00% (baseline -0,37%), holdout DUA paruh positif
+    (+1,02% t=+4,2 dan +0,77% t=+2,6).
+
+    KONTROL YANG MEMBUATNYA MASUK AKAL: geometri yang sama persis tetapi levelnya dari
+    candle bervolume TERKECIL hanya memberi +0,27% dan GAGAL holdout di paruh akhir
+    (-0,78%). Jadi yang bekerja memang "candle bervolume besar", bukan sekadar "harga
+    menyentuh harga lama".
+
+    Pembanding: `pullback_sma20` (support biasa) hanya +0,47% dan juga gagal holdout;
+    sedangkan `breakout20` masih lebih kuat (+1,96%). Sisi resistance dari Bab 11
+    (tembus high candle volume besar) TIDAK dipakai sebagai kriteria: hanya +0,68%
+    dengan blok t=+1,18.
+    """
+    return _volume_sr_state(df, lookback=lookback)[0]
+
+
+def volume_sr_info(df: pd.DataFrame, lookback: int = 250) -> dict:
+    """Ringkasan S&R berbasis volume untuk bar terakhir (panel analisis)."""
+    if len(df) < 60:
+        return {"detected": False, "note": "Data historis kurang untuk S&R volume."}
+    retest, sup, res = _volume_sr_state(df, lookback=lookback)
+    last = float(df["Close"].iloc[-1])
+    sv = sup.iloc[-1]
+    rv = res.iloc[-1]
+    det = bool(retest.iloc[-1])
+    return {
+        "detected": det,
+        "lookback_bars": lookback,
+        "volume_support": (num(sv, 2) if sv is not None and not pd.isna(sv) else None),
+        "volume_resistance": (num(rv, 2) if rv is not None and not pd.isna(rv) else None),
+        "distance_to_support_pct": (num((last / float(sv) - 1) * 100, 1)
+                                    if sv is not None and not pd.isna(sv) and float(sv) > 0 else None),
+        "note": (
+            "S&R dari candle VOLUME BESAR (Bab 11): support = low candle volume terbesar. "
+            "Harga sedang menguji ulang level itu dalam tren naik. Uji 5 tahun: alpha20 "
+            "+0,90% (blok t=+3,93), absolut +1,00%, holdout dua paruh positif; kontrol "
+            "memakai candle volume TERKECIL hanya +0,27% dan gagal holdout."
+            if det else
+            "Harga tidak sedang menguji support candle bervolume besar (syarat: dalam 2% "
+            "dari low candle volume terbesar, harga di atas SMA50, dan SMA50 menanjak)."),
+    }
+
+
 def launch_pad_series(df: pd.DataFrame) -> pd.Series:
     """Deret vektor: True di bar yang lolos syarat "The Launch Pad" (Bab 6.2).
 
@@ -4009,7 +4081,8 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
     def _attach_plan(eligible: bool, act: str = "") -> None:
         """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
         if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing", "rs",
-                                            "breakout", "silent", "launchpad", "reversal"):
+                                            "breakout", "silent", "launchpad", "reversal",
+                                            "volsr"):
             return
         action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
         plan = _scan_action_plan(df, action, item.get("bandarmology"),
@@ -4159,6 +4232,23 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         _attach_plan(lp_ok, act="BUY")
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": lp_ok, "bandar_used": bandar_used}
+
+    if criteria == "volsr":
+        # S&R BERBASIS VOLUME (buku Bab 11): support = LOW candle dengan volume
+        # terbesar (kuantil-90 dari 250 bar). Bukti 5 tahun universe SANGAT LIKUID
+        # (research/combo_study.py Bagian L): alpha20 +0,90% (blok t=+3,93), absolut
+        # +1,00% (baseline -0,37%), holdout DUA paruh positif.
+        # Kontrol: geometri sama tapi level dari candle volume TERKECIL hanya +0,27%
+        # dan gagal holdout -> yang bekerja memang volume, bukan sekadar "harga
+        # menyentuh harga lama". Sisi resistance-nya (+0,68%, blok t=+1,18) sengaja
+        # TIDAK dijadikan syarat.
+        info = volume_sr_info(df)
+        vs_ok = bool(info.get("detected"))
+        item["volume_sr_info"] = info
+        item["criteria_met"] = ["S&R VOLUME"] if vs_ok else []
+        _attach_plan(vs_ok, act="BUY")
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": vs_ok, "bandar_used": bandar_used}
 
     if criteria == "reversal":
         # ROLE REVERSAL S&R (buku Bab 1.4): resistance yang sudah ditembus kini jadi
@@ -4405,6 +4495,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     brk_s = breakout_20_series(df) if criteria == "breakout" else None
     lp_s = launch_pad_series(df) if criteria == "launchpad" else None
     rr_s = role_reversal_series(df) if criteria == "reversal" else None
+    vs_s = volume_sr_series(df) if criteria == "volsr" else None
 
     # Filter regime IHSG: sejajarkan close & MA200 IHSG ke index df (ffill).
     ihsg_ok = None
@@ -4438,6 +4529,9 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         elif criteria == "reversal":
             # Role reversal S&R (Bab 1.4) — logika bersama dengan kriteria screener.
             hit = bool(rr_s.iloc[i]) if rr_s is not None else False
+        elif criteria == "volsr":
+            # S&R berbasis volume (Bab 11) — logika bersama dengan kriteria screener.
+            hit = bool(vs_s.iloc[i]) if vs_s is not None else False
         else:  # swing (proksi nilai transaksi)
             hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                    and float(value_ma20.iloc[i]) >= 10e9
@@ -4564,6 +4658,7 @@ def _matrix_one(tk: str, criteria: str, years: int,
     brk_s = breakout_20_series(sub) if criteria == "breakout" else None
     lp_s = launch_pad_series(sub) if criteria == "launchpad" else None
     rr_s = role_reversal_series(sub) if criteria == "reversal" else None
+    vs_s = volume_sr_series(sub) if criteria == "volsr" else None
     weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
     ihsg_ok = None
     if ihsg_align is not None and len(ihsg_align):
@@ -4600,6 +4695,8 @@ def _matrix_one(tk: str, criteria: str, years: int,
                 hit = bool(lp_s.iloc[i]) if lp_s is not None else False
             elif criteria == "reversal":
                 hit = bool(rr_s.iloc[i]) if rr_s is not None else False
+            elif criteria == "volsr":
+                hit = bool(vs_s.iloc[i]) if vs_s is not None else False
             else:
                 hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                        and float(value_ma20.iloc[i]) >= 10e9
@@ -4802,7 +4899,7 @@ def api_info():
             "POST /api/bandarmology/analyze",
             "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
-            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
+            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "POST /api/screener",
         ],
@@ -5470,7 +5567,8 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "candlestick": candles,
         "rsi_divergence": div,
         "special_patterns": {"launch_pad": lp, "drop_base_rally": dbr,
-                             "role_reversal": role_reversal_info(df)},
+                             "role_reversal": role_reversal_info(df),
+                             "volume_sr": volume_sr_info(df)},
         "screener_hints": screen,
         "signal": signal,
         "action_plan": action_plan,
@@ -5949,8 +6047,14 @@ def cron_launchpad(request: Request, secret: str = Query(""),
     melewatkan sehari berarti sinyalnya hilang — bukan tertunda.
 
     Dedupe sekali per hari supaya tidak mengirim berulang bila dijalankan berkali-kali.
-    Penyaring tiket TIDAK dipakai di sini karena bukti polanya dihitung tanpa filter
-    itu; cakupan buktinya kelas SANGAT LIKUID (nilai >= Rp10 M/hari).
+    Cakupan buktinya kelas SANGAT LIKUID (nilai >= Rp10 M/hari).
+    Penyaring tiket DIPAKAI (default aplikasi). Semula tidak, karena bukti awal
+    polanya dihitung tanpa filter itu — tetapi uji kombinasi (research/combo_study.py
+    Bagian M, 5 tahun) menunjukkan kandidat Launch Pad yang tiketnya dibuang justru
+    yang terlemah: alpha5 +2,40% -> +3,95%, alpha20 +6,05% -> +7,58%, absolut abs20
+    +5,06% -> +7,57%, dan kedua paruh holdout menguat (+11,39%/+4,88% vs +9,79%/+3,03%).
+    Kejujuran sampelnya: 182 -> 146 kejadian, sehingga perbedaannya TIDAK bisa
+    disebut nyata secara statistik; arahnya konsisten di semua metrik, jadi dipakai.
     """
     auth = request.headers.get("authorization", "")
     bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
@@ -6040,7 +6144,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -6077,7 +6181,15 @@ def backtest(
     diuji dari atas sebagai support). Bukti 5 tahun universe SANGAT LIKUID
     (research/combo_study.py Bagian I): alpha20 +1,16% (blok t=+5,96), absolut +0,68%
     (baseline -0,37%), holdout dua paruh positif, positif di semua tahun. Pembanding
-    "pullback ke SMA20" GAGAL holdout, jadi jangan dianggap sama."""
+    "pullback ke SMA20" GAGAL holdout, jadi jangan dianggap sama.
+    Kriteria 'volsr' = S&R berbasis volume buku Bab 11 (support = low candle volume
+    terbesar). Bukti 5 tahun: alpha20 +0,90% (blok t=+3,93), absolut +1,00%, holdout dua
+    paruh positif; kontrol candle bervolume TERKECIL hanya +0,27% dan gagal holdout.
+    Peringatan praktis untuk ketiga kriteria pola ini (launchpad/reversal/volsr): uji
+    portofolio non-overlap 5 hari dengan biaya 0,3% x turnover menunjukkan edge role
+    reversal (+0,28% per 5 hari) HABIS oleh biaya transaksi, sedangkan Launch Pad
+    bertahan (+80% total 4 tahun) tapi hanya terisi 15% waktu dengan MDD -44%. Angka
+    'alpha' adalah keunggulan vs kelas likuiditas yang sama, bukan jaminan laba bersih."""
     if criteria == "all":
         best = None
         for c in ("swing", "scalping", "bsjp", "buy"):
@@ -6187,7 +6299,7 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
@@ -6269,7 +6381,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad|reversal)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -6335,6 +6447,24 @@ def screener(
     syarat volume >= 1,5x justru MERUSAK (alpha5 -0,74%) — retest yang sehat itu sepi.
     Filter regime tidak dipakai: syaratnya sendiri sudah berupa tembusnya resistance
     60 hari, jadi kekuatan sahamnya sudah jadi bagian dari kriteria.
+    Kriteria "volsr" mencari S&R BERBASIS VOLUME (buku Bab 11): support diambil dari
+    LOW candle dengan volume TERBESAR (kuantil-90 dari 250 bar), lalu dicari harga yang
+    menguji ulang level itu dalam tren naik. Uji 5 tahun universe SANGAT LIKUID
+    (research/combo_study.py Bagian L): alpha20 +0,90% (blok t=+3,93), absolut abs20
+    +1,00% (baseline -0,37%), holdout DUA paruh positif.
+    Kontrol yang membuat ini masuk akal: geometri sama persis tapi levelnya diambil dari
+    candle bervolume TERKECIL hanya memberi +0,27% dan GAGAL holdout di paruh akhir
+    (-0,78%) — jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga
+    menyentuh harga lama". Pembanding support biasa (pullback SMA20) +0,47% dan juga
+    gagal holdout; breakout 20 hari masih lebih kuat (+1,96%).
+    Sisi RESISTANCE dari Bab 11 (tembus high candle volume besar) sengaja tidak
+    dijadikan syarat: +0,68% dengan blok t=+1,18 saja.
+    CATATAN PENTING untuk semua kriteria berbasis pola ini (launchpad, reversal, volsr):
+    angkanya ALPHA (keunggulan vs kelas likuiditas yang sama), bukan jaminan laba
+    bersih. Diuji sebagai portofolio non-overlap 5 hari dengan biaya 0,3% x turnover,
+    edge role reversal (+0,28% per 5 hari) habis oleh biaya transaksi; Launch Pad
+    bertahan (+80% total 4 tahun) tetapi hanya terisi 15% waktu dan drawdown -44%.
+    Jadi pakai ini sebagai penyaring kandidat, bukan sebagai sistem otomatis.
     Syarat buku Bab 6.2 ("TERPENTING! baca Broker Summary") ikut dicek pada kriteria
     "launchpad": saat pola terdeteksi, aplikasi memeriksa apakah broker yang
     mengakumulasi di fase SEBELUM base mengulanginya di fase base (contoh buku: SCMA,

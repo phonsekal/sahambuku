@@ -43,6 +43,12 @@ Cara menjalankan
   # Bagian K: syarat buku Bab 6.2 "top buyer yang sama" (pakai cache broker, 0 kuota)
   .venv/bin/python research/combo_study.py --part brokercombo
 
+  # Bagian L: S&R berbasis volume buku Bab 11 + kontrol volume rendah (0 kuota)
+  .venv/bin/python research/combo_study.py --part volsr
+
+  # Bagian M: kombinasi Launch Pad x role reversal x filter tiket + simulasi portofolio
+  .venv/bin/python research/combo_study.py --part combopattern
+
   # Semua di atas 0 kuota Arjum maupun IDX: data tiket & broker sudah di cache.
 
 HASIL (dijalankan 14 Sep 2026)
@@ -331,6 +337,61 @@ BAGIAN K — SYARAT BUKU BAB 6.2 ("TOP BUYER YANG SAMA"): TIDAK BISA DIUJI, dan 
   syarat keras, sampai ada sumber data broker berjendela panjang.
   Jebakan data basi yang sama pernah membuat Bagian B tampak berdaya (15.595 baris /
   681 tanggal) — di sini jebakan itu dicegah lebih dulu, bukan sesudah.
+
+BAGIAN L — S&R BERBASIS VOLUME (buku Bab 11): POSITIF, dan kontrolnya menjelaskan
+  kenapa. Buku: cari candle bervolume TERBESAR, pakai LOW-nya sebagai support dan
+  HIGH-nya sebagai resistance ("level yang sangat kuat"). Aplikasi hanya menampilkan
+  level ini; belum pernah diuji sebagai sinyal. 897 emiten, 833.475 saham-hari.
+
+    variasi (SANGAT LIKUID)                       n     alpha20  blok t   holdout h20
+    volume besar — retest support            13.516   +0,90%   +3,93   +1,02 / +0,77
+    volume besar — tembus resistance          1.689   +0,68%   +1,18   +0,39 / +1,00
+    (KONTROL) volume KECIL — retest           6.216   +0,27%   +0,84   +1,32 / -0,78  <-- GAGAL
+    (pembanding) pullback SMA20              13.116   +0,47%   +3,66   +1,42 / -0,50  <-- GAGAL
+    (pembanding) breakout 20 hari             6.951   +1,96%   +3,35   +2,01 / +1,90
+
+  Absolut: retest volume besar abs20 +1,00% vs baseline -0,37%. Per tahun 2022 +0,7 ·
+  2023 +1,5 · 2024 +0,5 · 2025 +1,5 · 2026 -0,6 (satu tahun negatif, dicatat apa adanya).
+  KONTROL ADALAH INTINYA: geometri yang sama persis dengan level dari candle bervolume
+  TERKECIL hanya memberi +0,27% dan gagal holdout. Jadi yang bekerja memang "candle
+  bervolume besar", BUKAN sekadar "harga menyentuh harga lama" — klaim buku lolos uji
+  pada bagian yang bisa diuji. Sisi resistance-nya lemah (blok t=+1,18) dan karena itu
+  TIDAK dijadikan syarat; breakout 20 hari tetap lebih kuat (+1,96%).
+
+BAGIAN M — KOMBINASI DUA POLA + FILTER TIKET: tidak ada sinergi, dan simulasi
+  portofolio memunculkan batas praktis yang lebih penting dari alpha-nya.
+
+  1) KEDUA POLA TIDAK PERNAH BERTEMU. Dari 182 kejadian Launch Pad dan 6.526 kejadian
+     role reversal, irisan keduanya NOL di hari yang sama — masuk akal, sebab LP
+     mensyaratkan base menyempit lalu tembus, sedangkan RR justru mensyaratkan sudah
+     tembus 60 hari lalu menguji ulang. "LP DAN RR" karena itu tidak bisa diuji.
+  2) LP ATAU RR tidak lebih baik dari RR sendirian (+1,22% vs +1,16%; blok +4,84 vs
+     +5,96) — karena LP cuma 1,2/hari sedangkan RR 6,4/hari. Menggabungkan dua sinyal
+     yang jarang hanya menambah kerumitan.
+  3) FILTER TIKET MENGUATKAN LAUNCH PAD di semua metrik: alpha5 +2,40% -> +3,95%,
+     alpha20 +6,05% -> +7,58%, absolut abs20 +5,06% -> +7,57%, holdout +9,79%/+3,03%
+     -> +11,39%/+4,88%. Kejujuran sampelnya: 182 -> 146 kejadian, jadi bedanya TIDAK
+     bisa disebut nyata; arahnya konsisten, itu saja. (Ini alasan cron Launch Pad
+     memakai penyaring tiket default aplikasi.)
+  4) SIMULASI PORTOFOLIO (non-overlap, bobot sama, biaya 0,3% x turnover) — inilah
+     angka yang menentukan bisa-tidaknya dipakai, bukan alpha:
+       Launch Pad (hold 5)  total +80,2% · CAGR 15,7% · Sharpe 0,54 · MDD -43,6%
+                            tetapi window terisi hanya 30/204 (15%) -> modal menganggur
+       role reversal (h5)   total -44,6% · Sharpe -0,28 · MDD -56,8%
+       LP | RR (h5)         total -33,3% · Sharpe -0,10
+       role reversal (h20)  total -4,0% vs universe -11,0% (kalah volatilitas)
+     (IHSG pembanding: -7,0% untuk jendela h5, -6,0% untuk h20.)
+  5) KENAPA ALPHA POSITIF TAPI PORTOFOLIO NEGATIF — diperiksa, bukan didiamkan:
+     rata-rata abs5 role reversal per KEJADIAN +0,278%, tetapi portofolio 5-hari yang
+     non-overlap hanya rata-rata -0,189% per window. Selisih ~0,29pp itu seukuran
+     1,2x standard error (per-window sd ~3,3%, 193 window -> SE ~0,24%), jadi sebagian
+     besar adalah derau TANGGAL yang dipilih berulang oleh compounding. Kesimpulan yang
+     kokoh: edge RR per 5 hari (+0,28%) SAMA BESARNYA dengan satu biaya transaksi
+     putar-balik (0,2-0,3%), sehingga RR TIDAK layak dipakai sebagai sistem 5-hari
+     otomatis. Launch Pad edge-nya lebih besar dan lolos biaya, tapi modal 85% waktu
+     menganggur dan MDD -44%.
+     Konsekuensi pemakaian: ketiga kriteria pola ini dipakai sebagai PENYARING KANDIDAT
+     (lalu dikonfirmasi manual/Broker Summary), bukan sebagai mesin beli otomatis.
 
 Aturan bukti yang dipakai script ini
 ------------------------------------
@@ -1583,11 +1644,206 @@ def part_brokercombo(years: int, workers: int) -> None:
     print("  Ini ILUSTRASI, bukan bukti: n jauh di bawah minimum dan jendelanya satu rezim.")
 
 
+# ---------------------------------------------------------------------------
+# 3i. BAGIAN L — S&R BERBASIS VOLUME (buku Bab 11) + KONTROL VOLUME RENDAH
+# ---------------------------------------------------------------------------
+# Buku mengajarkan menentukan S&R dari VOLUME: cari candle dengan volume terbesar,
+# lalu pakai LOW-nya sebagai support dan HIGH-nya sebagai resistance (area, bukan
+# garis) — "level support dan resistance yang sangat kuat". Aplikasi sudah punya
+# `volume_sr_levels()` tapi hanya untuk DITAMPILKAN, belum pernah diuji sebagai sinyal.
+#
+# Uji ini juga memuat kontrol yang jarang dilakukan orang: level yang sama tapi dari
+# candle bervolume TERKECIL. Kalau hasilnya mirip, berarti yang bekerja adalah
+# "harga sedang menyentuh harga lama", BUKAN "volume besar itu penting".
+
+def volume_sr_flags(tk: str, df: pd.DataFrame, lookback: int = 250,
+                    q_big: float = 0.90, q_small: float = 0.10) -> pd.DataFrame:
+    """Penanda vektor S&R berbasis volume (Bab 11) + kontrol volume rendah.
+
+    "Volume besar" = volume >= kuantil-90 dari `lookback` bar terakhir (proksi vektor
+    dari "top-3 volume tertinggi" yang dipakai `volume_sr_levels()` di aplikasi).
+    Level = LOW/HIGH candle volume besar TERAKHIR (ffill) -> selalu point-in-time.
+    Kontrol `lowvol_*` memakai candle kuantil-10 (volume terkecil) dengan geometri
+    yang sama persis, supaya "pentingnya volume" bisa dipisahkan dari "harga menyentuh
+    harga lama".
+    """
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    l = df["Low"].astype(float)
+    v = df["Volume"].astype(float).fillna(0.0)
+    win = max(int(lookback), 60)
+    thr_hi = v.rolling(win, min_periods=50).quantile(q_big)
+    thr_lo = v.rolling(win, min_periods=50).quantile(q_small)
+    big = (v >= thr_hi).fillna(False)
+    small = (v <= thr_lo).fillna(False)
+    s50 = c.rolling(50).mean()
+    s50_up = s50 > s50.shift(20)
+    vr = v / v.rolling(20).mean().replace(0, np.nan)
+
+    def _flags(sel):
+        sup = l.where(sel).ffill()
+        res = h.where(sel).ffill()
+        near_sup = ((c / sup - 1.0).abs() <= 0.02)
+        retest = (near_sup & (c > s50) & s50_up).fillna(False)
+        brk = ((c > res) & (vr >= 1.5)).fillna(False)
+        return sup, res, retest, brk
+
+    sup_hi, res_hi, retest_hi, brk_hi = _flags(big)
+    _, _, retest_lo, brk_lo = _flags(small)
+    out = pd.DataFrame({
+        "vsr_support": retest_hi, "vsr_break": brk_hi,
+        "lowvol_support": retest_lo, "lowvol_break": brk_lo,
+    })
+    out["tk"] = tk
+    return out.reset_index().rename(columns={"index": "date"})
+
+
+def part_volume_sr(years: int, workers: int) -> None:
+    print("== BAGIAN L: S&R berbasis volume (buku Bab 11) vs kontrol volume rendah ==")
+
+    M.BUDGET = 0
+    T = build_ticket(M.fetch_range(years, workers, False))
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = volume_sr_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        g = role_reversal_flags(tk, df)
+        g["date"] = pd.to_datetime(g["date"]).dt.normalize()
+        frames.append(r.merge(f, on=["tk", "date"], how="left")
+                       .merge(g[["tk", "date", "pullback_sma20"]], on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    R = attach_ticket(R, T)
+    cols = ("vsr_support", "vsr_break", "lowvol_support", "lowvol_break", "pullback_sma20")
+    for col in cols:
+        R[col] = R[col].fillna(False)
+    R["small"] = R["small"].fillna(False)
+    sgt = (R["val20"] >= 10e9).fillna(False)
+    Rl = R[sgt].copy()
+    unil = pd.Series(True, index=Rl.index)
+    print(f"  {len(Rl):,} saham-hari SANGAT LIKUID (dari {len(R):,} baris)")
+    print("\n  jumlah kejadian (seluruh pasar → SANGAT LIKUID):")
+    for col in cols + ("breakout20",):
+        print(f"    {col:<16} {int(R[col].sum()):>8,} → {int((R[col] & sgt).sum()):>7,}")
+
+    specs = [
+        ("S&R candle VOLUME BESAR — retest support", Rl["vsr_support"]),
+        ("S&R candle VOLUME BESAR — tembus resistance", Rl["vsr_break"]),
+        ("(kontrol) candle VOLUME KECIL — retest", Rl["lowvol_support"]),
+        ("(kontrol) candle VOLUME KECIL — tembus", Rl["lowvol_break"]),
+        ("(pembanding) pullback SMA20", Rl["pullback_sma20"]),
+        ("(pembanding) breakout 20 hari", Rl["breakout20"].fillna(False)),
+    ]
+    print("\n=== alpha vs SANGAT LIKUID ===")
+    compare(Rl, specs, unil, horizons=(5, 20))
+    print("\n  Holdout paruh waktu:")
+    for h in (5, 20):
+        for lab, m in specs:
+            print(f"    {lab:<44} h{h:<2} {holdout_split(Rl, m, unil, h)}")
+
+    print("\n=== RETURN ABSOLUT ===")
+    print(f"  {'variasi':<44} {'n':>7} {'abs5':>8} {'abs20':>8}")
+    for lab, m in [("SANGAT LIKUID (baseline)", unil)] + specs:
+        sel = Rl.loc[m.fillna(False)]
+        if not len(sel):
+            print(f"  {lab:<44} {'-':>7}")
+            continue
+        print(f"  {lab:<44} {len(sel):>7,} {sel['abs5'].mean():>+7.2f}% {sel['abs20'].mean():>+7.2f}%")
+
+    print("\n  Per tahun (horizon 20) — hanya bila ada cukup sampel:")
+    for lab, m in specs[:2] + specs[4:5]:
+        print(f"    {lab:<44} {per_year(Rl, m, unil, 20)}")
+
+
+# ---------------------------------------------------------------------------
+# 3j. BAGIAN M — KOMBINASI DUA POLA BUKU + FILTER TIKET
+# ---------------------------------------------------------------------------
+# Launch Pad (Bab 6.2) dan role reversal (Bab 1.4) sama-sama punya alpha positif, tapi
+# keduanya juga "harga kuat di sekitar level penting". Pertanyaannya: apakah
+# menggabungkannya menambah sesuatu, atau hanya mengurangi jumlah sinyal tanpa
+# memperbaiki hasil? Diuji juga di atas filter tiket, dan ditutup dengan simulasi
+# portofolio (bukan cuma alpha) karena pola yang jarang punya masalah praktis lain:
+# modal sering menganggur dan turnover mahal.
+
+def part_combo_patterns(years: int, workers: int) -> None:
+    print("== BAGIAN M: kombinasi Launch Pad x role reversal x filter tiket ==")
+
+    M.BUDGET = 0
+    T = build_ticket(M.fetch_range(years, workers, False))
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = special_pattern_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        g = role_reversal_flags(tk, df)
+        g["date"] = pd.to_datetime(g["date"]).dt.normalize()
+        frames.append(r.merge(f[["tk", "date", "lp_prod"]], on=["tk", "date"], how="left")
+                       .merge(g[["tk", "date", "role_reversal"]], on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    R = attach_ticket(R, T)
+    for col in ("lp_prod", "role_reversal"):
+        R[col] = R[col].fillna(False)
+    R["small"] = R["small"].fillna(False)
+    sgt = (R["val20"] >= 10e9).fillna(False)
+    Rl = R[sgt].copy()
+    unil = pd.Series(True, index=Rl.index)
+    lp, rr = Rl["lp_prod"], Rl["role_reversal"]
+    print(f"  {len(Rl):,} saham-hari SANGAT LIKUID")
+    print(f"  Launch Pad: {int(lp.sum())} · role reversal: {int(rr.sum())} · "
+          f"dua-duanya di hari yang sama: {int((lp & rr).sum())}")
+    print(f"  tiket kecil di antara kandidat: LP {int((lp & Rl['small']).sum())} · "
+          f"RR {int((rr & Rl['small']).sum())}")
+
+    specs = [
+        ("Launch Pad saja", lp),
+        ("role reversal saja", rr),
+        ("Launch Pad ATAU role reversal", lp | rr),
+        ("Launch Pad DAN role reversal", lp & rr),
+        ("Launch Pad + buang tiket kecil", lp & ~Rl["small"]),
+        ("role reversal + buang tiket kecil", rr & ~Rl["small"]),
+        ("(LP | RR) + buang tiket kecil", (lp | rr) & ~Rl["small"]),
+    ]
+    print("\n=== alpha vs SANGAT LIKUID ===")
+    compare(Rl, specs, unil, horizons=(1, 5, 20))
+    print("\n  Holdout paruh waktu:")
+    for h in (5, 20):
+        for lab, m in specs:
+            print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m, unil, h)}")
+
+    print("\n=== RETURN ABSOLUT ===")
+    print(f"  {'variasi':<34} {'n':>7} {'abs5':>8} {'abs20':>8} {'>0 (20h)':>9}")
+    for lab, m in specs:
+        sel = Rl.loc[m.fillna(False)]
+        if not len(sel):
+            print(f"  {lab:<34} {'-':>7}")
+            continue
+        print(f"  {lab:<34} {len(sel):>7,} {sel['abs5'].mean():>+7.2f}% "
+              f"{sel['abs20'].mean():>+7.2f}% {(sel['abs20'] > 0).mean() * 100:>8.1f}%")
+
+    # Simulasi portofolio: inilah yang membedakan "alpha bagus" dari "bisa dipakai".
+    # HOLD 5 hari (sesuai sifat pola breakout) dan 20 hari, bobot sama, biaya 0,3%.
+    print("\n=== SIMULASI PORTOFOLIO (bobot sama, biaya 0,3% x turnover) ===")
+    for hold in (5, 20):
+        for lab, m in (("Launch Pad saja", lp), ("role reversal saja", rr),
+                       ("Launch Pad ATAU role reversal", lp | rr)):
+            B.simulate_equity(Rl, m, f"{lab} (hold {hold})", top_n=10, hold=hold,
+                              cost=0.003, rank_col=None, min_names=1)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
                     choices=["ticket", "silent", "swing", "bands", "calib", "audit",
-                             "special", "reversal", "lpweight", "brokercombo"])
+                             "special", "reversal", "lpweight", "brokercombo",
+                             "volsr", "combopattern"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -1616,6 +1872,10 @@ def main() -> None:
         part_lpweight(args.years, args.workers)
     elif args.part == "brokercombo":
         part_brokercombo(args.years, args.workers)
+    elif args.part == "volsr":
+        part_volume_sr(args.years, args.workers)
+    elif args.part == "combopattern":
+        part_combo_patterns(args.years, args.workers)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)
