@@ -7975,8 +7975,11 @@ def preclose_track():
                  "Yang diukur: selisih harga masuk pra-tutup terhadap harga tutup "
                  "resmi, dan berapa banyak sinyal yang masih bertahan pada penutupan."),
         "empty_reason": (None if tr else
-                         "Belum ada verifikasi tersimpan (cron preclose-verify belum "
-                         "pernah berjalan, atau penyimpanan Upstash tidak aktif)."),
+                         "Belum ada verifikasi tersimpan. Tiga sebab yang mungkin: cron "
+                         "preclose-verify belum pernah berjalan; penyimpanan Upstash tidak "
+                         "aktif; atau ia sudah berjalan tetapi bar FINAL untuk tanggal itu "
+                         "belum tersedia (verifikasi sengaja TIDAK mencatat apa pun dalam "
+                         "keadaan itu supaya akurasinya tidak diisi pembanding yang salah)."),
         "disclaimer": DISCLAIMER,
     }
 
