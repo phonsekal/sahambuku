@@ -6223,11 +6223,12 @@ def cron_launchpad(request: Request, secret: str = Query(""),
         dropped_min_grade = len(hits) - len(keep)
         hits = keep
 
-    # Rezim IHSG ikut dilaporkan: uji Bagian N (research/combo_study.py --part regime)
-    # menemukan Launch Pad saat IHSG di atas MA200 jauh lebih ringan risikonya
-    # (MDD -14,9% vs -43,6% tanpa batasan rezim), sedangkan saat bear justru merugi
-    # (-17,1%). Sinyalnya tetap dilaporkan semua supaya tidak ada yang hilang tanpa
-    # jejak — tetapi konteksnya harus ikut, bukan disimpulkan sendiri oleh pemakai.
+    # Rezim IHSG ikut dilaporkan karena uji Bagian N (research/combo_study.py --part
+    # regime) menunjukkan sinyal saat IHSG di BAWAH MA200 konsisten lebih buruk.
+    # Catatan kejujuran penting: angka tunggal seperti "MDD -14,9% saat bull" TIDAK
+    # bertahan saat titik-awal window digeser (uji 5 fase, jendela sama): rentangnya
+    # +50%..+1430%. Yang bertahan hanyalah ARAH-nya -- bull positif di 5/5 fase,
+    # tanpa batasan rezim 4/5. Karena itu notifikasi menyebut rezim, bukan angka.
     rg = _ihsg_regime()
 
     today = time.strftime("%Y-%m-%d")
@@ -6254,9 +6255,10 @@ def cron_launchpad(request: Request, secret: str = Query(""),
                       f"kandidat di bawah berasal dari kelas yang belum diuji.")
             trend = str((rg or {}).get("trend") or "?").upper()
             regime_note = ("" if trend != "BEAR" else
-                           "\n📉 IHSG di BAWAH MA200 (bear). Uji rezim: sinyal Launch Pad "
-                           "saat bear historis MERUGI (-17,1%), sedangkan saat bull MDD-nya "
-                           "jauh lebih ringan (-14,9% vs -43,6%).")
+                           "\n📉 IHSG di BAWAH MA200 (bear). Uji rezim 10 tahun: sinyal "
+                           "Launch Pad saat BEAR lebih buruk (-13,4%); saat bull positif "
+                           "di 5/5 fase window, tanpa batasan rezim 4/5. Angka besarnya "
+                           "tidak stabil antar fase, jadi pakai ini sebagai arah, bukan target.")
             head = (f"🔥 THE LAUNCH PAD — pola buku Bab 6.2 ({today})\n"
                     f"Rezim IHSG: {trend} ({(rg or {}).get('close')} vs MA200 "
                     f"{(rg or {}).get('ma200')}). "
@@ -6293,9 +6295,9 @@ def cron_launchpad(request: Request, secret: str = Query(""),
             "hits_by_grade": by_grade,
             "market_regime": rg,
             "evidence_note": ("Bukti pola ini dihitung di kelas SANGAT LIKUID; kandidat "
-                              "kelas lain dilaporkan tetapi belum diuji. Uji rezim "
-                              "(Bagian N): saat IHSG bull MDD -14,9% vs -43,6% tanpa "
-                              "batasan; saat bear historis merugi -17,1%."),
+                              "kelas lain dilaporkan tetapi belum diuji. Uji rezim + uji "
+                              "ketahanan fase (Bagian N): arah bull lebih baik, tetapi "
+                              "besar hasilnya tidak stabil antar titik-awal window."),
             "results": [{k: r.get(k) for k in ("ticker", "price", "day_return_pct",
                                                "liquidity_grade", "launchpad_info")}
                         for r in hits],

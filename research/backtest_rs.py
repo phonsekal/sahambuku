@@ -494,7 +494,7 @@ def print_breakdown(R: pd.DataFrame) -> None:
 def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
                     top_n: int = 10, hold: int = 5, cost: float = 0.003,
                     rank_col: Optional[str] = "score", min_names: int = 5,
-                    quiet: bool = False) -> dict:
+                    quiet: bool = False, phase: int = 0) -> dict:
     """Portofolio non-overlapping: tiap `hold` hari bursa pilih N nama teratas (bila
     rank_col=None -> SELURUH nama yang lolos mask, bobot sama), biaya 0,3% x turnover.
     Pembanding: IHSG buy&hold dan universe sama-rata.
@@ -506,6 +506,11 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
     Mengembalikan dict berisi angka + jalur ekuitas (dipakai
     scripts/export_pattern_sim.py untuk mengisi api/pattern_sim.json), atau {} bila
     tidak ada sinyal.
+
+    `phase` menggeser titik awal window (0..hold-1). Ini penting untuk sinyal yang
+    jarang: dengan satu titik awal, hasilnya bisa ditentukan oleh fase window yang
+    kebetulan terpilih, bukan oleh sinyalnya. Mengulang beberapa `phase` adalah cara
+    menguji apakah keunggulannya bertahan.
     """
     cols = ["date", "tk", f"abs{hold}", f"ih{hold}"] + ([rank_col] if rank_col else [])
     sel = R.loc[mask.fillna(False), cols].dropna()
@@ -528,7 +533,7 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
     turns: List[float] = []
     prev: set = set()
     windows = invested = 0
-    i = 60
+    i = 60 + (int(phase) % max(hold, 1))
     while i < len(dates) - hold:
         d = dates[i]
         g = by_date.get(d)
@@ -586,6 +591,7 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
         "label": label,
         "mode": mode,
         "hold": hold,
+        "phase": int(phase) % max(hold, 1),
         "cost_pct": cost * 100,
         "n_events": int(mask.fillna(False).sum()),
         "total_pct": (eqs[-1] - 1) * 100 if eqs else None,

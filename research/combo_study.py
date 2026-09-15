@@ -430,8 +430,33 @@ BAGIAN N — POLA SEBAGAI SISTEM, DIBATASI REZIM IHSG (MA200): dugaan lama "port
   menjelaskan sebagian besar totalnya. Keduanya tidak menjadi layak hanya karena
   disaring rezim.
   Konsekuensi di produksi: cron Launch Pad MELAPORKAN semuanya (tidak menyaring diam-
-  diam) tetapi menyebut rezim IHSG + angka bull/bear di notifikasi, supaya pemakai tahu
-  konteksnya dan bisa memutuskan sendiri.
+  diam) tetapi menyebut rezim IHSG di notifikasi, supaya pemakai tahu konteksnya.
+
+  ## KOREKSI PENTING — angka jendela 5 TAHUN DI ATAS TIDAK BERTAHAN ##
+  Angka Bagian N di atas dihitung pada jendela 5 tahun dengan SATU titik-awal window.
+  Kedua-duanya rapuh, dan itu ditemukan dengan menggeser titik awalnya (parameter
+  `phase` di B.simulate_equity) serta memperpanjang jendela ke 10 tahun:
+
+  1) UJI 5 FASE (jendela 5 tahun, sinyal & periode IDENTIK, hanya titik awal digeser):
+       Launch Pad bull   3/5 fase positif · median +104,0% · rentang -30,3% .. +225,7%
+       Launch Pad semua  3/5 fase positif · median  +80,2% · rentang -56,2% .. +216,1%
+     Jadi "bull MDD -14,9%" itu KEBETULAN FASE: fase lain memberi MDD -40,2% dan
+     -46,6%. Klaim "MDD jauh lebih ringan" karena itu DICABUT.
+  2) JENDELA 10 TAHUN (sampel 2292 tanggal, Launch Pad bull 218 tanggal berbeda):
+       Launch Pad bull   5/5 fase positif · median +243,9% · rentang   +50,1% .. +1430,0%
+       Launch Pad semua  4/5 fase positif · median +197,8% · rentang   -25,8% .. +1489,5%
+       Role reversal     3/5 fase positif · median    +6,3% (di jendela 5 tahun: -44,6%)
+       S&R volume        3/5 fase positif · median   +22,8% (di jendela 5 tahun: -20,9%)
+     Dua hal yang berubah: bull menjadi positif di SEMUA fase (vs 4/5 tanpa batasan),
+     tetapi tanda role reversal dan S&R volume BERBALIK dari negatif ke positif hanya
+     karena jendelanya diperpanjang.
+
+  KESIMPULAN YANG JUJUR: hasil portofolio pola-pola ini didominasi variasi sampel.
+  Yang bisa dipercaya hanya DUA hal: (a) arah "bull lebih baik daripada bear" konsisten
+  di semua fase pada jendela 10 tahun, dan (b) alpha per-kejadian dengan blok t-stat
+  (Bagian H/I/L). Angka total/CAGR/MDD tunggal TIDAK layak dijadikan target, dan itu
+  sebabnya dashboard sekarang menampilkan median + rentang antar fase, bukan satu angka.
+  Jangan menghitung ulang dan melaporkan satu fase saja sebagai temuan.
 
 Aturan bukti yang dipakai script ini
 ------------------------------------
@@ -1852,7 +1877,8 @@ def build_pattern_frame(years: int, workers: int):
     return ih, Rl, regime_bull
 
 
-def part_combo_patterns(years: int, workers: int, export: str = "") -> None:
+def part_combo_patterns(years: int, workers: int, export: str = "",
+                        phases: int = 5) -> None:
     """Bagian M + ekspor opsional ke `api/pattern_sim.json`.
 
     `export` diisi path -> hasil simulasi portofolio tiga pola (launchpad, reversal,
@@ -1918,10 +1944,36 @@ def part_combo_patterns(years: int, workers: int, export: str = "") -> None:
                               cost=0.003, rank_col=None, min_names=1)
 
     if export:
-        _export_pattern_sim(sims, Rl, export)
+        # Untuk setiap pola, hasil satu fase TIDAK cukup: yang menentukan bisa jadi
+        # fase window-nya. Jadi yang diekspor adalah ringkasan beberapa fase.
+        out_sims: List[dict] = []
+        for lab, m in used:
+            base = next((s for s in sims if str(s.get("label")).startswith(lab)), None)
+            if base is None:
+                continue
+            tots: List[float] = []
+            for ph in range(max(1, phases)):
+                s = B.simulate_equity(Rl, m, f"{lab} fase {ph}", top_n=10, hold=5,
+                                      cost=0.003, rank_col=None, min_names=1,
+                                      quiet=True, phase=ph)
+                if s:
+                    tots.append(float(s["total_pct"]))
+            base = dict(base)
+            base["label"] = lab
+            base["phase_summary"] = {
+                "phases": max(1, phases),
+                "positive": sum(1 for t in tots if t > 0),
+                "median_pct": float(np.median(tots)) if tots else None,
+                "min_pct": min(tots) if tots else None,
+                "max_pct": max(tots) if tots else None,
+                "totals": tots,
+            }
+            out_sims.append(base)
+        _export_pattern_sim(out_sims, Rl, export, years=years)
 
 
-def _export_pattern_sim(sims: List[dict], Rl: pd.DataFrame, path: str) -> None:
+def _export_pattern_sim(sims: List[dict], Rl: pd.DataFrame, path: str,
+                        years: int = 5) -> None:
     """Tulis hasil simulasi tiga pola ke JSON yang dibaca api/index.py.
 
     Yang disimpan sengaja mencakup angka yang TIDAK enak dilihat (MDD, % window
@@ -1933,9 +1985,15 @@ def _export_pattern_sim(sims: List[dict], Rl: pd.DataFrame, path: str) -> None:
         return
     doc = {
         "meta": {
-            "generated_by": "research/combo_study.py --part combopattern --export",
+            "generated_by": ("research/combo_study.py --part combopattern --export "
+                             "(lalu --part regime --export untuk blok rezim)"),
             "universe": "SANGAT LIKUID (nilai transaksi >= Rp 10 M/hari)",
+            "years": years,
             "cost_note": "biaya 0,3% x turnover per rebalance, portofolio non-overlap",
+            "phase_note": ("Angka 'total_pct' adalah SATU fase window. Karena sinyalnya "
+                           "jarang, hasilnya sangat bergantung fase: lihat 'phase_summary' "
+                           "(berapa fase positif + median + rentang). Rentang yang lebar "
+                           "berarti angka tunggal itu tidak layak dijadikan patokan."),
             "sample": {"stock_days": int(len(Rl)),
                        "tickers": int(Rl["tk"].nunique()),
                        "dates": int(Rl["date"].nunique())},
@@ -1951,7 +2009,7 @@ def _export_pattern_sim(sims: List[dict], Rl: pd.DataFrame, path: str) -> None:
     print(f"\n  Ekspor -> {path}  ({len(sims)} pola, hold 5)")
 
 
-def part_regime(years: int, workers: int, export: str = "") -> None:
+def part_regime(years: int, workers: int, export: str = "", phases: int = 5) -> None:
     """Bagian N: apakah pola buku layak jadi SISTEM bila hanya diambil saat IHSG bull?
 
     Pertanyaan aslinya: "kalau pola ini bagus tapi portofolionya merugi, mungkin karena
@@ -1972,9 +2030,10 @@ def part_regime(years: int, workers: int, export: str = "") -> None:
           f"{bull_dates} tanggal ({bull_dates / max(n_dates, 1) * 100:.0f}%) · "
           f"BEAR {n_dates - bull_dates}")
 
-    patterns = (("Launch Pad", Rl["lp_prod"]),
-                ("Role reversal", Rl["role_reversal"]),
-                ("S&R volume", Rl["vsr_support"]))
+    lp = Rl["lp_prod"].fillna(False)
+    rr = Rl["role_reversal"].fillna(False)
+    vsr = Rl["vsr_support"].fillna(False)
+    patterns = (("Launch Pad", lp), ("Role reversal", rr), ("S&R volume", vsr))
     res: List[dict] = []
     print("\n  Portofolio hold 5 hari, bobot sama, biaya 0,3% x turnover:")
     print(f"  {'pola':<15}{'varian':<13}{'n':>6}{'total':>10}{'CAGR%':>9}"
@@ -1995,12 +2054,61 @@ def part_regime(years: int, workers: int, export: str = "") -> None:
                   f"{s['fill_pct']:>7.0f}%")
         print()
 
+    # --- Seberapa besar sampelnya SEBENARNYA? ---
+    # Jumlah window terisi bisa menyesatkan: beberapa sinyal bisa jatuh di window yang
+    # sama (breakout sering terjadi berbarengan se-pasar). Ukuran sampel yang jujur
+    # adalah jumlah TANGGAL berbeda yang punya sinyal, bukan jumlah kejadian.
+    print("  Sampel sebenarnya (jumlah TANGGAL berbeda yang bersinyal):")
+    for lab, mask in patterns:
+        all_d = int(Rl.loc[mask, "date"].nunique())
+        bull_d = int(Rl.loc[mask & bull, "date"].nunique())
+        print(f"    {lab:<15} semua rezim {all_d:>4} tanggal · bull {bull_d:>4} tanggal")
+
+    # --- Uji ketahanan: apakah keunggulan bull hanya keberuntungan FASE window? ---
+    # Simulasi non-overlap memilih window tiap 5 hari dari SATU titik awal. Dengan
+    # window terisi yang sedikit, hasil bisa ditentukan fase yang kebetulan terpilih,
+    # bukan oleh sinyalnya. Karena itu diulang untuk beberapa titik awal: kalau
+    # keunggulannya nyata, fase-fasenya harus sepakat arahnya.
+    print(f"\n  Uji {phases} fase window (Launch Pad, hold 5) — "
+          f"keunggulan yang nyata harus muncul di semua fase:")
+    print(f"  {'varian':<12}{'fase':>5}{'n':>7}{'total':>10}{'Sharpe':>8}{'MDD%':>8}{'window':>9}")
+    robust: List[dict] = []
+    for sub, m in (("bull saja", lp & bull), ("semua rezim", lp)):
+        tots: List[float] = []
+        for ph in range(max(1, phases)):
+            s = B.simulate_equity(Rl, m, f"LP {sub} fase {ph}", top_n=10, hold=5,
+                                  cost=0.003, rank_col=None, min_names=1,
+                                  quiet=True, phase=ph)
+            if not s:
+                print(f"  {sub:<12}{ph:>5}   (tidak ada sinyal)")
+                continue
+            robust.append({"pattern": "Launch Pad", "regime": sub, "phase": s["phase"],
+                           "n_events": s["n_events"], "total_pct": s["total_pct"],
+                           "sharpe": s["sharpe"], "mdd_pct": s["mdd_pct"],
+                           "invested": s["invested"], "windows": s["windows"]})
+            tots.append(float(s["total_pct"]))
+            print(f"  {sub:<12}{s['phase']:>5}{s['n_events']:>7}{s['total_pct']:>+9.1f}%"
+                  f"{s['sharpe']:>8.2f}{s['mdd_pct']:>8.1f}"
+                  f"{str(s['invested']) + '/' + str(s['windows']):>9}")
+        if tots:
+            pos = sum(1 for t in tots if t > 0)
+            print(f"  -> {sub}: {pos}/{len(tots)} fase positif · median ", end="")
+            print(f"{float(np.median(tots)):+.1f}% · rentang {min(tots):+.1f}% .. {max(tots):+.1f}%")
+        print()
+
     if export:
         try:
             with open(export, "r", encoding="utf-8") as fh:
                 doc = json.load(fh)
         except Exception:
             doc = {"meta": {}, "patterns": []}
+        doc["regime_robust"] = {
+            "note": ("Uji ketahanan fase: simulasi diulang dari beberapa titik awal window. "
+                     "Keunggulan yang hanya muncul di satu fase adalah keberuntungan "
+                     "pemilihan window, bukan ciri sinyalnya."),
+            "phases": max(1, phases),
+            "results": robust,
+        }
         doc["regime"] = {
             "note": ("Varian 'bull saja' = sinyal HANYA saat IHSG di atas MA200-nya; "
                      "varian 'bear saja' sebaliknya. Pembanding (IHSG & universe) tetap "
@@ -2029,6 +2137,8 @@ def main() -> None:
     ap.add_argument("--win", type=int, default=10, help="jendela hari untuk flag silent")
     ap.add_argument("--export", default="",
                     help="tulis hasil simulasi pola ke path JSON (mis. api/pattern_sim.json)")
+    ap.add_argument("--phases", type=int, default=5,
+                    help="jumlah titik awal window untuk uji ketahanan (Bagian N)")
     ap.add_argument("--recent-days", type=int, default=75,
                     help="batasi ke N hari terakhir (data basi disingkirkan); 0 = semua")
     args = ap.parse_args()
@@ -2054,9 +2164,10 @@ def main() -> None:
     elif args.part == "volsr":
         part_volume_sr(args.years, args.workers)
     elif args.part == "combopattern":
-        part_combo_patterns(args.years, args.workers, export=args.export)
+        part_combo_patterns(args.years, args.workers, export=args.export,
+                            phases=args.phases)
     elif args.part == "regime":
-        part_regime(args.years, args.workers, export=args.export)
+        part_regime(args.years, args.workers, export=args.export, phases=args.phases)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)

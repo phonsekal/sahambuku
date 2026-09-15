@@ -2145,11 +2145,16 @@ async function loadPatternSim() {
     const m = d.meta || {}, s = m.sample || {}, b = d.patterns[0] || {};
     let rows = "";
     for (const p of d.patterns) {
+      const ps = p.phase_summary || {};
+      const hasPh = !!(ps.phases && (ps.totals || []).length);
+      const allPos = hasPh && ps.positive === ps.phases;
+      const clsPh = !hasPh ? "text-slate-500" : (allPos ? "text-emerald-400" : (ps.positive > 0 ? "text-amber-300" : "text-rose-400"));
+      const mid = hasPh ? ps.median_pct : p.total_pct;
       rows += `<tr class="border-t border-slate-800/60">
         <td class="py-2 pr-3 font-semibold text-slate-200 whitespace-nowrap">${p.label}</td>
-        <td class="px-2 text-right tabular ${sgn(p.total_pct)}">${num(p.total_pct)}%</td>
-        <td class="px-2 text-right tabular ${sgn(p.cagr_pct)}">${num(p.cagr_pct)}%</td>
-        <td class="px-2 text-right tabular text-slate-300">${num(p.sharpe, 2)}</td>
+        <td class="px-2 text-center tabular ${clsPh}" title="Berapa dari beberapa titik-awal window yang hasilnya positif. Keunggulan yang cuma muncul di satu fase = keberuntungan pemilihan window.">${hasPh ? ps.positive + "/" + ps.phases : "—"}</td>
+        <td class="px-2 text-right tabular ${sgn(mid)}">${num(mid)}%</td>
+        <td class="px-2 text-right tabular text-slate-400">${hasPh ? num(ps.min_pct) + "% … " + num(ps.max_pct) + "%" : "—"}</td>
         <td class="px-2 text-right tabular text-rose-400">${num(p.mdd_pct)}%</td>
         <td class="px-2 text-right tabular text-slate-300">${num(p.fill_pct, 0)}%</td>
         <td class="px-2 text-right tabular text-slate-500">${(p.n_events || 0).toLocaleString("id-ID")}</td>
@@ -2162,7 +2167,17 @@ async function loadPatternSim() {
     const reg = d.regime;
     if (reg && (reg.results || []).length) {
       const rd = reg.dates || {};
-      const lpBull = (reg.results || []).find(x => x && x.pattern === "Launch Pad" && x.regime === "bull saja");
+      const rb = (d.regime_robust && d.regime_robust.results) || [];
+      const summarize = reg2 => {
+        const t = rb.filter(x => x && x.regime === reg2)
+                    .map(x => Number(x.total_pct)).filter(v => isFinite(v));
+        if (!t.length) return null;
+        const srt = [...t].sort((a, b) => a - b);
+        return { n: t.length, positive: t.filter(v => v > 0).length,
+                 median: srt[Math.floor(srt.length / 2)],
+                 min: srt[0], max: srt[srt.length - 1] };
+      };
+      const sBull = summarize("bull saja"), sAll = summarize("semua rezim");
       const rr = reg.results.filter(x => x && x.label).map(x => {
         const bull = x.regime === "bull saja";
         return `<tr class="border-t border-slate-800/60">
@@ -2184,9 +2199,11 @@ async function loadPatternSim() {
               <th class="px-2 pb-2 text-right">MDD</th><th class="px-2 pb-2 text-right">Window</th>
             </tr></thead><tbody>${rr}</tbody></table></div>
           <p class="text-[11px] text-slate-400 mt-2 leading-relaxed">
-            Jendela uji ini BUKAN satu pasar turun — ${(rd.bull || 0).toLocaleString("id-ID")} tanggal bull vs ${(rd.bear || 0).toLocaleString("id-ID")} bear.
-            Yang paling menonjol: <b>Launch Pad saat bull</b> memotong MDD jauh lebih dalam daripada tanpa batasan rezim,
-            tetapi itu hanya dari <b>${lpBull ? lpBull.invested + "/" + lpBull.windows : "?"} window</b> — sampel kecil, jadi arahnya informatif, bukan kepastian.
+            Jendela uji berimbang (${(rd.bull || 0).toLocaleString("id-ID")} tanggal bull vs ${(rd.bear || 0).toLocaleString("id-ID")} bear), jadi ini BUKAN satu pasar turun.
+            Yang lebih penting: angka pada kedua tabel di atas bergantung pada <b>titik-awal window</b>.
+            Dengan sinyal dan periode yang sama persis, hanya titik awalnya digeser ${rb.length ? "beberapa kali" : ""}, hasilnya
+            ${sBull ? `untuk bull: ${sBull.positive}/${sBull.n} fase positif, rentang ${num(sBull.min)}% … ${num(sBull.max)}%` : "—"}${sBull && sAll ? " · tanpa batasan rezim: " : ""}${sAll ? `${sAll.positive}/${sAll.n} fase positif, rentang ${num(sAll.min)}% … ${num(sAll.max)}%` : ""}.
+            Rentang sebesar itu berarti <b>arahnya yang layak dipercaya, bukan besarannya</b> — jadi jangan jadikan satu angka tunggal sebagai patokan.
           </p>
         </div>`;
     }
@@ -2195,10 +2212,10 @@ async function loadPatternSim() {
         <table class="w-full text-xs">
           <thead><tr class="text-[10px] uppercase tracking-wider text-slate-500 text-left">
             <th class="pb-2 pr-3">Pola (hold 5 hari)</th>
-            <th class="px-2 pb-2 text-right" title="Total imbal hasil portofolio selama periode uji">Total</th>
-            <th class="px-2 pb-2 text-right" title="CAGR memakai waktu berjalan sebenarnya; window yang dilewati tetap dihitung">CAGR</th>
-            <th class="px-2 pb-2 text-right" title="Imbal hasil per unit risiko">Sharpe</th>
-            <th class="px-2 pb-2 text-right" title="Penurunan terdalam dari puncak">MDD</th>
+            <th class="px-2 pb-2 text-center" title="Fase window yang positif dari beberapa titik awal yang berbeda">Fase +</th>
+            <th class="px-2 pb-2 text-right" title="Median imbal hasil LINTAS fase window — lebih dapat dipercaya daripada satu angka fase">Median</th>
+            <th class="px-2 pb-2 text-right" title="Rentang hasil antar fase. Lebar rentang = angka tunggal apa pun tidak layak jadi patokan">Rentang fase</th>
+            <th class="px-2 pb-2 text-right" title="Penurunan terdalam dari puncak (fase 0)">MDD</th>
             <th class="px-2 pb-2 text-right" title="Persentase rebalance yang benar-benar terisi sinyal; sisanya modal menganggur">Terisi</th>
             <th class="px-2 pb-2 text-right" title="Jumlah kejadian sinyal dalam sampel">Sinyal</th>
             <th class="px-2 pb-2">Ekuitas</th>
@@ -2208,11 +2225,11 @@ async function loadPatternSim() {
       </div>
       <p class="text-[11px] text-slate-500 mt-3 leading-relaxed">
         Pembanding periode yang sama: <b>IHSG ${num(b.bench_total_pct)}%</b> · universe sama-rata ${num(b.universe_total_pct)}%.
-        Sampel: ${(s.tickers || 0).toLocaleString("id-ID")} saham · ${(s.stock_days || 0).toLocaleString("id-ID")} saham-hari · ${(s.dates || 0).toLocaleString("id-ID")} tanggal.
+        Sampel: ${(s.tickers || 0).toLocaleString("id-ID")} saham · ${(s.stock_days || 0).toLocaleString("id-ID")} saham-hari · ${(s.dates || 0).toLocaleString("id-ID")} tanggal · jendela ${m.years || "?"} tahun.
         Garis putus-putus pada grafik = titik impas (1,0). ${m.cost_note || ""}.
       </p>
       <p class="text-[11px] text-slate-500 mt-2 leading-relaxed">
-        Cara membaca: <b>Terisi rendah</b> berarti pola jarang muncul sehingga modal sebagian besar menganggur; <b>Terisi tinggi + total negatif</b> berarti modal terus bekerja tetapi hasilnya tetap kalah — itu jenis pola yang paling tidak layak dijadikan sistem otomatis. ${m.warning || ""}
+        Cara membaca: <b>Fase +</b> = berapa dari beberapa titik-awal window yang hasilnya positif; <b>Median</b> diambil lintas fase, sedangkan kolom MDD dan terisi berasal dari fase 0 saja. <b>Terisi rendah</b> berarti pola jarang muncul sehingga modal menganggur. Kalau <b>Rentang fase</b> lebar, arahnya saja yang informatif. ${m.warning || ""}
       </p>
       ${regHtml}`;
   } catch (e) {
