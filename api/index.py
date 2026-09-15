@@ -4130,6 +4130,19 @@ def _scan_action_plan(df: pd.DataFrame, action: str,
         return None
 
 
+MOMENTUM_ENTRY_RULE = (
+    "Masuk di harga TUTUP sesi berikutnya, jangan di harga pembukaan. "
+    "Hasil uji 2020-2026 (15.259 sinyal momentumkuat): celah buka sesi berikutnya "
+    "rata-rata +3,24%, dan membeli di celah itu membuat alpanya NEGATIF "
+    "(1 hari -1,60% relatif kelas, blok t -7,46; 5 hari -0,15%, blok t -2,62). "
+    "Menunggu diskon juga TIDAK menolong: order limit di harga sinyal terisi "
+    "75,7% tetapi hasil 3 harinya -1,54% (blok t -9,69), dan makin dalam "
+    "diskonnya makin buruk (-3,67% / -5,69% / -8,21%). Yang bertahan: beli di "
+    "harga tutup sesi berikutnya (+1,55% relatif kelas dalam 3 hari, blok t +5,53, "
+    "positif di 5 dari 7 tahun dan di kedua paruh)."
+)
+
+
 def _momentum_trade_plan(df: pd.DataFrame) -> dict:
     """Rencana dagang harian untuk kriteria momentum (1-5 hari), berbasis ATR.
 
@@ -4138,6 +4151,14 @@ def _momentum_trade_plan(df: pd.DataFrame) -> dict:
     1-5 hari. Di sini levelnya sengaja sederhana dan bisa dipakai apa adanya:
     stop 1,5×ATR14 di bawah harga tutup, target 2× risiko (RRR 1:2 sesuai buku
     Bab 8), dan batas waktu 5 hari (horizon yang diuji).
+
+    HARGA MASUK (bagian J `research/criteria_audit.py`): angka `harga_sinyal` di
+    bawah ini adalah harga TUTUP hari sinyal, dan itu BUKAN harga beli yang
+    tersedia bila pemindaian dilakukan setelah bursa tutup. Seluruh alpha pola ini
+    datang dari celah buka sesi berikutnya, dan membeli di celah itu menghabiskan
+    (bahkan membalikkan) alpanya. Karena itu rencana ini memuat aturan masuk yang
+    eksplisit; SL/TP tetap dihitung dari harga sinyal dan WAJIB dihitung ulang dari
+    harga isi yang sebenarnya.
     """
     try:
         close = df["Close"].astype(float)
@@ -4148,22 +4169,31 @@ def _momentum_trade_plan(df: pd.DataFrame) -> dict:
         risk = 1.5 * atr_v
         day_low = float(df["Low"].astype(float).iloc[-1])
         return {
+            "harga_sinyal": num(last, 2),
+            "harga_sinyal_label": "harga tutup hari sinyal (acuan, bukan harga beli)",
             "entry": num(last, 2),
+            "entry_timing": "beli di harga TUTUP sesi berikutnya",
+            "entry_rule": MOMENTUM_ENTRY_RULE,
             "stop_loss": num(last - risk, 2),
             "target": num(last + 2 * risk, 2),
+            "levels_note": ("SL/TP dihitung dari harga sinyal; hitung ulang dari "
+                            "harga isi yang sebenarnya (jaraknya tetap)."),
             "atr14": num(atr_v, 2),
             "risk_pct": num(risk / last * 100, 2) if last > 0 else None,
             "reward_pct": num(2 * risk / last * 100, 2) if last > 0 else None,
             "rrr": 2.0,
             "max_hold_days": 5,
             "day_low": num(day_low, 2),
-            "note": ("Rencana harian: entry di harga tutup, stop 1,5×ATR14, "
-                     "target 2× risiko (RRR 1:2), keluar maksimum 5 hari bursa. "
-                     "Batas waktu WAJIB: bukti momentum ada di 1-5 hari, bukan 20."),
+            "note": ("Rencana harian: beli di harga TUTUP sesi berikutnya (jangan "
+                     "kejar harga pembukaan), stop 1,5×ATR14, target 2× risiko "
+                     "(RRR 1:2), keluar maksimum 5 hari bursa. Batas waktu WAJIB: "
+                     "bukti momentum ada di 1-5 hari, bukan 20. " + MOMENTUM_ENTRY_RULE),
         }
     except Exception:
         return {"entry": None, "stop_loss": None, "target": None, "rrr": None,
-                "max_hold_days": 5, "note": "Rencana harian tidak dapat dihitung."}
+                "max_hold_days": 5, "entry_timing": "beli di harga TUTUP sesi berikutnya",
+                "entry_rule": MOMENTUM_ENTRY_RULE,
+                "note": "Rencana harian tidak dapat dihitung."}
 
 
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
@@ -4329,12 +4359,13 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "liquid_enough": bool(est_val >= MOMENTUM_VALUE_FLOOR),
             "breakout_20h": bool(breakout_20_series(df).iloc[-1]) if len(df) > 25 else None,
             "plan": _momentum_trade_plan(df),
+            "entry_rule": MOMENTUM_ENTRY_RULE,
             "note": ("Momentum murni (return harian + lantai nilai Rp100 juta). "
                      "Audit 2020-2026: syarat ini lebih baik daripada SCALPING/BSJP "
                      "yang menambah ambang tanpa manfaat — TETAPI keunggulannya "
                      "datang dari subset yang JUGA menembus high 20 hari "
                      "(lihat kriteria 'momentumkuat'): tanpa breakout, alphanya "
-                     "tinggal +0,13% per 5 hari."),
+                     "tinggal +0,13% per 5 hari. " + MOMENTUM_ENTRY_RULE),
         }
         item["criteria_met"] = [f"MOMENTUM >= {mom_min_pct:g}%"] if mom_ok else []
         _attach_plan(mom_ok, act="BUY")
@@ -4374,11 +4405,14 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "above_high20_pct": (num((float(close_s.iloc[-1]) / prev_high20 - 1) * 100, 1)
                                  if prev_high20 > 0 else None),
             "plan": _momentum_trade_plan(df),
+            "entry_rule": MOMENTUM_ENTRY_RULE,
             "note": ("Momentum + breakout high 20 hari. Alpha 5 hari +3,58% "
                      "(blok t=+22,25) dan 1 hari +1,64% — sedangkan kedua sisinya "
                      "sendiri cuma +0,13% / -0,14%. Positif di ketujuh tahun dan di "
                      "semua kelas likuiditas. Persentase untung setelah biaya hanya "
-                     "46-47%: ekor keuntungan yang menentukan, jadi disiplin stop wajib."),
+                     "46-47%: ekor keuntungan yang menentukan, jadi disiplin stop wajib. "
+                     "PENTING soal harga masuk: seluruh alpha di atas dihitung dari harga "
+                     "tutup hari sinyal. " + MOMENTUM_ENTRY_RULE),
         }
         item["criteria_met"] = (["MOMENTUM + BREAKOUT 20H"] if kuat_ok else [])
         _attach_plan(kuat_ok, act="BUY")
@@ -6756,7 +6790,8 @@ def cron_momentum(request: Request, secret: str = Query(""),
                 p = (r.get("momentum_info") or {}).get("plan") or {}
                 if p.get("stop_loss") is None:
                     return ""
-                return (f"\n     SL {p['stop_loss']} ({num(p.get('risk_pct'), 1)}%) · "
+                return (f"\n     beli di harga TUTUP sesi berikutnya (jangan kejar buka)"
+                        f"\n     SL {p['stop_loss']} ({num(p.get('risk_pct'), 1)}%) · "
                         f"TP {p['target']} (+{num(p.get('reward_pct'), 1)}%) · maks "
                         f"{p.get('max_hold_days', 5)} hari")
 
@@ -7302,7 +7337,20 @@ def screener(
     bear 1,77%. JUJUR SOAL RISIKO: kejadian yang untung setelah biaya 0,3% hanya
     46-47% (di bawah 50%) — rata-rata ditarik ekor keuntungan, jadi disiplin stop dan
     ukuran posisi yang menentukan. Rencana hariannya (stop 1,5xATR14, target 2x risiko,
-    maksimum 5 hari) tersedia di momentum_info.plan.
+    maksimum 5 hari) tersedia di momentum_info.plan, termasuk aturan HARGA MASUK.
+    HARGA MASUK (research/criteria_audit.py Bagian J) — dibaca sebelum memakai apa pun
+    di atas: seluruh alpha momentum di atas dihitung dari harga TUTUP hari sinyal.
+    Kalau pemindaian dijalankan setelah bursa tutup, harga itu sudah tidak tersedia,
+    dan yang tersisa hanyalah celah buka sesi berikutnya. Uji pada 15.259 sinyal
+    momentumkuat 2020-2026: celah buka rata-rata +3,24%, dan membelinya membuat alpha
+    relatif kelas NEGATIF (1 hari -1,60% blok t=-7,46; 5 hari -0,15% blok t=-2,62).
+    Menunggu diskon juga tidak menolong: order limit di harga sinyal terisi 75,7%
+    tetapi hasil 3 harinya -1,54% (blok t=-9,69), dan makin dalam diskonnya makin
+    buruk (-3,67% / -5,69% / -8,21%). Satu-satunya jalur yang bertahan: beli di harga
+    TUTUP sesi berikutnya (+1,55% relatif kelas dalam 3 hari, blok t=+5,53, net +1,73%,
+    positif di 5 dari 7 tahun dan di kedua paruh). Kesimpulan praktisnya: kalau ingin
+    mendapat alpha penuh, pindai SEBELUM bursa tutup dan beli di harga tutup hari itu;
+    kalau memindai malam, jangan kejar pembukaan, tunggu tutup sesi berikutnya.
     Kriteria "buykuat" (BARU) = KUALITAS BELI TERBAIK: skor beli >= 70 DAN tiket tidak
     kecil, dengan filter rezim IHSG aktif secara default. Ini kombinasi PERSIS yang
     diukur audit, dan kombinasi itu memang lebih baik daripada skor sendirian:

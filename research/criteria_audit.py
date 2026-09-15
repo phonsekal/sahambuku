@@ -133,6 +133,38 @@ GABUNGAN (--combos): yang paling penting dari seluruh audit ini.
   Pengecualian yang jujur: dengan launchpad TIDAK ada sinergi (irisan < sisi terbaik),
   jadi jangan menggabungkan keduanya hanya karena keduanya terdengar kuat.
 
+HARGA MASUK (--exec / --exec2) — bagian I & J, dan ini membatalkan cara membaca
+semua angka di atas bila pemindaian dilakukan setelah bursa tutup.
+
+  Seluruh tabel sebelumnya mengukur close[t] -> close[t+h], yaitu MENGHARAPKAN bisa
+  membeli di harga tutup hari sinyal. Pemindaian pukul 18.00 tidak bisa itu. Uji
+  langsung, momentumkuat, 15.259 sinyal 2020-2026:
+
+    jalur masuk                                 abs%  alphaK%  blok t   net%
+    [asumsi lama] close[t] -> close[t+5]       +4,92    +4,05  +18,23   +4,62
+    tunggu: close[t+1] -> close[t+4]           +2,03    +1,55   +5,53   +1,73
+    tunggu: close[t+1] -> close[t+6]           +2,74    +1,98   +8,26   +2,44
+    kejar OPEN t+1 -> close[t+1]               -1,81    -1,60   -7,46   -2,11
+    kejar OPEN t+1 -> close[t+5]               +0,24    -0,15   -2,62   -0,06
+
+  Mekanismenya (subsampel ber-harga-open, 3.938 sinyal): celah buka rata-rata
+  +3,24%, lalu fade intraday -1,81%. Jadi SELURUH alpha momentum adalah satu malam
+  celah buka, bukan tren beberapa hari. Setelah celah diambil, sisanya nol/negatif.
+
+  Menunggu diskon TIDAK menolong (14.511 sinyal ber-Low, semua tahun):
+    limit = harga close sinyal  terisi 75,7%  alpha H+3 -1,54%  blok t -9,69
+    limit 2% di bawah close     terisi 61,9%  alpha H+3 -3,67%  blok t -18,38
+    limit 5% di bawah close     terisi 44,4%  alpha H+3 -5,69%  blok t -36,45
+    limit 8% di bawah close     terisi 18,4%  alpha H+3 -8,21%  blok t -40,51
+    pembanding semua sinyal                alpha H+3 +3,39%  blok t +17,61
+  Yang tampak "murah" memang sedang jatuh, bukan sedang diskon. Jadi jangan pasang
+  batas harga di bawah harga sinyal sebagai syarat masuk.
+
+  Jalur yang bertahan dan dipakai produksi: BELI DI HARGA TUTUP SESI BERIKUTNYA
+  (+1,55% relatif kelas dalam 3 hari, blok t +5,53, net +1,73%, positif di 5 dari 7
+  tahun dan di kedua paruh). Aturan ini dipasang di momentum_info.entry_rule dan
+  kolom Rencana Harian. Kalau ingin alpha PENUH, pindai SEBELUM bursa tutup.
+
 BATASAN YANG HARUS DISEBUT
 --------------------------
 * Panel memakai kolom Open/High/Low dari ringkasan harian IDX. Kolom OpenPrice
@@ -146,6 +178,14 @@ BATASAN YANG HARUS DISEBUT
   sudah memotong 0,3% round-trip.
 * Kriteria bandar/silent/koreksi TIDAK bisa diuji di sini (butuh riwayat per broker
   atau Broker Summary harian). Ini bukan berarti keduanya buruk.
+* Uji harga masuk (bagian I/J) hanya bisa memakai tahun yang punya kolom OpenPrice:
+  3.938 dari 15.259 sinyal momentumkuat, dan 93% di antaranya dari 2025-2026
+  (bagian J-c). Bagian J-f menjawab ini dengan sampel PENUH 15.259 sinyal (tanpa
+  syarat kolom open) dan hasilnya tetap positif, jadi kesimpulan "tunggu tutup sesi
+  berikutnya" tidak bergantung pada tahun yang kebetulan punya kolom open.
+* Asumsi eksekusi bagian J masih ideal: harga tutup sesi berikutnya diasumsikan
+  bisa didapat (di bursa ini likuiditas eceran besar, tetapi pada saham tipis
+  volume saat tutup bisa menggeser harga). Realisasinya lebih buruk dari tabel.
 """
 
 from __future__ import annotations
@@ -275,6 +315,11 @@ def signals_for(df: pd.DataFrame) -> Dict[str, pd.Series]:
     # --- momentum mentah (pembanding: apakah ambang SCALPING/BSJP menambah apa pun) ---
     out["momentum>=10%"] = (day_ret >= 10.0).fillna(False)
     out["momentum>=8%"] = (day_ret >= 8.0).fillna(False)
+
+    # --- momentumkuat: DEFINISI SAMA dengan kriteria produksi (momentum + breakout).
+    # Tanpa baris ini, kriteria termuda di aplikasi tidak ikut teraudit.
+    out["momentumkuat"] = (out["momentum>=8%"] & out["breakout"]
+                           & (value >= 100e6)).fillna(False)
     return out
 
 
@@ -303,6 +348,7 @@ def build_signal_frame(p: pd.DataFrame, min_bars: int = 60,
         df = P.to_ohlcv(g)
         close = df["Close"].astype(float)
         op = df["Open"].astype(float)
+        low = df["Low"].astype(float)
         value = A._value_series(df).astype(float)
         v20 = value.rolling(20).mean()
         grade = v20.apply(lambda v: _liquidity_class(float(v)) if pd.notna(v) else None)
@@ -343,6 +389,27 @@ def build_signal_frame(p: pd.DataFrame, min_bars: int = 60,
         nxt_ok = (op.shift(-1) > 0) & (op.shift(-1) < close * 5)
         frame["fwd1_open"] = ((op.shift(-1).where(nxt_ok) / close - 1.0) * 100.0).to_numpy()
         frame["open_next_ok"] = nxt_ok.to_numpy(bool)
+
+        # --- EKSEKUSI NYATA (bagian I) ---------------------------------------
+        # Sinyal dihitung dari close[t]. Kalau pemindaian dilakukan SETELAH bursa
+        # tutup, harga close[t] sudah tidak bisa dibeli — yang tersedia adalah OPEN
+        # t+1. Jadi diukur dua jalur masuk yang benar-benar bisa dieksekusi:
+        #   gap1 : celah buka besok terhadap close hari sinyal (bisa > 0 = kejar).
+        #   oc{k}: masuk di OPEN t+1, keluar di CLOSE hari ke-k setelah masuk.
+        #   cc{k}: masuk di CLOSE t+1 (menunggu sehari), keluar k hari setelahnya.
+        nxt = op.shift(-1).where(nxt_ok)
+        frame["gap1"] = ((nxt / close - 1.0) * 100.0).to_numpy()
+        # Order limit di harga close sinyal: terisi bila LOW besok menyentuh harga itu.
+        # Kolom Low jauh lebih lengkap daripada Open, jadi aturan ini bisa diuji pada
+        # sampel jauh lebih besar (lihat laporan bagian J-e).
+        low_ok = (low > 0) & (low < close * 5)
+        lw = low.shift(-1).where(low_ok.shift(-1))
+        with np.errstate(all="ignore"):
+            frame["lowratio1"] = ((lw / close - 1.0) * 100.0).to_numpy()
+        frame["low_next_ok"] = low_ok.shift(-1).fillna(False).to_numpy(bool)
+        for k in (1, 2, 3, 5):
+            frame[f"oc{k}"] = ((close.shift(-k) / nxt - 1.0) * 100.0).to_numpy()
+            frame[f"cc{k}"] = ((close.shift(-(k + 1)) / close.shift(-1) - 1.0) * 100.0).to_numpy()
         rows.append(frame[keep])
         if (i + 1) % 200 == 0:
             print(f"  ... {i + 1}/{len(codes)} emiten")
@@ -384,6 +451,18 @@ def add_excess(S: pd.DataFrame) -> pd.DataFrame:
     cls1 = S.groupby(["date", "grade"])["fwd1_open"].transform("mean")
     S["excg1_open"] = S["fwd1_open"] - cls1
 
+    # Jalur eksekusi (bagian I) juga harus dibandingkan dengan KELAS LIKUIDITAS yang
+    # sama, kalau tidak tabelnya tidak sebanding dengan tabel close->close: saham
+    # yang melonjak itu mayoritas kelas kecil, dan kelas kecil naik lebih tinggi dari
+    # pasar, jadi selisih mentah terhadap pasar akan menyanjung jalur mana pun.
+    for col in ("oc1", "oc2", "oc3", "oc5", "cc1", "cc3", "cc5"):
+        if col not in S.columns:
+            continue
+        cc = f"excg_{col}"
+        cls = S.groupby(["date", "grade"])[col].transform("mean")
+        S[cc] = S[col] - cls
+        S[f"exc_{col}"] = S[col] - S["date"].map(S.groupby("date")[col].mean())
+
     # --- rezim pasar: indeks rata-rata (equal-weight) + MA200 -----------------
     # IHSG sendiri tidak ada di panel (hanya saham). Karena itu dipakai indeks
     # equal-weight se-pasar sebagai pengganti rezim; definisinya sama seperti
@@ -402,7 +481,7 @@ def add_excess(S: pd.DataFrame) -> pd.DataFrame:
 
 CRITERIA_ORDER = [
     "scalping", "bsjp", "swing", "breakout", "launchpad", "reversal", "volsr",
-    "buy>=70", "buy>=50", "momentum>=10%", "momentum>=8%",
+    "buy>=70", "buy>=50", "momentumkuat", "momentum>=10%", "momentum>=8%",
 ]
 
 
@@ -530,6 +609,221 @@ def report_criteria(S: pd.DataFrame, min_grade: Optional[str], years: Optional[f
         print(f"  {name:<16} " + " ".join(cells))
 
 
+def report_exec2(S: pd.DataFrame) -> None:
+    """BAGIAN J — KENAPA HARGA MASUK MENENTUKAN SEMUANYA.
+
+    Bagian I menunjukkan masuk di OPEN besok menghapus seluruh alpha. Di sini
+    dijelaskan MEKANISME-nya dan diuji apakah masih ada jalur masuk yang sah:
+      (a) berapa besar celah buka, dan dari mana asalnya (satu malam, bukan tren);
+      (b) ke mana harga bergerak SETELAH celah itu (fade intraday);
+      (c) apakah masuk di CLOSE besok (setelah fade) masih bertahan sebagai alpha
+          relatif KELAS likuiditas, di semua tahun, dan di kedua paruh;
+      (d) aturan order yang bisa dijalankan: limit di harga close sinyal.
+    """
+    base = S["momentumkuat"].fillna(False)
+    ok = base & S["open_next_ok"] & S["gap1"].notna()
+    print("\n-- J. MEKANISME: dari mana alpha momentumkuat sebenarnya berasal --")
+    print(f"  Sinyal momentumkuat: {int(base.sum()):,} · subsampel ber-OPEN: "
+          f"{int(ok.sum()):,} ({100 * ok.sum() / max(base.sum(), 1):.1f}%)")
+    yr = S.loc[ok, "date"].dt.year.value_counts().sort_index()
+    print("  sebaran tahun subsampel ber-OPEN: " +
+          " · ".join(f"{y}:{int(c):,}" for y, c in yr.items()))
+
+    # (a) penguraian satu malam + hari sinyal
+    gap = S.loc[ok, "gap1"].mean()
+    fade = S.loc[ok, "oc1"].mean()
+    print(f"\n  (a) Penguraian: close hari sinyal -> OPEN besok   : {gap:+.2f}%")
+    print(f"      open besok -> close hari itu (fade intraday)  : {fade:+.2f}%")
+    tot = (1 + gap / 100.0) * (1 + fade / 100.0) * 100.0 - 100.0
+    print(f"      -> close hari sinyal -> close besok          : {tot:+.2f}%")
+    print("      Artinya: alpha sebesar itu adalah SATU MALAM celah buka, bukan tren")
+    print("      beberapa hari. Kalau celahnya tidak bisa Anda dapat, hampir tidak ada sisa.")
+
+    # (b) sisa setelah celah, per jalur, relatif kelas
+    print(f"\n  (b) Jalur masuk, alpha relatif KELAS yang sama (blok t dari rata-rata harian):")
+    print(f"      {'jalur masuk':<40} {'abs%':>7} {'alphaK%':>8} {'blok t9':>8} {'net%':>7} {'%untung':>8}")
+    for lab, col, exc, hz in (
+            ("[lama] close[t] -> close[t+5]", "fwd5", "excg5", 5),
+            ("open[t+1] -> close[t+1]  (kejar buka)", "oc1", "excg_oc1", 1),
+            ("open[t+1] -> close[t+5]", "oc5", "excg_oc5", 5),
+            ("close[t+1] -> close[t+2]  (tunggu 1 hari)", "cc1", "excg_cc1", 1),
+            ("close[t+1] -> close[t+4]", "cc3", "excg_cc3", 3),
+            ("close[t+1] -> close[t+6]", "cc5", "excg_cc5", 5)):
+        per = S.loc[ok].groupby("date")[exc].mean()
+        net = S.loc[ok, col] - COST_ROUND_TRIP * 100
+        print(f"      {lab:<40} {S.loc[ok, col].mean():>+7.2f} {S.loc[ok, exc].mean():>+8.2f} "
+              f"{block_t(per, 1 if hz <= 1 else max(hz, 3)):>+8.2f} {net.mean():>+7.2f} "
+              f"{(net > 0).mean() * 100:>7.1f}%")
+
+    # (c) apakah jalur close[t+1] bertahan lintas tahun dan lintas paruh?
+    print(f"\n  (c) Ketahanan jalur tunggu-1-hari (close[t+1] -> close[t+4], alpha kelas):")
+    sub = S.loc[ok].copy()
+    sub["y"] = sub["date"].dt.year
+    print(f"      {'tahun':<8} {'n':>7} {'open->close H+2':>16} {'close+1->close+4':>17} "
+          f"{'blok t':>7}")
+    for y, g in sub.groupby("y"):
+        if len(g) < 200:
+            continue
+        per = g.groupby("date")["excg_cc3"].mean()
+        print(f"      {y:<8} {len(g):>7,} {g['excg_oc2'].mean():>+16.2f} "
+              f"{g['excg_cc3'].mean():>+17.2f} {block_t(per, 3):>+7.2f}")
+    half = len(sub) // 2
+    sub = sub.sort_values("date")
+    for lab, g in (("paruh awal", sub.iloc[:half]), ("paruh akhir", sub.iloc[half:])):
+        print(f"      {lab:<8} {len(g):>7,} {g['excg_oc2'].mean():>+16.2f} "
+              f"{g['excg_cc3'].mean():>+17.2f} {'-':>7}")
+
+    # (d) aturan order: limit di harga close sinyal (hanya terisi bila harga turun)
+    print(f"\n  (d) Aturan order yang bisa dijalankan (limit di harga close sinyal):")
+    print(f"      {'aturan':<44} {'n':>7} {'terisi':>7} {'alphaK H+3':>11} {'net%':>7}")
+    for lab, cond in (("limit terisi bila open besok <= close sinyal", S["gap1"] <= 0),
+                      ("open besok tidak naik >2%", S["gap1"] <= 2.0),
+                      ("open besok tidak naik >5%", S["gap1"] <= 5.0),
+                      ("semua (tanpa batas)", S["gap1"].notna())):
+        m = ok & cond
+        if int(m.sum()) < 100:
+            continue
+        per = S.loc[m].groupby("date")["excg_oc3"].mean()
+        net = S.loc[m, "oc3"] - COST_ROUND_TRIP * 100
+        print(f"      {lab:<44} {int(m.sum()):>7,} "
+              f"{100 * m.sum() / ok.sum():>6.1f}% {S.loc[m, 'excg_oc3'].mean():>+11.2f} "
+              f"{net.mean():>+7.2f}")
+    # (f) SAMPEL PENUH (tanpa syarat harga OPEN) — jalur tunggu-1-hari diuji di
+    # seluruh 2020-2026, bukan hanya di tahun-tahun yang punya harga pembukaan.
+    full = base & S["fwd5"].notna()
+    print(f"\n  (f) Sampel penuh {int(full.sum()):,} sinyal — jalur tunggu-1-hari vs asumsi lama:")
+    print(f"      {'jalur':<34} {'abs%':>7} {'alphaK%':>8} {'blok t':>7} {'net%':>7} "
+          f"{'%untung':>8} {'awal/akhir':>13}")
+    for lab, col, exc, hz in (("[lama] close[t] -> close[t+5]", "fwd5", "excg5", 5),
+                              ("tunggu: close[t+1] -> close[t+4]", "cc3", "excg_cc3", 3),
+                              ("tunggu: close[t+1] -> close[t+6]", "cc5", "excg_cc5", 5)):
+        m = full & S[col].notna()
+        per = S.loc[m].groupby("date")[exc].mean()
+        net = S.loc[m, col] - COST_ROUND_TRIP * 100
+        h_aw, h_ak = holdout(S.loc[m, exc].reset_index(drop=True), hz)
+        print(f"      {lab:<34} {S.loc[m, col].mean():>+7.2f} {S.loc[m, exc].mean():>+8.2f} "
+              f"{block_t(per, hz):>+7.2f} {net.mean():>+7.2f} {(net > 0).mean() * 100:>7.1f}% "
+              f"{h_aw:>+6.2f}/{h_ak:>+6.2f}")
+    yrf = S.loc[full].copy()
+    yrf["y"] = yrf["date"].dt.year
+    print(f"      per tahun (alpha kelas), jalur tunggu H+3: " + " · ".join(
+        f"{int(y)}: {g['excg_cc3'].mean():+.2f}" for y, g in yrf.groupby("y") if len(g) >= 200))
+
+    # (e) ORDER LIMIT di harga close sinyal, menunggu sepanjang hari besok.
+    # Kolom Low jauh lebih lengkap daripada Open, jadi aturan ini diuji pada sampel
+    # yang jauh lebih besar dan mencakup semua tahun.
+    print(f"\n  (e) Order limit di harga close sinyal (terisi bila LOW besok menyentuh):")
+    lm = base & S["low_next_ok"] & S["lowratio1"].notna()
+    yr2 = S.loc[lm, "date"].dt.year.value_counts().sort_index()
+    print(f"      sinyal momentumkuat ber-LOW: {int(lm.sum()):,} "
+          f"({100 * lm.sum() / max(int(base.sum()), 1):.1f}% dari seluruh sinyal)")
+    print("      sebaran tahun: " + " · ".join(f"{y}:{int(c):,}" for y, c in yr2.items()))
+    print(f"      {'limit harga':<26} {'terisi':>7} {'H+3 abs%':>9} {'alphaK%':>8} "
+          f"{'blok t':>7} {'net%':>7} {'%untung':>8}")
+    for cut, lab in ((0.0, "= close sinyal"), (-2.0, "2% di bawah close"),
+                     (-5.0, "5% di bawah close"), (-8.0, "8% di bawah close")):
+        m = lm & (S["lowratio1"] <= cut) & S["fwd3"].notna()
+        if int(m.sum()) < 100:
+            print(f"      {lab:<26} {int(m.sum()):>7,}  (sampel kecil)")
+            continue
+        per = S.loc[m].groupby("date")["excg3"].mean()
+        net = S.loc[m, "fwd3"] - COST_ROUND_TRIP * 100
+        print(f"      {lab:<26} {100 * m.sum() / lm.sum():>6.1f}% {S.loc[m, 'fwd3'].mean():>+9.2f} "
+              f"{S.loc[m, 'excg3'].mean():>+8.2f} {block_t(per, 3):>+7.2f} "
+              f"{net.mean():>+7.2f} {(net > 0).mean() * 100:>7.1f}%")
+    # Pembanding: berapa hasilnya kalau limit itu TIDAK terisi alias kita tidak beli.
+    lm3 = lm & S["fwd3"].notna()
+    if int(lm3.sum()) >= 100:
+        print(f"      {'[pembanding] semua sinyal ber-LOW':<26} {'100.0%':>7} "
+              f"{S.loc[lm3, 'fwd3'].mean():>+9.2f} {S.loc[lm3, 'excg3'].mean():>+8.2f} "
+              f"{block_t(S.loc[lm3].groupby('date')['excg3'].mean(), 3):>+7.2f} "
+              f"{(S.loc[lm3, 'fwd3'] - COST_ROUND_TRIP * 100).mean():>+7.2f}")
+
+    print("      (blok t3: " + " · ".join(
+        f"{lab}: {block_t(S.loc[ok & cond].groupby('date')['excg_oc3'].mean(), 3):+.2f}"
+        for lab, cond in (("limit", S["gap1"] <= 0), ("<=+2%", S["gap1"] <= 2.0)))
+        + ")")
+
+
+def report_exec(S: pd.DataFrame) -> None:
+    """HARGA MASUK YANG BENAR-BENAR TERSEDIA (bagian I).
+
+    Pertanyaan yang dijawab: kalau pemindaian dilakukan SETELAH bursa tutup (mis.
+    18.00), harga entry apa yang realistis, dan apakah hasilnya masih ada setelah
+    celah buka (gap) diperhitungkan?
+
+    Kenapa ini wajib diuji dan tidak boleh diasumsikan: seluruh tabel sebelumnya
+    mengukur close[t] -> close[t+h], yaitu MENGHARAPKAN kita bisa membeli di harga
+    close hari sinyal. Itu tidak mungkin bila sinyal ditemukan malam hari. Di sini
+    diukur tiga jalur masuk atas sinyal yang sama.
+    """
+    base = S["momentumkuat"].fillna(False)
+    ok = base & S["open_next_ok"] & S["gap1"].notna()
+    print(f"\n-- I. EKSEKUSI NYATA: masuk besok buka vs asumsi lama (close hari sinyal) --")
+    print(f"  Sinyal momentumkuat: {int(base.sum()):,} · yang punya OPEN besok: "
+          f"{int(ok.sum()):,} ({100 * ok.sum() / max(base.sum(), 1):.1f}%) · "
+          f"rentang {S.loc[ok, 'date'].min().date()} -> {S.loc[ok, 'date'].max().date()}")
+
+    for name, m in (("momentumkuat", ok),
+                    ("buy>=70", S["buy>=70"].fillna(False) & S["open_next_ok"] & S["gap1"].notna()),
+                    ("momentum (tanpa breakout)",
+                     S["momentum>=8%"].fillna(False) & ~S["breakout"].fillna(False)
+                     & S["open_next_ok"] & S["gap1"].notna())):
+        if int(m.sum()) < 100:
+            continue
+        print(f"\n  {name}: n={int(m.sum()):,}")
+        print(f"    {'jalur masuk':<34} {'abs%':>7} {'alphaK%':>8} {'blok t9':>8} "
+              f"{'net%':>7} {'%untung':>8}")
+        # Asumsi lama (tidak bisa dieksekusi bila memindai malam)
+        r5 = S.loc[m, "fwd5"]
+        print(f"    {'[asumsi lama] close hari sinyal':<34} {r5.mean():>+7.2f} "
+              f"{S.loc[m, 'excg5'].mean():>+8.2f} {'-':>8} {r5.mean()-0.3:>+7.2f} "
+              f"{(r5-0.3>0).mean()*100:>7.1f}%")
+        # Jalur yang benar-benar bisa dieksekusi: masuk di OPEN besok
+        for k, lab in ((1, "masuk OPEN besok -> close H+1"),
+                       (2, "masuk OPEN besok -> close H+2"),
+                       (3, "masuk OPEN besok -> close H+3"),
+                       (5, "masuk OPEN besok -> close H+5")):
+            col = f"oc{k}"
+            per = S.loc[m].groupby("date")[col].mean()
+            net = S.loc[m, col] - COST_ROUND_TRIP * 100
+            print(f"    {lab:<34} {S.loc[m, col].mean():>+7.2f} {per.mean():>+8.2f} "
+                  f"{block_t(per, max(k, 2)):>+8.2f} {net.mean():>+7.2f} "
+                  f"{(net>0).mean()*100:>7.1f}%")
+        # Menunggu sehari: masuk di CLOSE besok
+        for k in (1, 3, 5):
+            col = f"cc{k}"
+            sub = S.loc[m & S[col].notna()]
+            net = sub[col] - COST_ROUND_TRIP * 100
+            print(f"    {'masuk CLOSE besok -> close H+'+str(k):<34} {sub[col].mean():>+7.2f} "
+                  f"{sub.groupby('date')[col].mean().mean():>+8.2f} {'-':>8} "
+                  f"{net.mean():>+7.2f} {(net>0).mean()*100:>7.1f}%")
+
+    # Celah buka: seberapa besar, dan mulai berapa besar alpha-nya hilang?
+    print(f"\n  CELAH BUKA (OPEN besok vs close hari sinyal) untuk momentumkuat:")
+    g = S.loc[ok, "gap1"]
+    q = g.quantile([0.10, 0.25, 0.50, 0.75, 0.90])
+    print(f"    rata-rata {g.mean():+.2f}% · median {q[0.50]:+.2f}% · "
+          f"p10 {q[0.10]:+.2f}% · p25 {q[0.25]:+.2f}% · p75 {q[0.75]:+.2f}% · p90 {q[0.90]:+.2f}%")
+    print(f"    {'celah buka':<22} {'n':>7} {'lanjut H+1':>11} {'lanjut H+3':>11} {'lanjut H+5':>11} {'%untung H+3':>12}")
+    buckets = [(-1e9, 0.0, "<= 0% (buka turun)"),
+               (0.0, 2.0, "0 s/d +2%"),
+               (2.0, 5.0, "+2% s/d +5%"),
+               (5.0, 1e9, "> +5% (gap besar)")]
+    for lo, hi, lab in buckets:
+        sub = S.loc[ok & (S["gap1"] > lo) & (S["gap1"] <= hi)]
+        if len(sub) < 50:
+            print(f"    {lab:<22} {len(sub):>7,}  (sampel kecil)")
+            continue
+        net3 = sub["oc3"] - COST_ROUND_TRIP * 100
+        print(f"    {lab:<22} {len(sub):>7,} {sub['oc1'].mean():>+11.2f} "
+              f"{sub['oc3'].mean():>+11.2f} {sub['oc5'].mean():>+11.2f} "
+              f"{(net3>0).mean()*100:>11.1f}%")
+    print("\n  CATATAN: 'blok t9' memakai pembagi blok minimum 2 karena horizon pendek; "
+          "'alphaK' pada jalur open TIDAK dikurangi celah buka, sedangkan kolom 'abs%' "
+          "sudah termasuk celah itu (masuk di harga open, bukan di harga close kemarin).")
+
+
 def report_short(S: pd.DataFrame) -> None:
     """Horizon PENDEK (1-3-5 hari) untuk kombinasi yang paling menjanjikan.
 
@@ -635,6 +929,10 @@ def main() -> None:
                     help="hanya jalankan tabel horizon pendek (1/2/3/5 hari)")
     ap.add_argument("--combos", action="store_true",
                     help="hanya jalankan uji gabungan momentum x pola lain")
+    ap.add_argument("--exec", action="store_true",
+                    help="hanya jalankan uji eksekusi nyata (masuk di open besok)")
+    ap.add_argument("--exec2", action="store_true",
+                    help="mekanisme celah buka + aturan order (bagian J)")
     args = ap.parse_args()
 
     p = P.load_panel()
@@ -656,6 +954,15 @@ def main() -> None:
     if args.combos:
         S = S[S["fwd20"].notna()].reset_index(drop=True)
         report_combos(S)
+        return
+    if args.exec:
+        S = S[S["fwd5"].notna()].reset_index(drop=True)
+        report_exec(S)
+        return
+    if args.exec2:
+        S = S[S["fwd5"].notna()].reset_index(drop=True)
+        report_exec(S)
+        report_exec2(S)
         return
     S = S[S["fwd20"].notna()].reset_index(drop=True)
     report_criteria(S, args.min_grade, args.years)
