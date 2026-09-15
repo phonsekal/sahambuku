@@ -34,6 +34,17 @@ Cara menjalankan
   # Bagian H: audit bonus skor beli Launch Pad / Drop Base Rally (0 kuota IDX)
   .venv/bin/python research/combo_study.py --part special
 
+  # Bagian I: role reversal S&R buku Bab 1.4 (0 kuota IDX)
+  .venv/bin/python research/combo_study.py --part reversal
+
+  # Bagian J: kalibrasi bobot bonus Launch Pad (0 kuota IDX)
+  .venv/bin/python research/combo_study.py --part lpweight
+
+  # Bagian K: syarat buku Bab 6.2 "top buyer yang sama" (pakai cache broker, 0 kuota)
+  .venv/bin/python research/combo_study.py --part brokercombo
+
+  # Semua di atas 0 kuota Arjum maupun IDX: data tiket & broker sudah di cache.
+
 HASIL (dijalankan 14 Sep 2026)
 -----------------------------
 BAGIAN A — filter tiket: POSITIF dan tahan uji. Universe SANGAT LIKUID, alpha
@@ -260,6 +271,67 @@ BAGIAN H — AUDIT BONUS SKOR BELI YANG HANYA ADA DI JALUR LIVE (buku Bab 6.2/6.
   ("launchpad") supaya pola terkuat di aplikasi bisa dicari se-pasar, bukan hanya
   terlihat saat satu saham dianalisis.
 
+BAGIAN I — ROLE REVERSAL S&R (buku Bab 1.4): POSITIF, dan BEDA dari "dekat support".
+  Buku menyebut perubahan peran S&R sebagai "salah satu prinsip paling kuat". Aplikasi
+  belum punya apa pun untuk ini, dan catatan lama justru berlawanan arah (komponen
+  "dekat support" di skor beli pernah diuji ber-edge NEGATIF t=-7,9 lalu dibuang).
+  897 emiten, 833.433 saham-hari. Definisi: resistance = high tertinggi 60 bar;
+  retest = 2-20 bar setelah breakout, harga kembali ke level ±3% TANPA pernah close
+  >3% di bawahnya.
+
+    variasi (SANGAT LIKUID)                     n    alpha20   blok t   holdout h20
+    role reversal                           6.526   +1,16%   +5,96    +1,31 / +1,00
+    + buang tiket kecil                     6.147   +1,23%   +4,90    +1,55 / +0,88
+    (pembanding) dekat resistance, belum tembus 8.499 +1,01%  +5,14    +1,08 / +0,93
+    (pembanding) pullback SMA20 tren naik  13.116   +0,47%   +3,66    +1,42 / -0,50  <-- GAGAL
+    role reversal + volume >= 1,5x             537   +0,67%   +0,73    +1,25 / +0,03  <-- merusak
+
+  Return absolut: role reversal abs20 +0,68% vs baseline SANGAT LIKUID -0,37%.
+  POSITIF DI SEMUA TAHUN: 2022 +0,7 · 2023 +1,8 · 2024 +0,6 · 2025 +0,7 · 2026 +3,1.
+  Dua temuan yang penting dan mudah salah:
+    (a) "pullback ke SMA20" (support biasa) GAGAL holdout (-0,50% di paruh akhir) —
+        jadi role reversal bukan pengganti biasa dari "dekat support";
+    (b) menambah syarat volume >= 1,5x justru MERUSAK (alpha5 -0,74%, blok t -2,10) —
+        retest yang sehat itu SEPI, persis premis buku bahwa volume mengering saat
+        konsolidasi dan baru meledak saat breakout.
+  Catatan jujur: pembanding "harga 3% di bawah resistance yang belum ditembus" hampir
+  sebaik role reversal (+1,01% vs +1,16%). Jadi kelas yang bekerja adalah "harga di
+  sekitar high 60 hari", dan role reversal adalah versi terbaik di dalam kelas itu —
+  bukan satu-satunya. Itu sebabnya kriteria ini TIDAK ditambahkan ke skor beli
+  (akan menumpuk dengan komponen breakout high 20 hari yang sudah ada), melainkan
+  menjadi kriteria tersendiri.
+
+BAGIAN J — BOBOT BONUS LAUNCH PAD: TIDAK PENTING. Yang penting BENTUKNYA.
+  Menyapu bobot 0/5/10/15/20/25 poin pada kelompok skor >= 70 hampir tidak mengubah
+  apa pun: kohortnya 22.900 -> 22.902 saham-hari (artinya hanya 1-2 kejadian di
+  5 tahun yang bergeser melewati batas 70), karena kandidat Launch Pad hampir selalu
+  SUDAH berskor >= 70 (profil harga/volume/breakout-nya kuat). Jadi memperdebatkan
+  10 vs 20 poin itu sia-sia; jangan ulangi.
+  Koreksi penting atas Bagian H: angka "94 saham-hari masuk HANYA karena bonus" di
+  Bagian H itu didorong oleh DROP BASE RALLY, bukan Launch Pad. Setelah bobot DBR
+  menjadi 0, kelompok marjinal dari Launch Pad tinggal 1-2 kejadian (dan yang 1-2 itu
+  kebetulan merugi, abs20 -10,8% / -7,0%). Artinya keputusan yang benar-benar
+  berpengaruh di Bagian H adalah MEMBUANG DBR dari bonus, bukan memilih bobot.
+  Yang lebih berguna bukan bonus, melainkan GERBANG: "skor >= 60 ATAU Launch Pad"
+  memperbesar kohort 21,2 -> 40,1 saham/hari dengan blok t h5 +13,18 dan holdout yang
+  MEMBAIK di paruh terlemah (h20 paruh awal -0,02% -> +0,21%). Karena Launch Pad sudah
+  jadi kriteria screener tersendiri ("launchpad"), gerbang itu sudah tersedia tanpa
+  harus mencampurnya ke skor.
+
+BAGIAN K — SYARAT BUKU BAB 6.2 ("TOP BUYER YANG SAMA"): TIDAK BISA DIUJI, dan itu
+  diperiksa sampai ke mekanismenya, bukan cuma disimpulkan.
+  Buku mewajibkan cek Broker Summary pada fase base (SCMA: YP/RF/LG mengulang).
+  Hasil penghitungan: kejadian Launch Pad 5 tahun = 742 (SANGAT LIKUID 182), tetapi
+  cache broker hanya menyimpan **80 sesi terakhir per emiten** — dan untuk saham tidak
+  aktif jendela itu jatuh di 2020 (COWL). Setelah jendela diwajibkan MUTAKHIR (tanggal
+  terakhir <= 10 hari dari kejadian) dan KONTIGU (tanpa lubang > 10 hari): **NOL
+  kejadian** yang bisa dicocokkan. Bukan "hasilnya lemah" — memang tidak ada sampel.
+  Karena itu syarat ini DIIMPLEMENTASIKAN sebagai INFORMASI di aplikasi (dicek live
+  saat pola terdeteksi, biaya 1 permintaan API per kandidat) dan TIDAK dijadikan
+  syarat keras, sampai ada sumber data broker berjendela panjang.
+  Jebakan data basi yang sama pernah membuat Bagian B tampak berdaya (15.595 baris /
+  681 tanggal) — di sini jebakan itu dicegah lebih dulu, bukan sesudah.
+
 Aturan bukti yang dipakai script ini
 ------------------------------------
 - alpha = excess return vs IHSG, di-cluster per tanggal (t-stat dari sebaran
@@ -273,6 +345,8 @@ Aturan bukti yang dipakai script ini
 from __future__ import annotations
 
 import argparse
+import glob
+import json
 import math
 import os
 import sys
@@ -292,6 +366,7 @@ TICKET_REG_SLOPE = 0.3681
 TICKET_RESID_FLOOR = -0.5176
 SGT_LIKUID = 10e9          # ambang "SANGAT LIKUID" (Rp 10 M/hari)
 SEG_GAP_DAYS = 10          # jarak hari yang memutus segmen kontigu
+BROKAR_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".cache", "brokar")
 
 
 # ---------------------------------------------------------------------------
@@ -1183,11 +1258,336 @@ def part_special(years: int, workers: int) -> None:
             print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m, pd.Series(True, index=Rl.index), h)}")
 
 
+# ---------------------------------------------------------------------------
+# 3f. BAGIAN I — ROLE REVERSAL S&R (buku Bab 1.4)
+# ---------------------------------------------------------------------------
+# Buku menyebut perubahan peran S&R sebagai "salah satu prinsip paling kuat" dalam
+# analisis teknikal: resistance yang ditembus berubah menjadi support saat harga
+# menguji level itu DARI ATAS. Aplikasi belum punya apa pun untuk ini, dan catatan
+# lama justru berlawanan arah — komponen "dekat support" di skor beli pernah diuji
+# ber-edge NEGATIF (t=-7,9) lalu dibuang. Jadi pertanyaannya: apakah versi "broken &
+# retested" berbeda dari support biasa, atau ikut tenggelam?
+
+def role_reversal_flags(tk: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Penanda vektor untuk role reversal S&R + dua pembanding.
+
+    Semua definisi pakai data sampai bar itu saja (point-in-time):
+      role_reversal : resistance = HIGH tertinggi 60 bar sebelumnya ditembus close,
+                      lalu 2-20 bar kemudian harga menguji level itu dari ATAS
+                      (dalam rentang ±3%) TANPA pernah close < level-3% sejak
+                      breakout (kalau tembus, peran baliknya gagal).
+      near_resistance: harga 3% DI BAWAH resistance yang belum ditembus — level belum
+                      berubah peran. Ini pembanding paling adil untuk klaim buku.
+      pullback_sma20 : koreksi sehat ke SMA20 dalam tren naik (support biasa tanpa
+                      breakout sebelumnya) — logika yang sama dengan jalur proksi
+                      kriteria SWING di api/index.py.
+    """
+    import api.index as ai  # noqa: E402
+
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    idx = pd.Series(np.arange(len(df)), index=df.index)
+
+    res = h.rolling(60).max().shift(1)
+    brk = c > res
+    seg = brk.cumsum()
+    level = res.where(brk).ffill()
+    brk_idx = idx.where(brk).ffill()
+    since = idx - brk_idx
+    dip = (c < level * 0.97).fillna(False)
+    dip_since = dip.astype(float).groupby(seg).cummax().fillna(0.0) > 0
+    near = (c >= level * 0.97) & (c <= level * 1.03)
+    role_reversal = ((since >= 2) & (since <= 20) & near & ~dip_since).fillna(False)
+
+    near_resistance = ((c < res) & (c >= res * 0.97)).fillna(False)
+
+    s20 = c.rolling(20).mean()
+    s50 = c.rolling(50).mean()
+    r = ai.rsi(c, 14)
+    pullback = ((c > s20) & (s20 > s50) & ((c / s20 - 1.0).abs() <= 0.03)
+                & (r >= 35) & (r <= 68)).fillna(False)
+
+    out = pd.DataFrame({"role_reversal": role_reversal, "near_resistance": near_resistance,
+                        "pullback_sma20": pullback})
+    out["tk"] = tk
+    return out.reset_index().rename(columns={"index": "date"})
+
+
+def part_reversal(years: int, workers: int) -> None:
+    print("== BAGIAN I: role reversal S&R (buku Bab 1.4) vs support biasa ==")
+
+    M.BUDGET = 0
+    T = build_ticket(M.fetch_range(years, workers, False))
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = role_reversal_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        frames.append(r.merge(f, on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    R = attach_ticket(R, T)
+    for col in ("role_reversal", "near_resistance", "pullback_sma20"):
+        R[col] = R[col].fillna(False)
+    R["small"] = R["small"].fillna(False)
+    print(f"  observasi: {len(R):,} saham-hari, {R['tk'].nunique()} emiten, "
+          f"{R['date'].nunique()} tanggal; {int(R['v20'].notna().sum()):,} punya data tiket")
+
+    sgt = (R["val20"] >= 10e9).fillna(False)
+    Rl = R[sgt].copy()
+    unil = pd.Series(True, index=Rl.index)
+    print(f"  universe SANGAT LIKUID: {len(Rl):,} saham-hari")
+    print("\n  jumlah kejadian (seluruh pasar → SANGAT LIKUID):")
+    for col in ("role_reversal", "near_resistance", "pullback_sma20"):
+        print(f"    {col:<16} {int(R[col].sum()):>8,} → {int((R[col] & sgt).sum()):>7,}")
+
+    specs = [
+        ("role reversal (breakout lalu retest)", Rl["role_reversal"]),
+        ("+ buang tiket kecil", Rl["role_reversal"] & ~Rl["small"]),
+        ("(kontrol) HANYA tiket kecil", Rl["role_reversal"] & Rl["small"]),
+        ("(pembanding) dekat resistance, belum tembus", Rl["near_resistance"]),
+        ("(pembanding) pullback SMA20 tren naik", Rl["pullback_sma20"]),
+        ("role reversal + volume >= 1,5x", (Rl["role_reversal"] & (Rl["vr"] >= 1.5)).fillna(False)),
+    ]
+    print("\n=== alpha vs SANGAT LIKUID ===")
+    compare(Rl, specs, unil, horizons=(5, 20))
+    print("\n  Holdout paruh waktu:")
+    for h in (5, 20):
+        for lab, m in specs:
+            print(f"    {lab:<40} h{h:<2} {holdout_split(Rl, m, unil, h)}")
+
+    print("\n=== RETURN ABSOLUT (SANGAT LIKUID sebagai baseline) ===")
+    print(f"  {'variasi':<40} {'n':>7} {'abs5':>8} {'abs20':>8} {'>0 (20h)':>9}")
+    rows = [("SANGAT LIKUID (baseline)", unil)] + [(lab, m) for lab, m in specs]
+    for lab, m in rows:
+        sel = Rl.loc[m.fillna(False)]
+        if not len(sel):
+            print(f"  {lab:<40} {'-':>7}")
+            continue
+        print(f"  {lab:<40} {len(sel):>7,} {sel['abs5'].mean():>+7.2f}% "
+              f"{sel['abs20'].mean():>+7.2f}% {(sel['abs20'] > 0).mean() * 100:>8.1f}%")
+
+    print("\n  Alpha per tahun (horizon 20, role reversal):")
+    print(f"    {per_year(Rl, Rl['role_reversal'], unil, 20)}")
+
+
+# ---------------------------------------------------------------------------
+# 3g. BAGIAN J — KALIBRASI BOBOT BONUS LAUNCH PAD
+# ---------------------------------------------------------------------------
+# Bagian H membuktikan polanya punya daya prediksi, tapi TIDAK menentukan berapa poin
+# yang layak diberikan. Di sini bobotnya disapu 0..25 dan dibandingkan tiga bentuk
+# pemakaian: (a) bonus aditif ke skor, (b) gerbang berdiri sendiri (skor >= 70 ATAU
+# Launch Pad), dan (c) dipakai untuk memeringkat Top-N harian. Yang dinilai bukan cuma
+# alpha kelompok, tapi juga berapa kandidat tambahan yang masuk karenanya — karena
+# bobot besar yang hanya menambah sedikit kandidat bagus itu murah, sedangkan bobot
+# besar yang menyapu banyak kandidat biasa itu mahal.
+
+def part_lpweight(years: int, workers: int) -> None:
+    print("== BAGIAN J: kalibrasi bobot bonus Launch Pad =")
+
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = special_pattern_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        frames.append(r.merge(f, on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    R["lp_prod"] = R["lp_prod"].fillna(False)
+    sgt = (R["val20"] >= 10e9).fillna(False)
+    Rl = R[sgt].copy()
+    unil = pd.Series(True, index=Rl.index)
+    bs = Rl["buy_score"].fillna(0.0)
+    lp = Rl["lp_prod"].astype(float)
+    print(f"  {len(Rl):,} saham-hari SANGAT LIKUID · {int(Rl['lp_prod'].sum())} kejadian Launch Pad")
+
+    print("\n=== A. bobot bonus: kelompok skor >= 70 ===")
+    specs = []
+    for w in (0, 5, 10, 15, 20, 25):
+        col = f"bs_w{w}"
+        Rl[col] = (bs + w * lp).clip(upper=100.0)
+        specs.append((f"skor >= 70 (bonus {w} poin)", Rl[col] >= 70))
+    compare(Rl, specs, unil, horizons=(5, 20))
+    print("\n  Holdout paruh waktu (efek bobot):")
+    for h in (5, 20):
+        for lab, m in specs:
+            print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m, unil, h)}")
+
+    print("\n=== B. efek marjinal: yang MASUK HANYA karena bonus ===")
+    print(f"  {'bobot':<8} {'n masuk':>8} {'abs5':>8} {'abs20':>8} {'alpha20':>9} {'blok t':>7}")
+    for w in (5, 10, 15, 20, 25):
+        m = ((Rl[f"bs_w{w}"] >= 70) & (bs < 70)).fillna(False)
+        sel = Rl.loc[m]
+        if not len(sel):
+            print(f"  {w:<8} {0:>8}")
+            continue
+        rows = B.evaluate(Rl, m, f"w{w}", universe_mask=unil)
+        r20 = next((x for x in rows if x["h"] == 20), None)
+        bt = block_t(Rl, m, unil, 20)
+        print(f"  {w:<8} {len(sel):>8,} {sel['abs5'].mean():>+7.2f}% {sel['abs20'].mean():>+7.2f}% "
+              f"{(r20['alpha'] if r20 else float('nan')):>+8.2f}% {bt:>+7.2f}")
+
+    print("\n=== C. bonus aditif vs gerbang berdiri sendiri ===")
+    Rl["bs_w0"] = bs
+    specs2 = [
+        ("skor >= 70 saja (tanpa pola)", bs >= 70),
+        ("skor >= 70 (bonus 10)", Rl["bs_w10"] >= 70),
+        ("skor >= 70 ATAU Launch Pad", (bs >= 70) | Rl["lp_prod"]),
+        ("skor >= 60 ATAU Launch Pad", (bs >= 60) | Rl["lp_prod"]),
+        ("Launch Pad saja", Rl["lp_prod"]),
+    ]
+    compare(Rl, specs2, unil, horizons=(5, 20))
+    print("\n  Holdout paruh waktu:")
+    for h in (5, 20):
+        for lab, m in specs2:
+            print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m, unil, h)}")
+
+    print("\n=== D. peringkat harian (Top-10 per tanggal) ===")
+    specs3 = []
+    for w in (0, 10, 20):
+        specs3.append((f"Top-10 skor (bonus {w})", B.top_n_mask(Rl, f"bs_w{w}", 10)))
+    compare(Rl, specs3, unil, horizons=(5, 20))
+    print("\n  Catatan: efek bonus pada Top-10 nyaris tak terlihat karena 10 teratas "
+          "hampir selalu sudah berskor tinggi; bobotnya lebih berpengaruh di batas >= 70.")
+
+
+# ---------------------------------------------------------------------------
+# 3h. BAGIAN K — SYARAT BUKU BAB 6.2 YANG BELUM DIPAKAI: "TOPI BUYER YANG SAMA"
+# ---------------------------------------------------------------------------
+# Buku menekankan syarat Launch Pad yang belum ada di aplikasi: pada fase uptrend
+# pertama ada Top Buyer tertentu (SCMA: YP, RF, LG), lalu pada fase menyempit broker
+# yang SAMA mengakumulasi LAGI. "TERPENTING! Baca Broker Summary."
+# Syarat ini butuh riwayat per-broker, dan itu 80 hari bursa. Langkah pertamanya bukan
+# mengukur, tapi menghitung berapa kejadian yang tersedia — kalau terlalu sedikit,
+# angka apa pun yang keluar hanya derau.
+
+def load_broker_daily() -> pd.DataFrame:
+    """Cache broker (951 emiten, 80 sesi) -> tabel panjang: code, date, broker, nval."""
+    rows = []
+    for path in sorted(glob.glob(os.path.join(BROKAR_DIR, "*.json"))):
+        try:
+            d = json.load(open(path))
+        except Exception:
+            continue
+        code = d.get("code")
+        for br in d.get("series") or []:
+            bc = br.get("broker_code")
+            for p in br.get("points") or []:
+                rows.append((code, p.get("date"), bc, float(p.get("nval") or 0.0)))
+    out = pd.DataFrame(rows, columns=["code", "date", "broker", "nval"])
+    out["date"] = pd.to_datetime(out["date"]).dt.normalize()
+    return out
+
+
+def part_brokercombo(years: int, workers: int) -> None:
+    print("== BAGIAN K: syarat Bab 6.2 (top buyer yang sama mengakumulasi di fase base) ==")
+
+    BK = load_broker_daily()
+    print(f"  cache broker: {len(BK):,} baris broker-hari, {BK['code'].nunique()} emiten, "
+          f"{BK['date'].nunique()} tanggal ({BK['date'].min().date()} s/d {BK['date'].max().date()})")
+
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = special_pattern_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        frames.append(r.merge(f, on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    R["lp_prod"] = R["lp_prod"].fillna(False)
+    R["code"] = R["tk"].str.replace(".JK", "", regex=False)
+    sgt = (R["val20"] >= 10e9).fillna(False)
+
+    # JEBAKAN yang harus dihindari: cache broker menyimpan "80 sesi TERAKHIR yang
+    # diperdagangkan" PER EMITEN. Untuk saham tidak aktif (mis. COWL) jendela itu
+    # jatuh di 2020, bukan 2026. Kalau tanggal-tanggal itu dipakai apa adanya, uji
+    # ini akan tampak berdaya padahal seluruhnya data basi (kesalahan yang pernah
+    # terjadi di Bagian B). Karena itu: (1) laporan cakupan di bawah, (2) saat
+    # mencocokkan, jendela diwajibkan MUTAKHIR (tanggal terakhir <= 10 hari dari
+    # kejadian) dan kontigu (tanpa lubang > 10 hari).
+    per_code = {c: g.sort_values("date") for c, g in BK.groupby("code")}
+    freshest = max(g["date"].max() for g in per_code.values())
+    current = [c for c, g in per_code.items() if g["date"].max() >= freshest - pd.Timedelta(days=10)]
+    print(f"  jendela broker terbaru berakhir: {freshest.date()} · emiten dengan jendela "
+          f"MUTAKHIR: {len(current)} dari {len(per_code)}")
+
+    lp = R[R["lp_prod"]].copy()
+    lp_sgt = lp[sgt.reindex(lp.index).fillna(False)]
+    in_current = lp[lp["code"].isin(current)]
+    in_current_sgt = lp_sgt[lp_sgt["code"].isin(current)]
+    print(f"\n  kejadian Launch Pad total (5 tahun)  : {len(lp):,}")
+    print(f"    · universe SANGAT LIKUID           : {len(lp_sgt):,}")
+    n_min = 30  # aturan praktis: t-stat blok butuh puluhan kejadian, bukan belasan
+    if len(in_current_sgt) < n_min:
+        print(f"  -> KESIMPULAN DAYA UJI: hanya {len(in_current_sgt)} kejadian Launch Pad "
+              f"(SANGAT LIKUID) yang punya data broker mutakhir — di bawah {n_min} minimum. "
+              "Syarat buku Bab 6.2 TIDAK BISA DIUJI; angka di bawah hanya ilustrasi.")
+
+    base_win, prior_win, max_gap = 15, 15, 10
+    rows = []
+    for _, ev in in_current.iterrows():
+        code, d0 = ev["code"], ev["date"]
+        g = per_code.get(code)
+        if g is None:
+            continue
+        g = g[g["date"] <= d0]
+        ds = np.sort(g["date"].unique())
+        if len(ds) < base_win + prior_win + 1:
+            continue
+        need = ds[-(base_win + prior_win):]
+        if (pd.Timestamp(d0) - pd.Timestamp(ds[-1])).days > max_gap:
+            continue
+        gaps = pd.Series(need).diff().dt.days.dropna()
+        if len(gaps) and gaps.max() > max_gap:
+            continue
+        base_d = set(pd.to_datetime(ds[-base_win:]))
+        prior_d = set(pd.to_datetime(ds[-(base_win + prior_win):-base_win]))
+        base = g[g["date"].isin(base_d)].groupby("broker")["nval"].sum()
+        prior = g[g["date"].isin(prior_d)].groupby("broker")["nval"].sum()
+        if base.empty or prior.empty:
+            continue
+        top_base = set(base.nlargest(3).index)
+        top_prior = set(prior.nlargest(3).index)
+        same = top_base & top_prior
+        rows.append({
+            "code": code, "date": d0, "same_top_buyer": bool(same),
+            "n_same": len(same), "top_base": ",".join(sorted(top_base)),
+            "net_base": float(base.sum()), "abs5": ev.get("abs5"), "abs20": ev.get("abs20"),
+            "exc5": ev.get("exc5"), "exc20": ev.get("exc20"),
+        })
+    C = pd.DataFrame(rows)
+    if C.empty:
+        print("  TIDAK ADA kejadian Launch Pad mutakhir yang bisa dicocokkan dengan data broker.")
+        print("  Artinya syarat Bab 6.2 tidak bisa dinilai dari data gratis — bukan berarti salah.")
+        return
+    yes, no = C[C["same_top_buyer"]], C[~C["same_top_buyer"]]
+    print(f"\n  kejadian yang bisa dicocokkan: {len(C)}")
+    print(f"    · top buyer MENGULANG di fase base : {len(yes)}")
+    print(f"    · tidak mengulang                  : {len(no)}")
+    for lab, part in (("mengulang", yes), ("tidak mengulang", no)):
+        if len(part):
+            print(f"    {lab:<16} abs5 {part['abs5'].mean():>+6.2f}%  abs20 {part['abs20'].mean():>+6.2f}%"
+                  f"  exc20 {part['exc20'].mean():>+6.2f}%")
+    for _, rr in C.iterrows():
+        print(f"    {rr['code']:<6} {pd.Timestamp(rr['date']).date()} "
+              f"ulang={rr['same_top_buyer']} ({rr['top_base']}) abs20={rr['abs20']:+.1f}%")
+    print("  Ini ILUSTRASI, bukan bukti: n jauh di bawah minimum dan jendelanya satu rezim.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
                     choices=["ticket", "silent", "swing", "bands", "calib", "audit",
-                             "special"])
+                             "special", "reversal", "lpweight", "brokercombo"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -1210,6 +1610,12 @@ def main() -> None:
         part_audit(args.years, args.workers, args.top)
     elif args.part == "special":
         part_special(args.years, args.workers)
+    elif args.part == "reversal":
+        part_reversal(args.years, args.workers)
+    elif args.part == "lpweight":
+        part_lpweight(args.years, args.workers)
+    elif args.part == "brokercombo":
+        part_brokercombo(args.years, args.workers)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)

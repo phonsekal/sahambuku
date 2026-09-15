@@ -572,6 +572,83 @@ def drop_base_rally(df: pd.DataFrame) -> dict:
     }
 
 
+def _role_reversal_state(df: pd.DataFrame, lookback: int = 60, tol: float = 0.03,
+                         min_since: int = 2, max_since: int = 20):
+    """Keadaan role reversal S&R (Bab 1.4) per bar: deret, level, & umur breakout.
+
+    Resistance = HIGH tertinggi `lookback` bar SEBELUMNYA (zona, bukan garis — sesuai
+    buku: "S&R adalah Area, bukan Garis Tunggal"). Setelah ditembus close, level itu
+    disimpan dan diperlakukan sebagai support sampai tembus ke bawah (close < level-3%).
+    """
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    idx = pd.Series(np.arange(len(df)), index=df.index)
+    res = h.rolling(lookback).max().shift(1)
+    brk = (c > res).fillna(False)
+    seg = brk.cumsum()
+    level = res.where(brk).ffill()
+    brk_idx = idx.where(brk).ffill()
+    since = idx - brk_idx
+    dip = (c < level * (1.0 - tol)).fillna(False)
+    dip_since = dip.astype(float).groupby(seg).cummax().fillna(0.0) > 0
+    near = (c >= level * (1.0 - tol)) & (c <= level * (1.0 + tol))
+    rr = ((since >= min_since) & (since <= max_since) & near & ~dip_since).fillna(False)
+    return rr, level, since, brk
+
+
+def role_reversal_series(df: pd.DataFrame, lookback: int = 60) -> pd.Series:
+    """Deret vektor: True di bar saat harga RETEST level yang dulu resistance.
+
+    Prinsip buku Bab 1.4 ("salah satu prinsip paling kuat"): resistance yang ditembus
+    berubah jadi support saat diuji dari atas. Aplikasi sebelumnya tidak punya apa pun
+    untuk ini.
+
+    Bukti 5 tahun (research/combo_study.py Bagian I, 897 emiten, 833.423 saham-hari,
+    universe SANGAT LIKUID): n=6.526, alpha20 +1,16% (blok t=+5,96), ABSOLUT abs20
+    +0,68% (baseline -0,37%), holdout DUA paruh positif (+1,31% t=+3,2 dan +1,00%
+    t=+2,1), dan POSITIF DI SEMUA TAHUN (2022 +0,7 · 2023 +1,8 · 2024 +0,6 · 2025 +0,7
+    · 2026 +3,1). Dua hal penting dari uji itu:
+      - Pembanding "support biasa" (pullback ke SMA20 dalam tren naik) GAGAL holdout
+        (-0,50% di paruh akhir), jadi memakai pullback sebagai pengganti tidak sama.
+      - Menambah syarat volume >= 1,5x justru MERUSAK (alpha5 -0,74%): retest yang
+        sehat itu sepi, sesuai premis buku bahwa volume mengering saat konsolidasi.
+    """
+    return _role_reversal_state(df, lookback=lookback)[0]
+
+
+def role_reversal_info(df: pd.DataFrame, lookback: int = 60) -> dict:
+    """Ringkasan role reversal untuk bar terakhir (dipakai panel analisis)."""
+    if len(df) < lookback + 5:
+        return {"detected": False, "note": "Data historis kurang untuk menghitung role reversal."}
+    rr, level, since, brk = _role_reversal_state(df, lookback=lookback)
+    last = float(df["Close"].iloc[-1])
+    lvl = level.iloc[-1]
+    detected = bool(rr.iloc[-1])
+    n_brk = int(brk.sum())
+    info = {
+        "detected": detected,
+        "lookback_bars": lookback,
+        "broken_resistance": (num(lvl, 2) if lvl is not None and not pd.isna(lvl) else None),
+        "days_since_breakout": (int(since.iloc[-1]) if not pd.isna(since.iloc[-1]) else None),
+        "distance_to_level_pct": (num((last / float(lvl) - 1) * 100, 1)
+                                  if lvl is not None and not pd.isna(lvl) and float(lvl) > 0 else None),
+        "breakouts_in_history": n_brk,
+        "note": (
+            "ROLE REVERSAL: harga retest level yang dulu resistance dan kini jadi support "
+            "(Bab 1.4). Uji 5 tahun: alpha20 +1,16% (blok t=+5,96), holdout dua paruh "
+            "positif, dan positif di semua tahun. Zona entry di sekitar level ini; "
+            "batalkan idenya bila close jatuh >3% di bawah level."
+            if detected else
+            ("Level sebelumnya sudah ditembus tapi harga belum/tidak lagi menguji ulang "
+             "area itu (retest terjadi 2-20 bar setelah breakout)."
+             if lvl is not None and not pd.isna(lvl) else
+             "Belum ada resistance yang ditembus, jadi belum ada level yang berubah peran."))
+    }
+    if detected:
+        info["zona"] = [num(float(lvl) * 0.97, 2), num(float(lvl) * 1.03, 2)]
+    return info
+
+
 def launch_pad_series(df: pd.DataFrame) -> pd.Series:
     """Deret vektor: True di bar yang lolos syarat "The Launch Pad" (Bab 6.2).
 
@@ -2348,6 +2425,48 @@ def _idx_acc_stale(last_date: str, max_age_days: int = IDX_ACC_MAX_STALE_DAYS) -
         return False
 
 
+def _broker_repeat_check(bseries: Dict[str, Dict[str, float]], dates: List[str],
+                         base_win: int = 15, prior_win: int = 15,
+                         top_n: int = 3) -> Optional[dict]:
+    """Syarat Bab 6.2: apakah broker yang mengakumulasi di fase AWAL mengulanginya
+    di fase BASE? Buku menyebut syarat ini "TERPENTING": contoh SCMA — top buyer di
+    fase uptrend (YP, RF, LG) kembali melakukan akumulasi saat base menyempit.
+
+    PENTING: ini syarat buku yang BELUM TERBUKTI. Uji 5 tahun (research/combo_study.py
+    Bagian K) menunjukkan TIDAK ADA satu pun kejadian Launch Pad yang punya data
+    broker mutakhir, jadi syarat ini tidak bisa dinilai dari data gratis — bukan
+    berarti salah, tapi juga tidak boleh diiklankan sebagai terverifikasi.
+    """
+    if not bseries or len(dates) < base_win + prior_win:
+        return None
+    ds = list(dates)
+    base_d = ds[-base_win:]
+    prior_d = ds[-(base_win + prior_win):-base_win]
+
+    def _sum(broker: str, window: List[str]) -> float:
+        m = bseries.get(broker) or {}
+        return float(sum(m.get(d, 0.0) for d in window))
+
+    base_net = {b: _sum(b, base_d) for b in bseries}
+    prior_net = {b: _sum(b, prior_d) for b in bseries}
+    top_base = sorted((b for b, v in base_net.items() if v > 0),
+                      key=lambda b: -base_net[b])[:top_n]
+    top_prior = sorted((b for b, v in prior_net.items() if v > 0),
+                       key=lambda b: -prior_net[b])[:top_n]
+    same = [b for b in top_base if b in top_prior]
+    return {
+        "same_top_buyer": bool(same),
+        "same_brokers": same,
+        "top_buyers_base": [{"broker": b, "net": num(base_net[b], 0),
+                             "kekuatan": classify_broker(b)} for b in top_base],
+        "top_buyers_prior": [{"broker": b, "net": num(prior_net[b], 0),
+                              "kekuatan": classify_broker(b)} for b in top_prior],
+        "note": ("Syarat buku Bab 6.2: broker yang sama mengakumulasi lagi di fase base "
+                 "(contoh buku: YP/RF/LG di SCMA). Ini INFORMASI, belum tervalidasi — "
+                 "tidak ada kejadian Launch Pad yang punya data broker mutakhir."),
+    }
+
+
 def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
     """Deret harian akumulasi bandar (/api/broker-accumulation/{code}).
 
@@ -2410,6 +2529,7 @@ def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
 
     dom = pd.Series({pd.Timestamp(d): v for d, v in dom_date.items()}).sort_index()
     total = pd.Series({pd.Timestamp(d): v for d, v in by_date.items()}).sort_index()
+    all_dates = sorted({d for m in bseries.values() for d in m})
     top_broker = max(top.items(), key=lambda kv: kv[1]["cum"]) if top else None
     cands = [b for b in per_broker
              if b["consistency"] >= IDX_ACC_SILENT_CONS
@@ -2443,6 +2563,10 @@ def fetch_idx_accumulation(ticker: str, days: int = 60) -> Optional[dict]:
         "last_bandar_sum": float(total.iloc[-1]) if len(total) else 0.0,
         "top_accumulating_broker": {"broker": top_broker[0], **top_broker[1]} if top_broker else None,
         "silent_accumulator": silent,
+        # Syarat buku Bab 6.2 yang belum pernah dipakai: broker yang mengakumulasi di
+        # fase awal MENGULANGI akumulasinya di fase base. Dipakai oleh kriteria
+        # "launchpad" (hanya saat polanya terdeteksi).
+        "broker_repeat": _broker_repeat_check(bseries, all_dates),
     }
 
 
@@ -3885,7 +4009,7 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
     def _attach_plan(eligible: bool, act: str = "") -> None:
         """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
         if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing", "rs",
-                                            "breakout", "silent", "launchpad"):
+                                            "breakout", "silent", "launchpad", "reversal"):
             return
         action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
         plan = _scan_action_plan(df, action, item.get("bandarmology"),
@@ -4024,9 +4148,32 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "volume_ratio": lp.get("volume_ratio"),
         }
         item["criteria_met"] = ["LAUNCH PAD"] if lp_ok else []
+        # Syarat "TERPENTING" buku Bab 6.2: pada fase base, broker yang dulu
+        # mengakumulasi MENGULANGI akumulasinya. Dicek HANYA bila polanya ketemu
+        # (biaya 1 permintaan API per kandidat, bukan per saham yang dipindai).
+        if lp_ok and ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
+            acc = fetch_idx_accumulation(tk)
+            rep = (acc or {}).get("broker_repeat")
+            if rep:
+                item["launchpad_info"]["broker_confirm"] = rep
         _attach_plan(lp_ok, act="BUY")
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": lp_ok, "bandar_used": bandar_used}
+
+    if criteria == "reversal":
+        # ROLE REVERSAL S&R (buku Bab 1.4): resistance yang sudah ditembus kini jadi
+        # support, dan harga mengujinya dari atas. Bukti 5 tahun universe SANGAT
+        # LIKUID (research/combo_study.py Bagian I): alpha20 +1,16% (blok t=+5,96),
+        # absolut +0,68% (baseline -0,37%), holdout dua paruh positif, positif di
+        # semua tahun. Pembanding "pullback ke SMA20" GAGAL holdout, jadi kriteria ini
+        # bukan pengganti biasa dari "dekat support".
+        rr = role_reversal_info(df)
+        rr_ok = bool(rr.get("detected"))
+        item["reversal_info"] = rr
+        item["criteria_met"] = ["ROLE REVERSAL"] if rr_ok else []
+        _attach_plan(rr_ok, act="BUY")
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": rr_ok, "bandar_used": bandar_used}
 
     _attach_plan(bool(result["eligible"]))
     return {"tk": tk, "skipped": False, "item": item,
@@ -4257,6 +4404,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     bscore = _buy_score_series(df) if criteria == "buy" else None
     brk_s = breakout_20_series(df) if criteria == "breakout" else None
     lp_s = launch_pad_series(df) if criteria == "launchpad" else None
+    rr_s = role_reversal_series(df) if criteria == "reversal" else None
 
     # Filter regime IHSG: sejajarkan close & MA200 IHSG ke index df (ffill).
     ihsg_ok = None
@@ -4287,6 +4435,9 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         elif criteria == "launchpad":
             # The Launch Pad (Bab 6.2) — logika bersama dengan kriteria screener.
             hit = bool(lp_s.iloc[i]) if lp_s is not None else False
+        elif criteria == "reversal":
+            # Role reversal S&R (Bab 1.4) — logika bersama dengan kriteria screener.
+            hit = bool(rr_s.iloc[i]) if rr_s is not None else False
         else:  # swing (proksi nilai transaksi)
             hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                    and float(value_ma20.iloc[i]) >= 10e9
@@ -4412,6 +4563,7 @@ def _matrix_one(tk: str, criteria: str, years: int,
     bscore = _buy_score_series(sub) if criteria == "buy" else None
     brk_s = breakout_20_series(sub) if criteria == "breakout" else None
     lp_s = launch_pad_series(sub) if criteria == "launchpad" else None
+    rr_s = role_reversal_series(sub) if criteria == "reversal" else None
     weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
     ihsg_ok = None
     if ihsg_align is not None and len(ihsg_align):
@@ -4446,6 +4598,8 @@ def _matrix_one(tk: str, criteria: str, years: int,
                 hit = bool(brk_s.iloc[i]) if brk_s is not None else False
             elif criteria == "launchpad":
                 hit = bool(lp_s.iloc[i]) if lp_s is not None else False
+            elif criteria == "reversal":
+                hit = bool(rr_s.iloc[i]) if rr_s is not None else False
             else:
                 hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                        and float(value_ma20.iloc[i]) >= 10e9
@@ -4648,7 +4802,8 @@ def api_info():
             "POST /api/bandarmology/analyze",
             "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
-            "GET  /api/screener?criteria=rs|breakout|launchpad|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
+            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
+            "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "POST /api/screener",
         ],
         "docs": "/docs",
@@ -5314,7 +5469,8 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "fibonacci": fib,
         "candlestick": candles,
         "rsi_divergence": div,
-        "special_patterns": {"launch_pad": lp, "drop_base_rally": dbr},
+        "special_patterns": {"launch_pad": lp, "drop_base_rally": dbr,
+                             "role_reversal": role_reversal_info(df)},
         "screener_hints": screen,
         "signal": signal,
         "action_plan": action_plan,
@@ -5780,6 +5936,67 @@ def cron_rs(request: Request, secret: str = Query(""),
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
 
+@app.get("/api/cron/launchpad")
+def cron_launchpad(request: Request, secret: str = Query(""),
+                   universe: str = Query("liquid", pattern="^(all|liquid)$"),
+                   limit: int = Query(45, ge=5, le=100)):
+    """Cron: pindai pola THE LAUNCH PAD (buku Bab 6.2) dan kirim kandidatnya ke Telegram.
+
+    Alasan pola ini dipindai otomatis, bukan sekadar jadi komponen skor: buktinya
+    paling kuat di aplikasi (alpha20 +6,05%, blok t=+2,52, absolut +5,06%, holdout
+    dua paruh positif) SEKALIGUS paling jarang (~1,2 kejadian/hari se-pasar). Karena
+    syaratnya (base menyempit + breakout + volume) hanya benar di SATU titik waktu,
+    melewatkan sehari berarti sinyalnya hilang — bukan tertunda.
+
+    Dedupe sekali per hari supaya tidak mengirim berulang bila dijalankan berkali-kali.
+    Penyaring tiket TIDAK dipakai di sini karena bukti polanya dihitung tanpa filter
+    itu; cakupan buktinya kelas SANGAT LIKUID (nilai >= Rp10 M/hari).
+    """
+    auth = request.headers.get("authorization", "")
+    bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
+    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
+        raise HTTPException(403, "Forbidden")
+
+    tickers = load_idx_tickers(universe)[:limit]
+    scan = _scan(tickers, "launchpad", "6mo", True, False, False, False, False,
+                 skip_small_ticket=False)
+    hits = scan["results"]
+
+    today = time.strftime("%Y-%m-%d")
+    sent = 0
+    if hits and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        dedupe = f"ci:notif:launchpad:{today}"
+        if not _upstash_get(dedupe):
+            head = (f"🔥 THE LAUNCH PAD — pola buku Bab 6.2 ({today})\n"
+                    f"Uji 5 tahun: alpha20 +6,05% (blok t=+2,52), absolut +5,06% "
+                    f"(rata-rata saham likuid -0,37%).\n")
+            lines: List[str] = []
+            for i, r in enumerate(hits, 1):
+                li = r.get("launchpad_info") or {}
+                parts = [f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
+                         f"{num(r.get('price'), 2)} ({signed_num(r.get('day_return_pct'), 2, '%')})",
+                         f"naik {num(li.get('prior_gain_pct'), 1)}% sebelum base",
+                         f"kontraksi {num(li.get('contraction_ratio'), 2)}",
+                         f"vol {num(li.get('volume_ratio'), 1)}x"]
+                bc = li.get("broker_confirm") or {}
+                if bc.get("same_brokers"):
+                    parts.append("broker ulang: " + ",".join(bc["same_brokers"]))
+                lines.append(" · ".join(parts))
+            msg = (head + "\n".join(lines)
+                   + "\n\nCut-loss bila harga CLOSE di bawah area base/support. "
+                     "Buku Bab 6.2 menekankan: baca Broker Summary sebelum entry.")
+            if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                _upstash_set(dedupe, "1", ttl=86400)
+                sent = 1
+
+    return {"scanned": scan["scanned"], "skipped": scan["skipped"],
+            "launch_pad_hits": len(hits), "telegram_sent": sent,
+            "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+            "results": [{k: r.get(k) for k in ("ticker", "price", "day_return_pct", "launchpad_info")}
+                        for r in hits],
+            "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
+
+
 @app.get("/api/cron/alerts")
 def cron_alerts(request: Request, secret: str = Query("")):
     """Cron (mis. Vercel Cron tiap 15 menit): cek semua portofolio tersinkron dan
@@ -5823,7 +6040,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -5855,7 +6072,12 @@ def backtest(
     jarang (~1,2/hari se-pasar), jadi backtest bisa menghasilkan trade=0 pada sampel
     kecil — itu wajar, bukan tanda rusak. Karena sinyalnya sudah memuat breakout +
     volume, gerbang confirm/bb_confirm/div_vol/weekly sebaiknya dimatikan dulu kalau
-    ingin melihat polanya apa adanya."""
+    ingin melihat polanya apa adanya.
+    Kriteria 'reversal' = role reversal S&R buku Bab 1.4 (resistance ditembus lalu
+    diuji dari atas sebagai support). Bukti 5 tahun universe SANGAT LIKUID
+    (research/combo_study.py Bagian I): alpha20 +1,16% (blok t=+5,96), absolut +0,68%
+    (baseline -0,37%), holdout dua paruh positif, positif di semua tahun. Pembanding
+    "pullback ke SMA20" GAGAL holdout, jadi jangan dianggap sama."""
     if criteria == "all":
         best = None
         for c in ("swing", "scalping", "bsjp", "buy"):
@@ -5965,7 +6187,7 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
@@ -6047,7 +6269,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad|reversal)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -6100,6 +6322,26 @@ def screener(
     DROP BASE RALLY sengaja tidak digabung: uji yang sama tidak menemukan daya
     prediksinya (abs20 -0,86%, paruh awal holdout negatif), dan bobot polanya di skor
     beli sudah diturunkan ke 0.
+    Kriteria "reversal" mencari ROLE REVERSAL S&R (buku Bab 1.4, "salah satu prinsip
+    paling kuat"): resistance yang sudah ditembus berubah peran jadi support saat
+    harga menguji level itu dari atas. Resistance = HIGH tertinggi 60 bar sebelumnya;
+    retest = 2-20 bar setelah breakout, selama harga belum pernah close >3% di bawah
+    level (kalau tembus, peran baliknya gagal). Uji 5 tahun universe SANGAT LIKUID
+    (897 emiten, 833.423 saham-hari): alpha20 +1,16% (blok t=+5,96), absolut abs20
+    +0,68% (baseline -0,37%), holdout DUA paruh positif, dan positif di SEMUA tahun
+    (2022 +0,7 · 2023 +1,8 · 2024 +0,6 · 2025 +0,7 · 2026 +3,1). Dua hal yang penting
+    dan mudah salah: (1) pembanding "pullback ke SMA20" GAGAL holdout (-0,50% di
+    paruh akhir), jadi ini bukan pengganti biasa dari "dekat support"; (2) menambah
+    syarat volume >= 1,5x justru MERUSAK (alpha5 -0,74%) — retest yang sehat itu sepi.
+    Filter regime tidak dipakai: syaratnya sendiri sudah berupa tembusnya resistance
+    60 hari, jadi kekuatan sahamnya sudah jadi bagian dari kriteria.
+    Syarat buku Bab 6.2 ("TERPENTING! baca Broker Summary") ikut dicek pada kriteria
+    "launchpad": saat pola terdeteksi, aplikasi memeriksa apakah broker yang
+    mengakumulasi di fase SEBELUM base mengulanginya di fase base (contoh buku: SCMA,
+    YP/RF/LG). Hasilnya ada di launchpad_info.broker_confirm. Ini INFORMASI, belum
+    tervalidasi: uji 5 tahun menemukan NOL kejadian Launch Pad yang punya data broker
+    mutakhir (data gratis hanya 80 sesi terakhir), jadi syarat itu tidak bisa dinilai
+    dari sumber ini — bukan berarti salah.
     skip_small_ticket=True (default) membuang saham yang tiket rata-ratanya
     terendah (banyak transaksi ritel kecil) DI DALAM kelas likuiditasnya sendiri —
     SANGAT LIKUID (>= Rp10 M/hari), LIKUID (Rp 1-10 M), CUKUP (Rp 100jt-1 M).
