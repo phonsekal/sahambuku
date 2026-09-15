@@ -1,0 +1,43 @@
+name: Pindai Pra-Tutup (harga masuk bisa dibayar hari ini)
+
+# KENAPA CRON INI ADA, DI SAMPING cron momentum PUKUL 17:50:
+# Seluruh bukti alpha momentum dihitung dari harga TUTUP hari sinyal
+# (close[t] -> close[t+h], research/criteria_audit.py). Pindai pukul 17:50 tidak bisa
+# memakai harga itu, dan membeli di celah buka sesi berikutnya justru menghapus alpanya
+# (1 hari -1,60% relatif kelas, blok t -7,46; 5 hari -0,15%, blok t -2,62). Menunggu
+# diskon juga gagal (limit di harga sinyal terisi 75,7% tetapi hasil 3 harinya -1,54%).
+# Satu-satunya jalur yang bertahan adalah membayar harga tutup hari sinyal, dan itu
+# hanya mungkin bila pemindaian dilakukan SEBELUM sesi reguler tutup (15:49:59 WIB).
+# Karena itu cron ini berjalan 15:40 WIB, sepuluh menit sebelum tutup.
+#
+# YANG DIKIRIM: harga masuk = HARGA PASAR SEKARANG (bukan harga tutup), sehingga bisa
+# dieksekusi hari itu juga, plus SL/TP dari rencana pra-tutup dan penanda RAPUH untuk
+# kandidat yang jaraknya <= 2% dari ambang (harga tinggal turun sedikit -> syarat batal).
+#
+# BATASAN YANG DISEBUT DI NOTIFIKASI: harga & volume belum final sampai lewat lelang
+# penutupan (~16:00), dan penyaring ukuran tiket (Freq) belum tersedia intraday.
+on:
+  schedule:
+    - cron: "40 8 * * 1-5"   # 08:40 UTC = 15:40 WIB, Senin-Jumat (10 menit sebelum tutup)
+  workflow_dispatch: {}
+
+jobs:
+  pindai-pra-tutup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Panggil endpoint /api/cron/preclose
+        run: |
+          set -euo pipefail
+          echo "Memindai pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8")
+          echo "HTTP $code"
+          cat resp_preclose.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint pra-tutup membalas HTTP $code"
+            exit 1
+          fi
+          echo "Selesai."

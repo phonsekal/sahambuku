@@ -135,6 +135,7 @@
       <button id="btnScan" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-sky-500/25 transition disabled:opacity-50 disabled:cursor-wait">
         Scan
       </button>
+      <button id="btnPreclose" onclick="scanPreclose()" title="Pindai SAAT SESI MASIH BERJALAN (paling berguna 15:00-15:49 WIB). Harga masuknya adalah harga PASAR SEKARANG, jadi bisa dibayar hari ini juga — sedangkan pemindaian setelah bursa tutup kehilangan alpha momentum karena harga tutupnya sudah tidak bisa dibeli (membeli di celah buka sesi berikutnya = -1,60% relatif kelas)." class="border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">⏱ Pindai pra-tutup</button>
       <button id="btnKoreksiWatch" onclick="renderKoreksiWatch()" class="border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">🔔 Pantauan Telegram</button>
     </div>
     <div id="scanInfo" class="text-xs text-slate-400 mb-3"></div>
@@ -1366,6 +1367,29 @@ function scCriteriaChanged() {
   if (rg) { rg.disabled = noRegime; rg.parentElement.classList.toggle("opacity-40", noRegime); }
 }
 
+// PINDAI PRA-TUTUP: endpoint berbeda, dan sengaja berbeda — harga masuknya adalah harga
+// pasar SAAT pemindaian, bukan harga tutup yang sudah lewat. Sesudah bursa tutup mode ini
+// hanya membaca sesi terakhir yang selesai (fase sesi ikut dilaporkan apa adanya).
+async function scanPreclose() {
+  const btn = $("#btnPreclose");
+  const q = new URLSearchParams({ universe: $("#scUniverse").value,
+    limit: $("#scLimit").value, mom_min_pct: "8" });
+  if ($("#scLimit").value === "50") q.set("limit", "250");   // pra-tutup memeriksa banyak nama
+  btn.disabled = true; btn.textContent = "Memindai harga berjalan…";
+  $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-rose-400 rounded-full animate-spin align-middle mr-2"></span>Mengambil harga berjalan + memverifikasi high 20 sesi…`;
+  $("#screenerResult").innerHTML = "";
+  scanAccum = null; scanWalk = false;
+  try {
+    await loadKoreksiWatch();
+    renderScan(await getJSON(`/api/screener/preclose?${q}`));
+  } catch (e) {
+    $("#screenerResult").innerHTML = errorBox(e.message);
+    $("#scanInfo").innerHTML = "";
+  } finally {
+    btn.disabled = false; btn.textContent = "⏱ Pindai pra-tutup";
+  }
+}
+
 async function scan() {
   const btn = $("#btnScan");
   const q = scParamQuery();
@@ -1493,6 +1517,15 @@ function renderScan(d) {
     <div class="mt-1.5 pt-1.5 border-t border-cyan-500/20 text-amber-300/90">Uji <b>10 tahun</b> universe SANGAT LIKUID (576 saham, 238 rb saham-hari): alpha20 <b>+1,64%</b> (blok t=+9,10) — tetapi jujur soal sampelnya: 13.147 kejadian itu hanya tersebar di <b>49 hari keputusan independen</b> (sinyalnya muncul di ~93% hari bursa), jadi blok t yang besar berasal dari lebar cross-section, bukan dari 13 ribu bukti terpisah. Dua hal yang membedakannya dari "dekat support" biasa: pembanding <b>pullback ke SMA20 lemah</b> (alpha5 −0,05%), dan menambah syarat volume ≥1,5× justru <b>merusak</b> (alpha5 −0,46%, blok t=−3,31) — retest yang sehat itu sepi. ⚠️ Di horizon 5 hari alphanya cuma <b>+0,19%</b>, dan hasil portofolionya bahkan <b>berbalik tanda</b> antar jendela (5 tahun −44,6% → 10 tahun +87,5%). Pakai sebagai penyaring kandidat, bukan sistem otomatis. Kata "alpha" = keunggulan vs pasar, bukan jaminan harga naik.</div></div>`;
   if (isVolSr) h += `<div class="mb-3 text-[11px] text-lime-300/90 bg-lime-500/10 border border-lime-500/30 rounded-xl px-3.5 py-2.5">📊 <b>S&amp;R berbasis VOLUME</b> (buku Bab 11): support diambil dari <b>low candle dengan volume terbesar</b> (kuantil-90 dari 250 bar), lalu dicari harga yang <b>menguji ulang</b> level itu dalam tren naik (di atas SMA50, SMA50 menanjak).
     <div class="mt-1.5 pt-1.5 border-t border-lime-500/20 text-amber-300/90">Uji <b>10 tahun</b> universe SANGAT LIKUID: alpha20 <b>+0,70%</b> (blok t=+7,64). Yang membuat ini masuk akal adalah <b>kontrolya</b> — dan di jendela 10 tahun kontrolnya makin tajam: geometri sama persis tetapi levelnya dari candle bervolume <b>TERKECIL</b> justru <b>negatif</b> (−0,10%, blok t=−0,37) dan gagal holdout di kedua paruh. Jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga menyentuh harga lama". ⚠️ Tetapi edgenya <b>kecil</b> (+0,70% per 20 hari) dan sinyalnya ada di <b>98% hari bursa</b> — 26.244 kejadian hanya mewakili <b>38 hari keputusan independen</b>. Karena itu ia lebih tepat sebagai penyaring kelas likuiditas, bukan sinyal entry tunggal. Sisi resistance-nya (+0,66%, blok t=+1,99) sengaja tidak dijadikan syarat.</div></div>`;
+  if (d.mode === "preclose") {
+    const pc = d.preclose || {}, ss = pc.session || {};
+    const openNow = ss.phase === "SESI BERJALAN";
+    const tone = openNow ? "text-rose-200/90 bg-rose-500/10 border-rose-500/30" : "text-amber-200/90 bg-amber-500/10 border-amber-500/30";
+    h += `<div class="mb-3 text-[11px] ${tone} rounded-xl px-3.5 py-2.5">⏱ <b>PINDAI PRA-TUTUP</b> · jam server <b>${esc(ss.wib || "")} WIB</b> · fase <b>${esc(ss.phase || "?")}</b>${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}. Harga masuk di kolom Rencana Harian adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari ini, bukan harga tutup yang sudah lewat.</div>`;
+    if (!openNow) h += `<div class="mb-3 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚠️ Sesi reguler sedang <b>TIDAK berjalan</b> (${esc(ss.phase || "?")}). Hasil ini membaca sesi terakhir yang selesai, jadi bukan pra-tutup. Jalankan lagi pada 15:00-15:49 WIB untuk memakai harga yang bisa dibayar hari itu.</div>`;
+    if (pc.measured_risk) h += `<div class="mb-3 text-[11px] text-emerald-200/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">📐 <b>RISIKO MODE INI SUDAH DIUKUR, BUKAN DIANGGAP:</b> ${esc(pc.measured_risk)}</div>`;
+    h += `<div class="mb-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">Batasan yang ikut ditanggung mode ini: <b>harga &amp; volume belum final</b> sampai lewat lelang penutupan (~16:00), sehingga syarat "naik &ge;8%" dan "tembus high 20 hari" bisa batal sebelum tutup — kandidat dengan jarak &le;2% dari ambang ditandai <b>RAPUH</b>. <b>Penyaring tiket tidak aktif</b> (jumlah transaksi baru ada setelah bursa tutup). Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini; sisanya tidak diperiksa).</div>`;
+  }
   if (isSilent) h += `<div class="mb-3 text-[11px] text-violet-300/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕵️ <b>Akumulasi diam-diam</b>: satu broker yang konsisten net BELI (≥70% hari, net/gross ≥ 0,5) selama 10 hari. Ini menjawab "siapa yang mengakumulasi" — pertanyaan yang gagal dijawab bila nilai seluruh broker dijumlahkan, karena arus broker lain bisa saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah semua broker hanya +227,56 M).
     <div class="mt-1.5 pt-1.5 border-t border-violet-500/20 text-amber-300/90">⚠️ <b>Informasi bandarmology, BUKAN sinyal beli.</b> Uji 77 hari bursa (seluruh pasar): tidak ada daya prediksi — versi broker-dominan maupun versi jumlah sama-sama tidak berbeda dari noise. Riwayat API hanya 80 hari, tidak cukup untuk menguji sinyal berhorizon bulanan. Pemindaian ini memakai <b>1 permintaan API per saham</b>, jadi mulai dari limit kecil.</div></div>`;
   if (isMomentum) h += `<div class="mb-3 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚡ <b>Momentum murni</b> — kriteria hasil audit 2020-2026 (1,34 juta saham-hari): return harian &ge; 8% DAN nilai transaksi &ge; Rp100 juta/hari. Syarat ini dulu tersembunyi di dalam Scalping &amp; BSJP, dan audit menunjukkan syarat tambahan keduanya <b>tidak menambah alpha</b>. Lantai Rp100 juta dipasang karena alpha mentah terbesar ada di kelas KURANG LIKUID yang tidak bisa dieksekusi.
