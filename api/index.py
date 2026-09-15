@@ -4132,7 +4132,7 @@ def _scan_action_plan(df: pd.DataFrame, action: str,
 
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
                  include_bandarmology: bool, with_rs: bool = False,
-                 silent_min_net: float = 2e9):
+                 silent_min_net: float = 2e9, mom_min_pct: float = 8.0):
     """Proses 1 ticker (dijalankan paralel via ThreadPoolExecutor).
 
     with_rs=True memaksa perhitungan kekuatan relatif vs IHSG walau kriteria bukan
@@ -4270,6 +4270,61 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         _attach_plan(sc >= 70)
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": sc >= 70, "bandar_used": bandar_used}
+
+    if criteria == "momentum":
+        # MOMENTUM MURNI — kriteria baru hasil audit 2020-2026 (criteria_audit.py).
+        # Syarat: return harian >= mom_min_pct DAN nilai transaksi >= Rp100 juta/hari.
+        # Kenapa MURNI: syarat tambahan SCALPING (nilai >= Rp1 M, harga > 50) dan BSJP
+        # (nilai >= Rp5 M, volume >= 2x MA20) TIDAK menambah alpha — kandidatnya subset
+        # dari syarat momentum ini, dan alpha momentum murni LEBIH TINGGI daripada
+        # BSJP (+3,08% vs +0,49% h20). Jadi jangan ulangi menumpuk ambang yang tidak
+        # terbukti; yang menambah nilai justru filter tiket & rezim (lihat buykuat).
+        # Lantai Rp100 juta ada karena alpha mentah terbesar justru di kelas KURANG
+        # LIKUID yang tidak bisa dieksekusi dalam jumlah berarti.
+        mtr = result.get("metrics") or {}
+        day_ret = float(mtr.get("day_return_pct") or 0.0)
+        est_val = float(mtr.get("estimated_value_idr") or 0.0)
+        mom_ok = bool(day_ret >= mom_min_pct and est_val >= MOMENTUM_VALUE_FLOOR)
+        item["momentum_info"] = {
+            "day_return_pct": num(day_ret, 2),
+            "min_pct": float(mom_min_pct),
+            "estimated_value_idr": num(est_val, 0),
+            "value_floor_idr": MOMENTUM_VALUE_FLOOR,
+            "liquid_enough": bool(est_val >= MOMENTUM_VALUE_FLOOR),
+            "note": ("Momentum murni (return harian + lantai nilai Rp100 juta). Audit "
+                     "2020-2026: alpha murni lebih tinggi daripada SCALPING/BSJP yang "
+                     "menambah syarat tanpa manfaat. Kabar harian, bukan posisi."),
+        }
+        item["criteria_met"] = [f"MOMENTUM >= {mom_min_pct:g}%"] if mom_ok else []
+        _attach_plan(mom_ok, act="BUY")
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": mom_ok, "bandar_used": bandar_used}
+
+    if criteria == "buykuat":
+        # KUALITAS BELI TERBAIK — kombinasi PERSIS yang diukur audit 2020-2026:
+        # skor komposit >= 70 DAN tiket tidak kecil (+ rezim bull lewat require_regime,
+        # default aktif untuk kriteria ini). Itu kombinasi dengan bukti terkuat di
+        # antara varian skor beli: bersih biaya +0,47% (1 hari), +1,51% (3 hari),
+        # +2,20% (5 hari), blok t +16,2 s/d +33,1. Tanpa kedua filter itu, skor >=70
+        # hanya memberi +0,22% (1 hari). Kandidatnya jarang.
+        sc = (item.get("buy_score") or {}).get("score") or 0
+        small = item.get("ticket_small")          # None = Freq tidak tersedia
+        ticket_ok = small is not True
+        kuat_ok = bool(sc >= 70 and ticket_ok)
+        item["buykuat_info"] = {
+            "buy_score": num(sc, 0),
+            "ticket_small": small,
+            "ticket_filtered_out": bool(small is True),
+            "ticket_checked": bool(small is not None),
+            "note": ("Kualitas beli terbaik = skor >= 70 + tiket tidak kecil + rezim bull. "
+                     "Bersih biaya +0,47% (1 hari) s/d +2,20% (5 hari); tanpa filter "
+                     "tiket & rezim hanya +0,22% (1 hari). Ingat: kurang dari separuh "
+                     "kejadian untung — rata-rata ditarik oleh ekor keuntungan."),
+        }
+        item["criteria_met"] = ["KUALITAS BELI TERBAIK"] if kuat_ok else []
+        _attach_plan(kuat_ok)
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": kuat_ok, "bandar_used": bandar_used}
 
     if criteria == "koreksi":
         # Kandidat BELI KOREKSI: kualitas kuat (skor >= 70) + momentum sedang
@@ -4410,7 +4465,8 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
 def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
           include_bandarmology: bool = True, require_confirm: bool = False,
           require_regime: bool = False, rs_bypass: bool = False,
-          silent_min_net: float = 2e9, skip_small_ticket: bool = False) -> dict:
+          silent_min_net: float = 2e9, skip_small_ticket: bool = False,
+          mom_min_pct: float = 8.0) -> dict:
     matched: List[dict] = []
     scanned = skipped = bandar_used = ticket_filtered = 0
     by_grade: Dict[str, tuple] = {}
@@ -4426,7 +4482,7 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     with ThreadPoolExecutor(max_workers=workers) as ex:
         futures = [ex.submit(_scan_worker, tk, criteria, period,
                              include_signal, include_bandarmology, with_rs,
-                             silent_min_net) for tk in tickers]
+                             silent_min_net, mom_min_pct) for tk in tickers]
         for f in futures:
             try:
                 out = f.result()
@@ -4576,6 +4632,15 @@ def _simulate_trade(i: int, n: int, entry: float, atr_v: float,
             "rrr": (tp - entry) / risk if risk > 0 else None, "be": be_done}
 
 
+# Ambang lantai likuiditas untuk kriteria "momentum": momentum murni di kelas
+# KURANG LIKUID (< Rp100 juta/hari) memang paling besar alpha mentahnya, tetapi
+# tidak bisa dieksekusi dalam jumlah berarti. Audit 2020-2026 (1,34 juta saham-hari):
+# momentum >=8% tanpa lantai net +0,87% (h1) / +3,02% (h5); dengan lantai kelas CUKUP
+# net +0,76% / +2,60% — harganya ~0,1-0,4 poin, dan sebagian besar alfa mentah ada di
+# kelas yang tidak bisa ditransaksikan. Karena itu lantainya dipasang di kode.
+MOMENTUM_VALUE_FLOOR = 100e6
+
+
 def _backtest_one_safe(*args, **kwargs) -> Optional[dict]:
     """Wrapper aman utk _backtest_one: ticker bermasalah dilewati, bukan crash seluruh backtest."""
     try:
@@ -4590,7 +4655,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
                   ihsg_align: Optional[pd.DataFrame] = None,
                   cost_pct: float = 0.003,
                   plan_mode: bool = True, rr_min: float = 2.0,
-                  trail_mult: float = 2.0) -> Optional[dict]:
+                  trail_mult: float = 2.0, mom_min_pct: float = 8.0) -> Optional[dict]:
     """Backtest 1 ticker: sinyal di harga tutup -> SL 2xATR, TP 2R (RRR 1:2, Bab 8).
     scalping/bsjp: hold maks 5 hari; swing/buy: 20 hari. Timeout keluar di harga
     tutup hari terakhir hold (dihitung terpisah dari win/loss).
@@ -4657,7 +4722,13 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         if criteria == "scalping":
             hit = v >= 1e9 and day_ret >= 10.0 and last > 50
         elif criteria == "bsjp":
+            # BSJP apa adanya: "beli sore, jual pagi". Kaki keluarnya OPEN besok,
+            # bukan close besok — lihat catatan di kriteria screener "momentum" dan
+            # research/criteria_audit.py bagian C.
             hit = v >= 5e9 and day_ret >= 8.0 and vr >= 2.0
+        elif criteria == "momentum":
+            # Momentum MURNI + lantai likuiditas (lihat screener "momentum").
+            hit = day_ret >= mom_min_pct and v >= 100e6
         elif criteria == "buy":
             # Optimasi sinyal beli: skor komposit multi-konfirmasi (vektor).
             hit = float(bscore.iloc[i]) >= 70.0
@@ -4709,9 +4780,12 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     if not triggers:
         return {"ticker": ticker, "trades": 0}
 
-    max_hold = 5 if criteria in ("scalping", "bsjp") else 20
+    # Momentum = dagang pendek (bukti audit ada di 1-5 hari), jadi hold 5 hari dan
+    # TIDAK memakai mode plan (gerbang RRR>=2 dirancang untuk swing dan akan
+    # membuang hampir semua sinyal momentum).
+    max_hold = 5 if criteria in ("scalping", "bsjp", "momentum") else 20
     # Mode plan (SL struktural + gerbang RRR + BE + trailing) hanya untuk swing/buy.
-    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp"))
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum"))
     sup_s, res_s = _structural_levels(low, high, 20) if plan_eff else (None, None)
     wins = losses = timeouts = skipped = 0
     r_sum = 0.0
@@ -4810,8 +4884,8 @@ def _matrix_one(tk: str, criteria: str, years: int,
             ihsg_ok = None
 
     n = len(sub)
-    max_hold = 5 if criteria in ("scalping", "bsjp") else 20
-    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp"))
+    max_hold = 5 if criteria in ("scalping", "bsjp", "momentum") else 20
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum"))
     sup_s, res_s = _structural_levels(low, high, 20) if plan_eff else (None, None)
     combos = list(itertools.product((True, False), repeat=5))
     out: Dict[str, dict] = {}
@@ -5040,7 +5114,7 @@ def api_info():
             "POST /api/bandarmology/analyze",
             "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
-            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
+            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|momentum|buykuat|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0&mom_min_pct=8",
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "GET  /api/pattern-sim  (simulasi portofolio tiga pola buku: launchpad/reversal/volsr)",
             "GET  /api/scan-history  (riwayat pemindaian cron Launch Pad, termasuk hari kosong)",
@@ -6554,7 +6628,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -6569,6 +6643,8 @@ def backtest(
     trail_mult: float = Query(2.0, ge=0.5, le=5.0, description="Pengali ATR untuk trailing stop (mode plan)"),
     tickers_param: str = Query("", alias="tickers",
                                description="Daftar kode kustom dipisah koma (maks 45); menimpa universe"),
+    mom_min_pct: float = Query(8.0, ge=1.0, le=30.0,
+                               description="Kriteria 'momentum': ambang return harian (%)"),
 ):
     """Estimasi win rate historis per kriteria screener (edukasi, bukan jaminan masa depan).
     Sinyal -> entry di harga tutup. plan_mode=True (default) menyamakan exit dengan
@@ -6588,6 +6664,16 @@ def backtest(
     trade=0 pada sampel kecil — itu wajar, bukan tanda rusak. Karena sinyalnya sudah memuat breakout +
     volume, gerbang confirm/bb_confirm/div_vol/weekly sebaiknya dimatikan dulu kalau
     ingin melihat polanya apa adanya.
+    Kriteria 'momentum' = momentum MURNI: return harian >= mom_min_pct (default 8%)
+    DAN nilai transaksi >= Rp100 juta/hari (lantai likuiditas). Ini hasil audit
+    2020-2026 (research/criteria_audit.py): syarat tambahan SCALPING/BSJP (nilai
+    >= Rp1 M/Rp5 M, harga > 50, volume >= 2x) TIDAK menambah alpha — kandidatnya
+    adalah subset dari syarat momentum murni, dan alpha momentum murni lebih tinggi.
+    Keluarnya harus diperlakukan sebagai dagang pendek: pada horizon 20 hari
+    momentum punya alpha +3,1% tetapi tidak stabil antar paruh waktu, sedangkan
+    pada 1-5 hari konsisten. Karena itu di endpoint ini momentum memakai hold maks
+    5 hari TANPA mode plan (gerbang RRR>=2 dirancang untuk swing dan akan membuang
+    hampir semua sinyal momentum) — bukan hold 20 hari seperti swing/buy.
     Kriteria 'reversal' = role reversal S&R buku Bab 1.4 (resistance ditembus lalu
     diuji dari atas sebagai support). Bukti 5 tahun universe SANGAT LIKUID
     (research/combo_study.py Bagian I): alpha20 +1,16% (blok t=+5,96), absolut +0,68%
@@ -6646,7 +6732,8 @@ def backtest(
         for r in ex.map(lambda t: _backtest_one_safe(t, criteria, years, confirm, regime, bb_confirm,
                                                      div_vol, weekly, costs, ihsg_align,
                                                      plan_mode=plan_mode, rr_min=rr_min,
-                                                     trail_mult=trail_mult), tickers):
+                                                     trail_mult=trail_mult,
+                                                     mom_min_pct=mom_min_pct), tickers):
             if not r:
                 continue
             # Kandidat yang DILEWATI (RRR<2) tetap dihitung walau tak ada trade,
@@ -6662,6 +6749,7 @@ def backtest(
     results.sort(key=lambda r: r["trades"], reverse=True)
     avg_r = (sum(r["avg_r"] or 0 for r in results) / len(results)
              if results else None)
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum"))
     return {
         "criteria": criteria,
         "years": years,
@@ -6684,6 +6772,10 @@ def backtest(
         "timeouts": tot_timeouts,
         "skipped_rrr": tot_skipped,
         "plan_mode": bool(plan_mode),
+        # Mode plan hanya berlaku untuk swing/buy. Scalping/BSJP/momentum hold pendek
+        # dan TIDAK memakai gerbang RRR (kalau tidak, hampir semua sinyal terbuang).
+        # Dilaporkan terpisah supaya respons tidak menjanjikan exit yang tidak dipakai.
+        "plan_mode_effective": bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum")),
         "rr_min": float(rr_min),
         "trail_mult": float(trail_mult),
         "win_rate_pct": num(tot_wins / decided * 100, 1) if decided else None,
@@ -6693,9 +6785,9 @@ def backtest(
                  + (f"Mode PLAN: SL di support-0,3×ATR (maks 3×ATR), TP di resistance terdekat-0,3×ATR, "
                     f"trade dilewati bila RRR < {rr_min:g} (skipped_rrr), geser SL ke break-even setelah 1R, "
                     f"lalu trailing {trail_mult:g}×ATR. "
-                    if plan_mode else
+                    if plan_eff else
                     "Mode LAMA: SL 2×ATR, TP 2R (RRR 1:2). ")
-                 + "hold maks 5 hari (scalping/BSJP) / 20 hari (swing/buy); timeout keluar di close. "
+                 + "hold maks 5 hari (scalping/BSJP/momentum) / 20 hari (swing/buy); timeout keluar di close. "
                  "Filter optimasi aktif: "
                  + ("IHSG>MA200 " if regime else "") + ("BB band bawah/tengah+tren naik " if bb_confirm else "")
                  + ("divergensi RSI+volume " if div_vol else "") + ("tren mingguan " if weekly else "")
@@ -6776,6 +6868,8 @@ class ScreenerRequest(BaseModel):
     require_regime: Optional[bool] = None
     rs_bypass: bool = False
     silent_min_net: float = 2e9   # kriteria "silent": ambang akumulasi bersih (Rp)
+    skip_small_ticket: bool = False   # kirim true untuk penyaring tiket kelas likuiditas
+    mom_min_pct: float = 8.0          # kriteria "momentum": ambang return harian (%)
 
 
 @app.get("/api/screener/tickers")
@@ -6792,7 +6886,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=300),
     offset: int = Query(0, ge=0),
@@ -6802,6 +6896,8 @@ def screener(
         "universe=all. Set false untuk paginasi offset berurutan.")),
     silent_min_net: float = Query(2e9, ge=0, description=(
         "Kriteria 'silent': ambang nilai akumulasi bersih (Rp) agar hasil berarti")),
+    mom_min_pct: float = Query(8.0, ge=1.0, le=30.0, description=(
+        "Kriteria 'momentum': ambang return harian (%). Default 8%.")),
     period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"),
     include_signal: bool = Query(True),
     include_bandarmology: bool = Query(True),
@@ -6904,6 +7000,24 @@ def screener(
     t=+1,7). Kalau ragu, matikan filter untuk kelas itu dengan
     skip_small_ticket=false atau batasi sendiri ke kelas atas.
     Jumlah yang dibuang dilaporkan di field ticket_filtered.
+    Kriteria "momentum" (BARU, hasil audit 2020-2026) mencari MOMENTUM MURNI: return
+    harian >= mom_min_pct (default 8%) DAN nilai transaksi >= Rp100 juta/hari. Dulu
+    syarat ini tersembunyi di dalam SCALPING & BSJP; audit menunjukkan syarat tambahan
+    keduanya TIDAK menambah alpha — justru menurunkannya (h20 vs kelas likuiditas
+    yang sama: momentum murni +3,08%, BSJP +0,49%, SCALPING +0,47%), padahal
+    kandidatnya subset dari momentum murni. Jadi ambang nilai/harga/volume itu mubazir.
+    Lantai Rp100 juta dipasang di kode karena alpha mentah terbesar ada di kelas
+    KURANG LIKUID yang tidak bisa dieksekusi. Bersih biaya 0,3%: +0,76% (1 hari),
+    +1,87% (3 hari), +2,60% (5 hari). PERINGATAN JUJUR: '%untung' setelah biaya hanya
+    41-42% — artinya kurang dari separuh kejadian untung, dan rata-ratanya ditarik
+    oleh ekor keuntungan yang jarang. Pakai ini sebagai daftar pantau harian dengan
+    disiplin stop, BUKAN sebagai portofolio otomatis.
+    Kriteria "buykuat" (BARU) = KUALITAS BELI TERBAIK: skor beli >= 70 DAN tiket tidak
+    kecil, dengan filter rezim IHSG aktif secara default. Ini kombinasi PERSIS yang
+    diukur audit, dan kombinasi itu memang lebih baik daripada skor sendirian:
+    bersih biaya +0,47% (1 hari) / +1,51% (3 hari) / +2,20% (5 hari), blok t +16,2 s/d
+    +33,1 — sedangkan skor >=70 tanpa filter tiket & rezim hanya +0,22% (1 hari).
+    Kelemahan yang sama berlaku: '%untung' 42-46%, jadi ekor yang menentukan.
     Kriteria "silent" mencari AKUMULATOR DIAM-DIAM: satu broker yang konsisten net
     beli (>=70% hari, net/gross >= 0,5) selama 10 hari — informasi "siapa yang
     mengakumulasi" yang hilang bila nilai seluruh broker dijumlahkan. Ini INFORMASI
@@ -6954,7 +7068,9 @@ def screener(
     next_offset=null, sehingga pemindaian "semua saham" mentok di sebesar limit.
     """
     if require_regime is None:
-        require_regime = criteria in ("swing", "buy", "koreksi")
+        # buykuat = kombinasi yang diuji audit (skor>=70 + tiket + REZIM BULL), jadi
+        # filter rezim ikut aktif secara default; bisa dimatikan pemanggil.
+        require_regime = criteria in ("swing", "buy", "buykuat", "koreksi")
     if spread is None:
         spread = universe == "all"
     all_tickers = load_idx_tickers(universe)
@@ -6981,7 +7097,7 @@ def screener(
 
     scan = _scan(window, criteria, period, include_signal, include_bandarmology,
                  require_confirm, require_regime, rs_bypass, silent_min_net,
-                 skip_small_ticket)
+                 skip_small_ticket, mom_min_pct)
     return {
         "criteria": criteria,
         "require_confirm": require_confirm,
@@ -7088,11 +7204,11 @@ def screener_post(payload: ScreenerRequest):
     tickers = [t.upper() if "." in t else f"{t.upper()}.JK" for t in payload.tickers][:100]
     require_regime = payload.require_regime
     if require_regime is None:
-        require_regime = payload.criteria in ("swing", "buy", "koreksi")
+        require_regime = payload.criteria in ("swing", "buy", "buykuat", "koreksi")
     scan = _scan(tickers, payload.criteria, payload.period,
                  payload.include_signal, payload.include_bandarmology,
                  payload.require_confirm, require_regime, payload.rs_bypass,
-                 payload.silent_min_net)
+                 payload.silent_min_net, payload.skip_small_ticket, payload.mom_min_pct)
     return {
         "criteria": payload.criteria,
         "require_confirm": payload.require_confirm,

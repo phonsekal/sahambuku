@@ -98,6 +98,8 @@
         <option value="launchpad">🔥 Launch Pad (pola buku: base rapat → breakout)</option>
         <option value="reversal">🔄 Role Reversal S&R (resistance jadi support)</option>
         <option value="volsr">📊 S&R Volume (buku Bab 11)</option>
+        <option value="momentum">⚡ Momentum Murni (naik cepat ≥8% + nilai ≥Rp100jt)</option>
+        <option value="buykuat">🏆 Kualitas Beli Terbaik (skor ≥70 + tiket sehat + bull)</option>
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
@@ -151,6 +153,7 @@
           <option value="launchpad">🔥 Launch Pad (pola buku Bab 6.2)</option>
           <option value="reversal">🔄 Role Reversal S&R (buku Bab 1.4)</option>
           <option value="volsr">📊 S&R Volume (buku Bab 11)</option>
+          <option value="momentum">⚡ Momentum Murni (≥8% + nilai ≥Rp100jt)</option>
         </select>
         <select id="btUniverse" onchange="btUniverseChanged()" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="liquid" selected>Liquid (LQ45)</option>
@@ -1465,6 +1468,8 @@ function renderScan(d) {
   const isLaunchpad = d.criteria === "launchpad";
   const isReversal = d.criteria === "reversal";
   const isVolSr = d.criteria === "volsr";
+  const isMomentum = d.criteria === "momentum";
+  const isBuyKuat = d.criteria === "buykuat";
   // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
   // 16 kolom dasar (15 + kolom 🔔 Pantau yang kini SELALU ada); koreksi menambah 2
   // (Support + AVG Bandar) karena kolom 🔔-nya sudah dihitung di dasar.
@@ -1486,6 +1491,10 @@ function renderScan(d) {
     <div class="mt-1.5 pt-1.5 border-t border-lime-500/20 text-amber-300/90">Uji <b>10 tahun</b> universe SANGAT LIKUID: alpha20 <b>+0,70%</b> (blok t=+7,64). Yang membuat ini masuk akal adalah <b>kontrolya</b> — dan di jendela 10 tahun kontrolnya makin tajam: geometri sama persis tetapi levelnya dari candle bervolume <b>TERKECIL</b> justru <b>negatif</b> (−0,10%, blok t=−0,37) dan gagal holdout di kedua paruh. Jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga menyentuh harga lama". ⚠️ Tetapi edgenya <b>kecil</b> (+0,70% per 20 hari) dan sinyalnya ada di <b>98% hari bursa</b> — 26.244 kejadian hanya mewakili <b>38 hari keputusan independen</b>. Karena itu ia lebih tepat sebagai penyaring kelas likuiditas, bukan sinyal entry tunggal. Sisi resistance-nya (+0,66%, blok t=+1,99) sengaja tidak dijadikan syarat.</div></div>`;
   if (isSilent) h += `<div class="mb-3 text-[11px] text-violet-300/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕵️ <b>Akumulasi diam-diam</b>: satu broker yang konsisten net BELI (≥70% hari, net/gross ≥ 0,5) selama 10 hari. Ini menjawab "siapa yang mengakumulasi" — pertanyaan yang gagal dijawab bila nilai seluruh broker dijumlahkan, karena arus broker lain bisa saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah semua broker hanya +227,56 M).
     <div class="mt-1.5 pt-1.5 border-t border-violet-500/20 text-amber-300/90">⚠️ <b>Informasi bandarmology, BUKAN sinyal beli.</b> Uji 77 hari bursa (seluruh pasar): tidak ada daya prediksi — versi broker-dominan maupun versi jumlah sama-sama tidak berbeda dari noise. Riwayat API hanya 80 hari, tidak cukup untuk menguji sinyal berhorizon bulanan. Pemindaian ini memakai <b>1 permintaan API per saham</b>, jadi mulai dari limit kecil.</div></div>`;
+  if (isMomentum) h += `<div class="mb-3 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚡ <b>Momentum murni</b> — kriteria BARU dari audit 2020-2026 (1,34 juta saham-hari): return harian &ge; 8% DAN nilai transaksi &ge; Rp100 juta/hari. Syarat ini dulu tersembunyi di dalam Scalping &amp; BSJP; audit menunjukkan syarat tambahan keduanya <b>tidak menambah alpha</b> — justru menurunkannya (alpha 20 hari vs kelas likuiditas yang sama: momentum murni <b>+3,08%</b> vs BSJP +0,49% dan Scalping +0,47%), padahal kandidatnya subset dari momentum murni. Lantai Rp100 juta dipasang karena alpha mentah terbesar ada di kelas KURANG LIKUID yang tidak bisa dieksekusi.
+    <div class="mt-1.5 pt-1.5 border-t border-amber-500/20 text-amber-300/90">⚠️ <b>Kabar harian, bukan posisi.</b> Bersih biaya 0,3%: +0,76% (1 hari) · +1,87% (3 hari) · +2,60% (5 hari). Tapi persentase kejadian yang <b>untung setelah biaya cuma 41-42%</b> — kurang dari separuh. Rata-ratanya ditarik oleh ekor keuntungan yang jarang, jadi disiplin stop dan ukuran posisi lebih menentukan daripada tingkat keberhasilan. Pada horizon 20 hari alphanya tidak stabil antar paruh waktu.</div></div>`;
+  if (isBuyKuat) h += `<div class="mb-3 text-[11px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">🏆 <b>Kualitas beli terbaik</b> — kombinasi PERSIS yang diukur audit 2020-2026: <b>skor beli &ge; 70 + tiket tidak kecil + rezim IHSG bull</b> (filter rezim aktif otomatis di kriteria ini). Kombinasi ini terbukti lebih baik daripada skor sendirian — tiap tambahan menyumbang: bersih biaya 1 hari +0,22% (skor saja) &rarr; +0,30% (+ buang tiket) &rarr; <b>+0,47%</b> (+ rezim bull), lalu +2,20% pada 5 hari dengan blok t +33,1.
+    <div class="mt-1.5 pt-1.5 border-t border-emerald-500/20 text-amber-300/90">⚠️ Yang sama berlaku: <b>persentase kejadian untung setelah biaya 42-46%</b> — kurang dari separuh, jadi ekor keuntungan yang menentukan. Kriteria ini <b>jarang</b> menghasilkan kandidat, dan pada kelas <b>SANGAT LIKUID</b> skor beli justru melemah (di kelas paling likuid, pola/volsr/breakout lebih layak).</div></div>`;
   // Kandidat setup swing siap-entry: setup valid (pullback/breakout) + RRR ≥ 1:2.
   const swingReady = (d.results || []).filter(r => r.action_plan && r.action_plan.setup && r.action_plan.setup.layak_entry);
   if (swingReady.length) {

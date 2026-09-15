@@ -29,6 +29,7 @@ Jalankan:
   .venv/bin/python research/criteria_audit.py                 # seluruh pasar
   .venv/bin/python research/criteria_audit.py --min-grade SANGAT LIKUID
   .venv/bin/python research/criteria_audit.py --years 5
+  .venv/bin/python research/criteria_audit.py --short   # horizon 1/2/3/5 hari saja
 
 HASIL (dijalankan 15 Sep 2026 — panel 1,34 juta saham-hari, 981 emiten, 1.590
  tanggal, 2020-01-02 s/d 2026-09-11; versi 5 tahun diperiksa juga supaya tanda
@@ -76,6 +77,38 @@ Temuan yang paling penting:
    WAJIB kelas yang sama: diukur terhadap seluruh pasar, skor beli tampak +1,32%
    (bukan +1,83%) dan swing tampak -1,44% (padahal relatif kelasnya cuma +0,45%).
 
+HORIZON PENDEK (--short): apakah bisa dipakai harian, dan apakah filter tiket +
+rezim bull tetap berguna di 1-5 hari? YA untuk keduanya.
+
+  Bersih biaya 0,3% round-trip (net%) dan % kejadian yang untung setelah biaya:
+
+  varian                          n/hari    h1 net   h3 net   h5 net   %untung h1
+  momentum>=8% (semua)              27,6     +0,87    +2,16    +3,02      40,3%
+  momentum>=8% & kelas >=CUKUP       18,9     +0,76    +1,87    +2,60      41,3%
+  momentum>=8% & kelas >=LIKUID      11,9     +0,32    +1,16    +1,66      38,6%
+  buy>=70                           61,8     +0,22    +0,97    +1,48      40,1%
+  buy>=70 & buang tiket             54,7     +0,30    +1,11    +1,66      41,1%
+  buy>=70 & tiket & bull            39,7     +0,47    +1,51    +2,20      41,9%
+  bsjp & buang tiket                 5,2     +0,26    +0,88    +1,14      37,4%
+  volsr & buang tiket               50,4     −0,23    +0,10    +0,47      35,7%
+  launchpad & buang tiket            0,5     +0,78    +2,24    +2,94      45,9%
+
+  1. FILTER TIKET + REZIM BULL BERTAHAN di horizon pendek, dan efeknya MONOTON
+     makin panjang horizon: untuk buy>=70, net 1 hari +0,22 -> +0,30 (tiket) ->
+     +0,47 (tiket+rezim); pada 5 hari +1,48 -> +1,66 -> +2,20 (blok t +33,1).
+     Jadi kombinasi ini bukan artefak horizon panjang.
+  2. PERSENTASE KEJADIAN YANG UNTUNG SETELAH BIAYA SELALU DI BAWAH 50%
+     (35,7%-45,9%). Artinya rata-rata positif itu DITARIK OLEH EKOR KEUNTUNGAN,
+     bukan oleh tingkat keberhasilan. Ini konsekuensi praktis yang paling penting:
+     stop-loss dan ukuran posisi menentukan hasil, bukan hit-rate. Siapa pun yang
+     memakai daftar ini tanpa disiplin stop akan mendapat angka yang jauh lebih buruk
+     daripada tabel di atas.
+  3. volsr TIDAK layak dipakai di 1-3 hari (net negatif di h1, alpha ~0) — ia sinyal
+     20 hari. BSJP di 1 hari (+0,26%) jauh di bawah momentum murni (+0,87%),
+     konsisten dengan temuan bahwa syarat tambahannya mubazir.
+  4. launchpad tetap paling efisien per kejadian (+0,78 net di 1 hari, 45,9% untung),
+     tetapi tetap paling jarang (0,5 sinyal/hari).
+
 BATASAN YANG HARUS DISEBUT
 --------------------------
 * Panel memakai kolom Open/High/Low dari ringkasan harian IDX. Kolom OpenPrice
@@ -110,7 +143,11 @@ import panel as P          # noqa: E402
 import index as A          # noqa: E402  <- kode PRODUKSI, bukan replika
 
 HORIZONS = (1, 5, 20)
+SHORT_HORIZONS = (1, 2, 3, 5)   # horizon pendek: menjawab "apakah bisa dipakai harian?"
+ALL_HORIZONS = tuple(sorted(set(HORIZONS) | set(SHORT_HORIZONS)))
 COST_ROUND_TRIP = 0.003    # 0,3% (0,15%/sisi) — sama dengan default /api/backtest
+LIQUID_GRADES = ("CUKUP", "LIKUID", "SANGAT LIKUID")
+TOP_GRADES = ("LIKUID", "SANGAT LIKUID")
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +310,7 @@ def build_signal_frame(p: pd.DataFrame, min_bars: int = 60,
         # tercatat", bukan harga nol — memakainya apa adanya memberi return -100%.
         # Karena itu semua return berbasis open dimatikan bila salah satu kakinya 0.
         op_ok = (op > 0) & (op < close * 5)   # penjaga kedua: 0 yang tersamar
-        for h in HORIZONS:
+        for h in ALL_HORIZONS:
             frame[f"fwd{h}"] = (close.shift(-h) / close - 1.0).to_numpy() * 100.0
             no = op.shift(-h).where(op.shift(-h) > 0)
             frame[f"fwd{h}_open"] = (no / close - 1.0).to_numpy() * 100.0
@@ -302,7 +339,7 @@ def add_excess(S: pd.DataFrame) -> pd.DataFrame:
                  dikeluarkan lewat residual ganda. Memisahkan "efek tiket/ukuran"
                  dari "efek sinyal".
     """
-    for h in HORIZONS:
+    for h in ALL_HORIZONS:
         uni = S.groupby("date")[f"fwd{h}"].mean()
         S[f"exc{h}"] = S[f"fwd{h}"] - S["date"].map(uni)
         cls = S.groupby(["date", "grade"])[f"fwd{h}"].transform("mean")
@@ -469,6 +506,47 @@ def report_criteria(S: pd.DataFrame, min_grade: Optional[str], years: Optional[f
         print(f"  {name:<16} " + " ".join(cells))
 
 
+def report_short(S: pd.DataFrame) -> None:
+    """Horizon PENDEK (1-3-5 hari) untuk kombinasi yang paling menjanjikan.
+
+    Kenapa terpisah: pada horizon 1 hari, biaya 0,3% round-trip itu BESAR relatif
+    terhadap alpha, dan yang penting bukan cuma rata-ratanya tetapi berapa persen
+    kejadian yang BENAR-BENAR untung setelah biaya. Di sini ketiganya dilaporkan.
+    """
+    n_dates = S["date"].nunique()
+    variants = [
+        ("momentum>=8% (semua)", S["momentum>=8%"]),
+        (("momentum>=8% & kelas >=CUKUP"), S["momentum>=8%"] & S["grade"].isin(LIQUID_GRADES)),
+        (("momentum>=8% & kelas >=LIKUID"), S["momentum>=8%"] & S["grade"].isin(TOP_GRADES)),
+        (("momentum>=10% & kelas >=CUKUP"), S["momentum>=10%"] & S["grade"].isin(LIQUID_GRADES)),
+        ("buy>=70", S["buy>=70"]),
+        ("buy>=70 & buang tiket", S["buy>=70"] & ~S["ticket_small"]),
+        ("buy>=70 & tiket & bull", S["buy>=70"] & ~S["ticket_small"] & S["regime_bull"]),
+        ("bsjp & buang tiket", S["bsjp"] & ~S["ticket_small"]),
+        ("volsr & buang tiket", S["volsr"] & ~S["ticket_small"]),
+        ("launchpad & buang tiket", S["launchpad"] & ~S["ticket_small"]),
+    ]
+    print(f"\n-- G. HORIZON PENDEK (1/2/3/5 hari), alpha vs KELAS + bersih biaya 0,3% --")
+    for h in SHORT_HORIZONS:
+        print(f"\n  horizon {h} hari   {'n':>8} {'/hari':>6} {'abs%':>7} {'alphaK%':>8} "
+              f"{'blok t':>7} {'net%':>7} {'%untung':>8}")
+        for label, m in variants:
+            m = m.fillna(False)
+            n = int(m.sum())
+            if n < 200:
+                print(f"  {label:<30} {n:>8,}  (sampel terlalu kecil)")
+                continue
+            per = S.loc[m].groupby("date")[f"excg{h}"].mean()
+            abs_h = S.loc[m, f"fwd{h}"].mean()
+            net = S.loc[m, f"fwd{h}"] - COST_ROUND_TRIP * 100
+            print(f"  {label:<30} {n:>8,} {n / n_dates:>6.1f} {abs_h:>+7.2f} {per.mean():>+8.2f} "
+                  f"{block_t(per, h):>+7.2f} {net.mean():>+7.2f} {(net > 0).mean() * 100:>7.1f}%")
+
+    print(f"\n  CATATAN: 'net%' = return absolut dikurangi 0,3% round-trip. Pada horizon 1 hari,\n"
+          f"  biaya itu memakan sebagian besar alpha, jadi '%untung' (persentase kejadian\n"
+          f"  yang positif SETELAH biaya) lebih penting daripada rata-ratanya.")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Audit head-to-head kriteria screener")
     ap.add_argument("--years", type=float, default=None,
@@ -476,6 +554,8 @@ def main() -> None:
     ap.add_argument("--min-grade", default=None,
                     choices=["CUKUP", "LIKUID", "SANGAT LIKUID"])
     ap.add_argument("--min-bars", type=int, default=60)
+    ap.add_argument("--short", action="store_true",
+                    help="hanya jalankan tabel horizon pendek (1/2/3/5 hari)")
     args = ap.parse_args()
 
     p = P.load_panel()
@@ -489,8 +569,14 @@ def main() -> None:
     S = build_signal_frame(p, min_bars=args.min_bars, min_grade=args.min_grade)
     S = add_excess(S)
     # Buang baris yang return ke depan belum tersedia (20 sesi terakhir).
+    if args.short:
+        # Horizon pendek: cukup buang baris yang fwd5 belum tersedia.
+        S = S[S["fwd5"].notna()].reset_index(drop=True)
+        report_short(S)
+        return
     S = S[S["fwd20"].notna()].reset_index(drop=True)
     report_criteria(S, args.min_grade, args.years)
+    report_short(S)
 
 
 if __name__ == "__main__":
