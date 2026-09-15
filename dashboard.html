@@ -1081,7 +1081,11 @@ function renderAnalyze(d) {
       <span class="text-sm">S&amp;R Volume <span class="text-[10px] text-slate-500">(Bab 11)</span></span>
       <span class="text-sm font-semibold ${vsr.detected ? "text-lime-400" : "text-slate-500"}">${vsr.detected ? `📊 Uji support ${fmt(vsr.volume_support)}` : (vsr.volume_support != null ? `support ${fmt(vsr.volume_support)} · resistance ${fmt(vsr.volume_resistance)}` : "—")}</span>
     </div>
-    ${vsr.detected ? `<div class="text-[11px] text-slate-400 pt-1">Support dari low candle volume terbesar (jarak ${vsr.distance_to_support_pct != null ? pct(vsr.distance_to_support_pct) : "—"}). Uji 10 tahun: alpha20 +0,70% · kontrol candle volume terkecil justru NEGATIF (−0,10%) dan gagal holdout. Edge kecil, sinyal hampir tiap hari.</div>` : ""}`);
+    ${vsr.detected ? `<div class="text-[11px] text-slate-400 pt-1">Support dari low candle volume terbesar (jarak ${vsr.distance_to_support_pct != null ? pct(vsr.distance_to_support_pct) : "—"}). Uji 10 tahun: alpha20 +0,70% · kontrol candle volume terkecil justru NEGATIF (−0,10%) dan gagal holdout. Edge kecil, sinyal hampir tiap hari.</div>` : ""}
+    <div class="mt-2.5 pt-2 border-t border-slate-800/60 flex flex-wrap items-center gap-2">
+      <span class="text-[11px] text-slate-500">Pantau <b class="text-slate-300">${esc(tk)}</b> di Telegram — diberi tahu saat sinyal berubah atau setup swing siap entry:</span>
+      <button onclick="toggleWatchChip('${esc(d.ticker)}', this)" class="text-[10px] px-2 py-0.5 rounded-lg border font-bold transition ${watchHas(d.ticker) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20"}">${watchHas(d.ticker) ? "✓ Dipantau" : "🔔 Pantau"}</button>
+    </div>`);
   const RM = d.risk_management || {};
   h += card("Risk Management (Bab 8)",
     `<div class="grid grid-cols-2 lg:grid-cols-5 gap-3 mb-3">
@@ -1201,21 +1205,108 @@ async function toggleKoreksiWatch(tk, btn) {
 // memasukkan puluhan saham. Sekarang hanya tombol 🔔 per baris (toggleKoreksiWatch),
 // jadi yang dipantau selalu pilihan sadar per saham.
 
+// Varian tombol Pantau untuk chip (panel riwayat pemindaian & kartu Pola Khusus).
+// Dipisah dari toggleKoreksiWatch karena fungsi itu menulis ulang className penuh
+// dengan gaya tabel — pada chip gaya itu akan merusak tampilannya.
+// True bila ticker ada di pantauan, dengan/tanpa akhiran .JK. Daftar pantauan bisa
+// berisi "BBCA.JK" (dari tabel screener) maupun "BBCA" (dari input lain), dan
+// keduanya harus terbaca sebagai SAMA supaya tombol tidak berbohong soal status.
+function watchHas(t) {
+  const up = String(t || "").toUpperCase();
+  return koreksiWatch.has(up) || koreksiWatch.has(stripJK(up));
+}
+function paintWatchChip(btn, up) {
+  const has = watchHas(up);
+  btn.className = "text-[10px] px-2 py-0.5 rounded-lg border font-bold transition " + (has
+    ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300"
+    : "border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20");
+  btn.textContent = has ? "✓ Dipantau" : "🔔 Pantau";
+  btn.title = has ? `Klik untuk berhenti memantau ${stripJK(up)}`
+                  : `Pantau ${stripJK(up)} di Telegram — diberi tahu saat sinyal berubah atau setup siap`;
+}
+// Chip saham + tombol Pantau (panel riwayat pemindaian cron).
+function watchChipHtml(t) {
+  const up = `${String(t).toUpperCase()}.JK`;
+  const has = watchHas(up);
+  return `<span class="inline-flex items-center gap-1.5 bg-slate-800/60 border border-slate-700 rounded-lg pl-2 pr-1 py-0.5">
+    <b class="text-amber-300">${esc(t)}</b>
+    <button onclick="toggleWatchChip('${up}', this)" class="text-[10px] px-2 py-0.5 rounded-lg border font-bold transition ${has ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-300" : "border-sky-500/40 bg-sky-500/10 text-sky-300 hover:bg-sky-500/20"}">${has ? "✓ Dipantau" : "🔔 Pantau"}</button>
+  </span>`;
+}
+async function toggleWatchChip(tk, btn) {
+  const up = String(tk).toUpperCase();
+  const has = watchHas(up);
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/koreksi/watch", { method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ticker: up, action: has ? "remove" : "add" }) });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
+    if (has) koreksiWatch.delete(up); else koreksiWatch.add(up);
+    paintWatchChip(btn, up);
+    toast(has ? `${stripJK(up)} dihapus dari pantauan.`
+              : `${stripJK(up)} masuk pantauan Telegram — akan diberi tahu saat konfirmasi reversal atau setup swing siap entry.`, "info");
+  } catch (e) {
+    toast(`Gagal ${has ? "menghapus" : "menambah"} pantauan: ${e.message}`, "sl");
+  } finally { btn.disabled = false; }
+}
+
+// Ringkasan pantauan dari catatan SERVER (ditulis cron), bukan tebakan UI:
+// berapa saham dipantau, kapan terakhir benar-benar diperiksa, dan sinyal siapa
+// yang berubah. Ini yang membedakan "daftar nama" dari "pantauan yang hidup".
+function watchSummaryHtml(d) {
+  const s = d.summary || {};
+  const lc = s.last_check || {};
+  const changes = s.recent_changes || [];
+  const n = s.watched_count != null ? s.watched_count : (d.watched || []).length;
+  const when = lc.time
+    ? `<b class="text-slate-200">${esc(lc.time)}</b> — ${lc.checked != null ? lc.checked : "?"} saham diperiksa${lc.telegram_sent != null ? `, ${lc.telegram_sent} notifikasi terkirim` : ""}`
+    : `<span class="text-amber-300">belum pernah diperiksa</span> <span class="text-slate-500">(cron berjalan tiap 15 menit pada jam bursa lewat workflow alerts.yml)</span>`;
+  const chg = changes.length
+    ? changes.map(c => `<li class="flex flex-wrap items-center gap-1.5 py-1 border-b border-slate-800/60 last:border-0">
+        <b class="text-slate-200">${esc(c.ticker || "")}</b>
+        <span class="px-1.5 py-0.5 rounded border border-rose-500/40 bg-rose-500/10 text-rose-300">${esc(c.from || "?")}</span>
+        <span class="text-slate-500">→</span>
+        <span class="px-1.5 py-0.5 rounded border border-emerald-500/40 bg-emerald-500/10 text-emerald-300">${esc(c.to || "?")}</span>
+        <span class="text-slate-500">kualitas ${c.score != null ? c.score : "—"} · ${c.price != null ? fmt(c.price) : "—"} · ${esc(c.time || c.date || "")}</span>
+      </li>`).join("")
+    : `<li class="py-1 text-slate-500">Belum ada perubahan sinyal yang tercatat sejak pemantauan dimulai.</li>`;
+  return `<div class="bg-slate-900/70 border border-amber-500/30 rounded-2xl p-3.5 mb-2 text-[11px]">
+    <div class="flex flex-wrap items-center gap-x-4 gap-y-1">
+      <span class="text-slate-400">Dipantau: <b class="text-amber-300 tabular">${n}</b> saham</span>
+      <span class="text-slate-400">Terakhir dicek: ${when}</span>
+      ${s.sync_enabled === false ? `<span class="text-rose-300">penyimpanan cloud nonaktif — pantauan tidak tersimpan</span>` : ""}
+    </div>
+    <div class="mt-2 pt-2 border-t border-slate-800/60">
+      <div class="text-[10px] font-bold uppercase tracking-wider text-slate-500 mb-1">Perubahan sinyal terakhir</div>
+      <ul class="text-[11px]">${chg}</ul>
+    </div>
+  </div>`;
+}
+
 async function renderKoreksiWatch() {
   const el = $("#koreksiWatchPanel");
   el.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-amber-400 rounded-full animate-spin align-middle mr-2"></span>Memuat pantauan…`;
   try {
     const d = await getJSON("/api/koreksi/watch");
     const rows = d.results || [];
+    // Sinkronkan status pantauan dari jawaban server supaya chip di tab lain
+    // (riwayat pemindaian, kartu Pola Khusus) tidak menampilkan status basi.
+    koreksiWatch = new Set((d.watched || []).map(t => String(t).toUpperCase()));
+    // Ringkasan tetap ditampilkan walau daftar kosong: "kapan terakhir dicek"
+    // justru paling perlu diketahui saat pantauan kosong.
+    const ringkas = watchSummaryHtml(d);
     if (!rows.length) {
-      el.innerHTML = `<div class="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3">🔔 Pantauan Telegram kosong. Di hasil scan, klik tombol <b class="text-emerald-300">➕ Pantau</b> pada baris saham yang Anda minati (ada di <b class="text-slate-300">semua kriteria</b>, termasuk "semua kriteria"). Tambah <b class="text-slate-300">satu per satu</b> — tidak ada tombol yang memasukkan seluruh hasil pindai sekaligus. Telegram akan otomatis memberi tahu saat sinyal berubah SELL → BUY (konfirmasi reversal) atau saat setup swing siap entry.</div>`;
+      el.innerHTML = ringkas + `<div class="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3">🔔 Pantauan Telegram kosong. Di hasil scan, klik tombol <b class="text-emerald-300">➕ Pantau</b> pada baris saham yang Anda minati (ada di <b class="text-slate-300">semua kriteria</b>, termasuk "semua kriteria"). Tambah <b class="text-slate-300">satu per satu</b> — tidak ada tombol yang memasukkan seluruh hasil pindai sekaligus. Telegram akan otomatis memberi tahu saat sinyal berubah SELL → BUY (konfirmasi reversal) atau saat setup swing siap entry.</div>`;
       return;
     }
     const reversal = a => (a.signal === "BUY" || a.signal === "STRONG BUY")
       ? `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold">🔄 Reversal!</span>` : "";
-    el.innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-amber-500/30 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><div class="text-[11px] font-bold uppercase tracking-wider text-amber-400/90 px-4 pt-3 pb-1">🔔 Pantauan Telegram — kandidat beli koreksi & setup swing siap-entry</div>
+    el.innerHTML = ringkas + `<div class="bg-slate-900/70 backdrop-blur border border-amber-500/30 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><div class="text-[11px] font-bold uppercase tracking-wider text-amber-400/90 px-4 pt-3 pb-1">🔔 Pantauan Telegram — kandidat beli koreksi & setup swing siap-entry</div>
       <table class="w-full text-sm min-w-[820px]"><thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
         <th class="text-left px-4 py-2">Saham</th><th class="text-right px-3">Harga</th><th class="text-left px-3">Sinyal</th>
+        <th class="text-left px-3" title="Sinyal terakhir yang dicatat cron saat memeriksa saham ini">Sinyal terakhir dicek</th>
         <th class="text-left px-3">Setup Swing</th><th class="text-right px-3">RRR</th><th class="text-right px-3">Timing</th>
         <th class="text-center px-3">🎯 Kualitas</th>
         <th class="text-right px-3">Support</th><th class="text-center px-3">Status</th><th class="px-3"></th>
@@ -1224,6 +1315,7 @@ async function renderKoreksiWatch() {
         <td class="px-4 py-2.5 font-bold">${esc(stripJK(a.ticker))}</td>
         <td class="px-3 text-right tabular">${a.ok ? fmt(a.price) : "—"}</td>
         <td class="px-3">${a.ok ? sigBadge(a.signal, true) : '<span class="text-slate-600">gagal</span>'}</td>
+        <td class="px-3 text-[11px]">${!a.last_checked_signal ? '<span class="text-amber-300/90">belum dicek</span>' : (a.changed_since_check ? `<span class="text-rose-300">${esc(a.last_checked_signal)}</span> <span class="text-[9px] px-1.5 py-0.5 rounded-full border border-rose-500/40 bg-rose-500/10 text-rose-300">berubah</span>` : `<span class="text-slate-400">${esc(a.last_checked_signal)}</span>`)}</td>
         <td class="px-3 text-[11px]">${a.ok && a.setup ? `<span class="${a.layak_entry ? "text-emerald-300" : "text-slate-400"}">${esc(a.setup)}</span>${a.layak_entry ? ` <span class="text-[9px] px-1.5 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10">siap</span>` : ""}` : "—"}</td>
         <td class="px-3 text-right tabular ${a.ok && a.rrr_layak ? "text-emerald-400" : "text-slate-400"}">${a.ok && a.rrr != null ? "1:" + fmt(a.rrr, 2) : "—"}</td>
         <td class="px-3 text-right tabular">${a.ok && a.timing != null ? fmt(a.timing, 0) : "—"}</td>
@@ -2288,8 +2380,12 @@ async function loadScanHistory() {
     const gradeTxt = grades.length
       ? `<div class="mt-2 text-slate-400">Per kelas likuiditas: ${grades.map(([g, v]) => `<b class="text-slate-200">${g}</b> ${v}`).join(" · ")}</div>` : "";
     const lastRec = recs[n - 1];
+    // Kandidat Launch Pad dari pemindaian terakhir dibuat SEBAGAI TOMBOL per saham,
+    // bukan daftar teks: inilah panel tempat kandidat harian muncul, jadi di sinilah
+    // pemakaian tombol Pantau paling sering dibutuhkan.
     const lastTxt = (lastRec.tickers || []).length
-      ? `<div class="mt-1 text-slate-400">Pemindaian terakhir (${lastRec.date}): <b class="text-amber-300">${lastRec.tickers.join(", ")}</b></div>`
+      ? `<div class="mt-2 text-slate-400">Pemindaian terakhir <b class="text-slate-300">${lastRec.date}</b> — kandidat Launch Pad (pantau per saham):
+           <div class="flex flex-wrap gap-1.5 mt-1.5">${lastRec.tickers.map(t => watchChipHtml(t)).join("")}</div></div>`
       : `<div class="mt-1 text-slate-500">Pemindaian terakhir (${lastRec.date}): tidak ada kandidat.</div>`;
     box.innerHTML = `
       <div class="flex flex-wrap gap-2 mb-3">${chips}</div>
@@ -2413,6 +2509,9 @@ function toPorto(t) {
   toast(t + " siap ditambahkan ke portofolio.", "info");
 }
 
+// Dimuat di awal (dulu hanya saat Scan diklik) supaya status pantauan di chip
+// riwayat pemindaian & kartu Pola Khusus sudah benar sebelum pemakaian pertama.
+loadKoreksiWatch();
 renderWlChips();
 renderPortfolio();
 renderAlertBox([]);

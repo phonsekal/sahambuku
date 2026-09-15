@@ -4982,6 +4982,8 @@ def api_info():
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "GET  /api/pattern-sim  (simulasi portofolio tiga pola buku: launchpad/reversal/volsr)",
             "GET  /api/scan-history  (riwayat pemindaian cron Launch Pad, termasuk hari kosong)",
+            "GET  /api/koreksi/watch  (pantauan Telegram: daftar + ringkasan jumlah, waktu cek terakhir, perubahan sinyal)",
+            "POST /api/koreksi/watch",
             "POST /api/screener",
         ],
         "docs": "/docs",
@@ -5940,6 +5942,47 @@ def portfolio_alerts(payload: AlertsRequest):
 
 
 KOREKSI_WATCH_KEY = "ci:koreksi_watch"
+# Kunci pendukung RINGKASAN PANTAUAN. Cron /api/cron/koreksi menulis keduanya supaya
+# dashboard bisa menjawab tiga pertanyaan pemakai: berapa saham dipantau, kapan
+# terakhir benar-benar dicek, dan sinyal siapa yang berubah. Tanpa ini, daftar
+# pantauan hanya daftar nama — pemakai tidak tahu apakah ia masih dipantau atau
+# sudah lama tidak pernah diperiksa.
+WATCH_STATE_PREFIX = "ci:koreksi_state:"   # sinyal terakhir per ticker (dipakai cron)
+WATCH_CHANGES_KEY = "ci:watch:changes"     # log perubahan sinyal (terbaru di belakang)
+WATCH_LASTCHECK_KEY = "ci:watch:lastcheck"  # kapan cron terakhir memeriksa
+WATCH_CHANGES_MAX = 80
+
+
+def _watch_last_check_get() -> dict:
+    """Kapan cron pantauan terakhir berjalan (dari sisi server, bukan dugaan UI)."""
+    d = _unwrap_json(_upstash_get(WATCH_LASTCHECK_KEY), {})
+    return d if isinstance(d, dict) else {}
+
+
+def _watch_last_check_set(rec: dict) -> None:
+    if SYNC_ENABLED:
+        _upstash_set(WATCH_LASTCHECK_KEY, json.dumps(rec, ensure_ascii=False))
+
+
+def _watch_changes_get(limit: int = 20) -> List[dict]:
+    d = _unwrap_json(_upstash_get(WATCH_CHANGES_KEY), [])
+    if not isinstance(d, list):
+        return []
+    return [c for c in d if isinstance(c, dict)][-limit:]
+
+
+def _watch_changes_append(rec: dict) -> None:
+    """Catat satu perubahan sinyal. Dipakai cron, dibaca dashboard.
+
+    Log ini sengaja TERPISAH dari state per ticker: state per ticker ditimpa tiap
+    kali sinyal berubah, jadi ia tidak bisa menjawab "apa yang berubah tadi".
+    """
+    if not SYNC_ENABLED:
+        return
+    d = _unwrap_json(_upstash_get(WATCH_CHANGES_KEY), [])
+    lst = [c for c in d if isinstance(c, dict)] if isinstance(d, list) else []
+    lst.append(rec)
+    _upstash_set(WATCH_CHANGES_KEY, json.dumps(lst[-WATCH_CHANGES_MAX:], ensure_ascii=False))
 
 
 def _koreksi_watch_load() -> List[str]:
@@ -5982,10 +6025,22 @@ def koreksi_watch(payload: KoreksiWatchRequest):
 
 @app.get("/api/koreksi/watch")
 def koreksi_watch_list(period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$")):
-    """Status live saham dalam pantauan koreksi: sinyal, skor kualitas, support terdekat."""
+    """Status live saham dalam pantauan koreksi: sinyal, skor kualitas, support terdekat.
+
+    Menyertakan `summary` (berapa dipantau, kapan cron terakhir memeriksa, perubahan
+    sinyal terakhir) supaya daftar pantauan tidak sekadar daftar nama.
+    """
     lst = _koreksi_watch_load()
+    # Ringkasan disusun dari catatan SERVER (ditulis cron), bukan tebakan UI.
+    summary = {
+        "watched_count": len(lst),
+        "last_check": _watch_last_check_get(),
+        "recent_changes": list(reversed(_watch_changes_get(12))),
+        "sync_enabled": SYNC_ENABLED,
+    }
     if not lst:
-        return {"watched": [], "results": [], "sync_enabled": SYNC_ENABLED}
+        return {"watched": [], "results": [], "sync_enabled": SYNC_ENABLED,
+                "summary": summary}
 
     def one(tk: str) -> dict:
         try:
@@ -6016,7 +6071,14 @@ def koreksi_watch_list(period: str = Query("3mo", pattern="^(1mo|3mo|6mo|1y)$"))
 
     with ThreadPoolExecutor(max_workers=min(6, len(lst))) as ex:
         results = list(ex.map(one, lst))
-    return {"watched": lst, "results": results, "sync_enabled": SYNC_ENABLED}
+    # Sinyal terakhir per ticker ikut ditampilkan supaya pemakai bisa melihat
+    # "dari apa ke apa" tanpa menebak, dan tahu mana yang belum pernah dicek cron.
+    for r in results:
+        st = str(_upstash_get(f"{WATCH_STATE_PREFIX}{r['ticker']}") or "")
+        r["last_checked_signal"] = st or None
+        r["changed_since_check"] = bool(st) and st != str(r.get("signal") or "")
+    return {"watched": lst, "results": results, "sync_enabled": SYNC_ENABLED,
+            "summary": summary}
 
 
 @app.get("/api/cron/koreksi")
@@ -6033,6 +6095,13 @@ def cron_koreksi(request: Request, secret: str = Query("")):
         return {"skipped": True, "reason": "Penyimpanan cloud belum dikonfigurasi."}
     lst = _koreksi_watch_load()
     if not lst:
+        # Tetap catat waktu pemeriksaan walau daftar kosong: "kapan terakhir dicek"
+        # harus benar walau isinya nol, supaya panel ringkasan tidak menampilkan
+        # pemeriksaan lama seolah masih berlaku.
+        _watch_last_check_set({"date": time.strftime("%Y-%m-%d"),
+                               "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                               "checked": 0, "watched": 0, "telegram_sent": 0,
+                               "note": "Pantauan kosong."})
         return {"checked": 0, "telegram_sent": 0, "watched": 0,
                 "note": "Pantauan koreksi kosong — tambahkan kandidat lewat dashboard."}
 
@@ -6100,8 +6169,19 @@ def cron_koreksi(request: Request, secret: str = Query("")):
                     sent += 1
 
         if sig != prev:
+            # Catat perubahan SEBELUM state ditimpa — setelah ditimpa, informasi
+            # "dari sinyal apa" hilang dan tidak bisa direkonstruksi lagi.
+            if prev:
+                _watch_changes_append({
+                    "ticker": strip_suffix(tk), "from": prev, "to": sig,
+                    "score": num(score, 0), "price": num(price, 2),
+                    "date": today, "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                })
             _upstash_set(state_key, sig, ttl=86400 * 3)
 
+    _watch_last_check_set({"date": today, "time": time.strftime("%Y-%m-%d %H:%M:%S %Z"),
+                           "checked": checked, "watched": len(lst),
+                           "telegram_sent": sent})
     return {"checked": checked, "telegram_sent": sent, "watched": len(lst),
             "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
