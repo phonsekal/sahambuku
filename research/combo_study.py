@@ -51,6 +51,10 @@ Cara menjalankan
   # dashboard). Jalankan tiap kali angka pola berubah, supaya panel tidak basi.
   .venv/bin/python research/combo_study.py --part combopattern --export api/pattern_sim.json
 
+  # AUDIT SELURUH KRITERIA head-to-head (panel lokal, 0 jaringan/0 kuota):
+  # memakai fungsi sinyal api/index.py apa adanya atas panel ringkasan harian IDX.
+  .venv/bin/python research/criteria_audit.py [--years 5] [--min-grade LIKUID]
+
   # Semua di atas 0 kuota Arjum maupun IDX: data tiket & broker sudah di cache.
 
 HASIL (dijalankan 14 Sep 2026)
@@ -215,11 +219,24 @@ BAGIAN G — AUDIT SCALPING & BSJP (kriteria yang belum pernah diukur).
   Kesimpulan: kedua kriteria TIDAK membuang uang. Yang benar-benar bermasalah hanya
   satu hal spesifik di bawah ini.
 
-  1) PREMIS BSJP GAGAL DI SELURUH PASAR. BSJP = "beli sore, jual pagi", jadi ukuran
-     yang relevan adalah return HARI BERIKUTNYA. Di seluruh pasar: abs1 -0,19%
-     (baseline +0,07%), excess -0,49% t=-3,51 -> NYATA dan negatif. Artinya membeli
-     saat close lalu menjual pagi harinya RATA-RATA RUGI. Baru setelah dibatasi ke
-     SANGAT LIKUID + buang tiket kecil, abs1 berbalik positif (+0,53%).
+  1) PREMIS BSJP: KESIMPULAN LAMA DI ATAS SALAH UKURAN -- SUDAH DIKOREKSI.
+     Versi laporan ini (Sep 2026) menyebut "PREMIS BSJP GAGAL DI SELURUH PASAR"
+     dengan bukti abs1 = close(t) -> close(t+1) = -0,19%. Tetapi BSJP berarti
+     "beli sore, JUAL PAGI", jadi kaki keluarnya adalah OPEN(t+1), BUKAN close(t+1).
+     Diukur dengan ukuran yang benar (research/criteria_audit.py, ringkasan harian
+     IDX resmi, kolom OpenPrice, 251.662 saham-hari 2020-2026):
+        close -> OPEN besok : +1,95% absolut, +1,18% vs kelas likuiditas yang sama
+                              (blok t=+13,9), +1,65% bersih setelah biaya 0,3%
+        close -> close besok: -0,41%   <- inilah angka yang dulu dilaporkan
+     Sebagai pembanding, SELURUH pasar hanya memberi +0,21% untuk close -> open
+     (stabil di semua kelas likuiditas dan semua tahun), jadi +1,95% itu bukan
+     artefak. Diverifikasi manual di berkas ringkasan mentah (mis. CSMI
+     2026-08-11 close 108 -> 2026-08-12 open 126) — bukan pergeseran indeks.
+     Kesimpulan baru: premis BSJP BEKERJA, asalkan keluar di pembukaan, dan
+     strateginya memang semalam. Di horizon 20 hari kriteria ini praktis tanpa edge
+     (+0,49%, t=+1,27). Catatan data: kolom OpenPrice ringkasan IDX kosong (=0)
+     untuk ~93% baris sebelum 2025, sehingga uji ini hanya bisa dipakai mulai 2020
+     dengan cakupan sebagian; angka close-versi lama tetap berlaku apa adanya.
 
   2) DI DALAM universe SANGAT LIKUID keduanya memang positif (pembanding dibatasi
      ke kelas yang sama, jadi bukan premi ukuran):

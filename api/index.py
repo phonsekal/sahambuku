@@ -757,15 +757,23 @@ def launch_pad_series(df: pd.DataFrame) -> pd.Series:
 
 
 def screener_hints(df: pd.DataFrame, ticker: str) -> dict:
-    """Kriteria preset screener Stockbit Coachinvestasi (halaman awal buku)."""
-    close, vol = df["Close"], df["Volume"]
-    last = float(close.iloc[-1])
-    prev = float(close.iloc[-2]) if len(df) >= 2 else last
-    day_ret = (last / prev - 1) * 100 if prev > 0 else 0.0
-    est_value = last * float(vol.iloc[-1])
-    vma = float(sma(vol, 20).iloc[-1]) if len(df) >= 20 else 0.0
-    vol_ratio = float(vol.iloc[-1]) / vma if vma > 0 else 0.0
+    """Kriteria preset screener Coachinvestasi (halaman awal buku): BSJP & SCALPING.
+
+    Memakai `_screener_metrics()` — helper yang SAMA dengan `run_screener()` — supaya
+    `/api/analyze` dan `/api/screener` tidak pernah melaporkan angka berbeda untuk
+    saham yang sama. Dulu fungsi ini menghitung sendiri `Close x Volume`, sementara
+    screener memakai kolom `Value` (nilai transaksi pasar REGULER dari IDX Edge).
+    Selisihnya nyata: 15 Sep 2026 BBCA 1.417.111.800.000 (Close x Volume) vs
+    1.396.352.157.500 (Value) — beda Rp20,8 miliar karena Close x Volume ikut
+    menghitung volume papan negosiasi (NG). Karena ambang BSJP/SCALPING berupa angka
+    rupiah mutlak (Rp5 M / Rp1 M), dua definisi itu bisa memberi keputusan eligibility
+    yang BERBEDA untuk saham yang sama tepat di sekitar ambang.
+    """
+    m = _screener_metrics(df)
+    last, day_ret, est_value, vol_ratio = m["last"], m["day_ret"], m["est_value"], m["vol_ratio"]
     is_idr = ".JK" in ticker.upper()
+    value_source = ("nilai transaksi pasar reguler (kolom Value)"
+                    if "Value" in df.columns else "perkiraan Close x Volume (Value tidak tersedia)")
 
     checks = {
         "beli_sore_jual_pagi": {
@@ -777,16 +785,23 @@ def screener_hints(df: pd.DataFrame, ticker: str) -> dict:
         "scalping": {
             "value_ge_1b": bool(est_value >= 1e9),
             "day_return_ge_10pct": bool(day_ret >= 10.0),
-            "price_ge_50": bool(last >= 50),
-            "eligible": bool(est_value >= 1e9 and day_ret >= 10.0 and last >= 50) if is_idr else None,
+            # Ambang harga "Price >= 50": produksi memakai > 50 (lihat run_screener),
+            # jadi di sini disamakan supaya harga tepat 50 tidak dinilai dua cara.
+            "price_ge_50": bool(last > 50),
+            "eligible": bool(est_value >= 1e9 and day_ret >= 10.0 and last > 50) if is_idr else None,
         },
     }
     return {
         "day_return_pct": num(day_ret, 2),
         "estimated_value_idr": num(est_value, 0),
+        "value_source": value_source,
         "volume_ratio_to_ma20": num(vol_ratio, 2),
         "checks": checks,
-        "note": "Estimasi Value = Close x Volume (kriteria hanya bermakna untuk saham IDX / .JK).",
+        "note": ("Nilai transaksi memakai definisi yang sama dengan /api/screener "
+                 f"({value_source}). Kriteria hanya bermakna untuk saham IDX / .JK. "
+                 "Hasil audit 2020-2026 (1,34 juta saham-hari): edge BSJP ada di "
+                 "MENJUAL PAGI; close -> OPEN besok +1,95% absolut dan +1,18% vs "
+                 "kelas likuiditas yang sama (blok t=+13,9) — bukan di close besok. Di horizon 20 hari SCALPING/BSJP praktis tanpa edge; yang berisi adalah skor beli >=70 dan pola Launch Pad."),
     }
 
 
@@ -4143,6 +4158,9 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "book_confirm": result.get("book_confirm")}
     item["data_date"] = (str(df.index[-1].date()) if hasattr(df.index[-1], "date")
                           else str(df.index[-1]))
+    # Jumlah bar yang BENAR-BENAR dipakai, supaya jendela data bisa diaudit
+    # (parameter `period` tidak selalu dipenuhi sumber data).
+    item["data_bars"] = int(len(df))
     # Ukuran tiket: penyaring kualitas likuiditas (buang kuintil terendah).
     # Dipasang DI SINI supaya semua jalur (termasuk breakout) mendapatkannya.
     ticket = avg_ticket_size(df)
@@ -4396,6 +4414,7 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     matched: List[dict] = []
     scanned = skipped = bandar_used = ticket_filtered = 0
     by_grade: Dict[str, tuple] = {}
+    bars_seen: List[int] = []    # untuk melaporkan jendela data yang benar-benar dipakai
     # Filter kondisi pasar (IHSG vs MA200) — dihitung sekali, berlaku untuk semua saham.
     regime = _ihsg_regime() if require_regime else None
     regime_blocked = bool(require_regime and regime and regime.get("trend") == "bear")
@@ -4418,6 +4437,8 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
                 skipped += 1
                 continue
             scanned += 1
+            if out.get("item", {}).get("data_bars"):
+                bars_seen.append(int(out["item"]["data_bars"]))
             bandar_used += out.get("bandar_used", 0)
             if out.get("eligible"):
                 if regime_blocked:
@@ -4443,6 +4464,7 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     return {
         "scanned": scanned,
         "skipped": skipped,
+        "data_bars_median": (int(np.median(bars_seen)) if bars_seen else None),
         "ticket_filtered": ticket_filtered,
         # Kandidat yang SAMPAI ke penyaring tiket (sudah lolos regime/konfirmasi)
         # dan berapa yang dibuang, dipecah per kelas likuiditas.
@@ -5463,6 +5485,44 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
     }
 
 
+# Panjang riwayat yang DIHARAPKAN untuk tiap nilai `period` (sesi bursa, ~21/hari kerja).
+# Dipakai untuk MELAPORKAN apakah permintaan pemakai benar-benar terpenuhi. Sebelum
+# ini `period` ditampilkan apa adanya di respons, padahal untuk saham IDX jalur IDX
+# Edge selalu mengembalikan jendela tetap — sehingga period=1mo dan period=1y bisa
+# memberi sma200 & analisis yang PERSIS sama tanpa ada petunjuk apa pun.
+PERIOD_EXPECTED_BARS = {"1mo": 21, "3mo": 63, "6mo": 126, "1y": 250}
+
+
+def _period_expected_bars(period: str) -> Optional[int]:
+    return PERIOD_EXPECTED_BARS.get(str(period or "").lower())
+
+
+def _period_honored(period: str, bars: int) -> bool:
+    """True bila riwayat yang tersedia CUKUP untuk jendela yang diminta."""
+    exp = _period_expected_bars(period)
+    if not exp:
+        return True
+    return int(bars) >= 0.7 * exp
+
+
+def _period_note(period: str, bars: int, source: str) -> Optional[str]:
+    """Penjelasan jujur bila jendela data TIDAK sama dengan yang diminta. None bila pas."""
+    exp = _period_expected_bars(period)
+    if not exp:
+        return None
+    bars = int(bars)
+    if bars < 0.7 * exp:
+        return (f"Riwayat KURANG: diminta {period} (~{exp} sesi) tetapi sumber "
+                f"'{source}' hanya menyediakan {bars} bar. Indikator panjang "
+                f"(SMA200, S&R volume 250 bar, role reversal 60 bar) bisa kosong atau "
+                f"tidak valid di jendela ini.")
+    if bars > 2.0 * exp:
+        return (f"Sumber '{source}' menyediakan {bars} bar — LEBIH PANJANG dari "
+                f"{period} (~{exp} sesi). Parameter period TIDAK memotong data: semua "
+                f"indikator dan pola dihitung dari {bars} bar tersebut.")
+    return None
+
+
 def _analyze_core(ticker: str, period: str, risk_amount: float,
                   light: bool = False, fund_level: str = "full") -> dict:
     """Analisis lengkap 1 saham.
@@ -5470,6 +5530,10 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
     light=True -> tanpa bandarmology (hemat kuota IDX Edge).
     fund_level -> 'full' (rasio + laporan YoY + dividen + aksi korporasi),
     'ringkas' (hanya rasio, 1 permintaan), atau 'off' (tanpa fundamental).
+
+    `period` hanya menentukan jendela yang DIMINTA. Sumber data bisa mengembalikan
+    riwayat yang berbeda (jalur IDX Edge selalu memberi jendela tetap), jadi hasilnya
+    dilaporkan apa adanya di market.period_honored / market.period_note / market.bars.
     """
     df = fetch_data(ticker, period)
     close = df["Close"]
@@ -5698,10 +5762,14 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "data_warning": data_warning,
         "market": {
             "period": period,
+            "period_honored": _period_honored(period, len(df)),
+            "period_note": _period_note(period, len(df), df.attrs.get("source", "yfinance")),
             "bars": len(df),
             "last_price": num(last_price, 2),
             "change_pct": num(change_pct, 2),
             "date": str(close.index[-1].date()) if hasattr(close.index[-1], "date") else str(close.index[-1]),
+            "bar_from": (str(close.index[0].date()) if hasattr(close.index[0], "date")
+                         else str(close.index[0])),
             "source": df.attrs.get("source", "yfinance"),
             "is_live": is_live,
             "quote_source": quote.get("source") if has_quote else None,
@@ -6842,6 +6910,41 @@ def screener(
     bandarmology, BUKAN sinyal beli (uji 77 hari: tidak ada daya prediksi). Kuota
     per pemindaian tinggi (1 permintaan per saham), jadi pakai limit kecil atau
     spread=true.
+    AUDIT 2020-2026 — PERINGKAT KRITERIA (research/criteria_audit.py, 1,34 juta
+    saham-hari, 981 emiten, 1590 tanggal, 0 kuota; semua kriteria diuji pada panel,
+    horizon, dan pembanding yang SAMA). Pembandingnya KELAS LIKUIDITAS yang sama pada
+    tanggal yang sama — bukan rata-rata pasar, karena rata-rata pasar dinaikkan
+    mikro-cap yang tidak bisa ditransaksikan dalam jumlah berarti. Alpha H20 vs kelas:
+      launchpad      +4,53%  (blok t=+3,09, dua paruh +5,45/+3,62, 0,6 sinyal/hari)
+      momentum >=8%  +3,08%  (t=+15,07, TIDAK stabil: paruh +0,54/+5,62)
+      buy>=70        +1,83%  (t=+11,47, paruh +1,11/+2,54)
+      buy>=50        +1,13%  (t=+21,86, paruh +0,71/+1,55)
+      volsr          +0,62%  (t=+8,20, paruh +0,61/+0,63 — paling konsisten)
+      bsjp           +0,49%  (t=+1,27 — tidak nyata)
+      scalping       +0,47%  (t=+1,15 — tidak nyata)
+      swing (proksi) +0,45%  (t=+1,42 — tidak nyata)
+      reversal       +0,15%  (t=+1,51); breakout -0,08% (t=-1,72)
+    TIGA HAL YANG HARUS DIBACA DARI ANGKA INI:
+    1. SWING (jalur proksi) TIDAK punya edge terukur di kedua jendela uji (t=+1,42
+       dan t=+0,10). Jalur utamanya memakai BandarValue yang riwayatnya hanya 80 sesi,
+       jadi tidak bisa diuji; yang bisa diuji justru tidak menunjukkan keunggulan.
+    2. SCALPING & BSJP tidak punya edge di horizon 20 hari. Yang berisi pada BSJP
+       adalah JANJI NAMANYA SENDIRI: beli di close lalu jual di OPEN besok memberi
+       +1,95% absolut / +1,18% vs kelas (blok t=+13,9), sedangkan ukuran close-ke-close
+       besok hanya -0,41%. Jadi pakai BSJP sebagai day-trade semalam, bukan posisi.
+    3. Syarat tambahan SCALPING/BSJP (nilai >= Rp1 M/Rp5 M, harga > 50, volume >= 2x)
+       TIDAK menambah alpha: kandidatnya subset dari syarat momentum mentah, dan alpha
+       momentum mentah (>=8%: +3,08%) lebih tinggi daripada BSJP (+0,49%).
+    Filter default aplikasi TERBUKTI membantu di panel ini: membuang tiket kecil
+    menaikkan alpha setiap kriteria (BSJP +0,49 -> +2,06; buy>=70 +1,83 -> +2,32;
+    momentum>=8% +3,08 -> +3,97), dan membatasi ke rezim bull menaikkan hampir
+    semuanya (buy>=70 +2,88 bull vs +0,04 bear). Satu pengecualian: kelas SANGAT
+    LIKUID melemahkan skor beli (buy>=70 hanya +0,24, t=+1,56) — di kelas paling
+    likuid, kriteria pola/breakout (volsr, breakout, launchpad) lebih layak.
+    Jendela data: respons menyertakan data_bars_median dan period_note, karena
+    parameter `period` TIDAK selalu dipenuhi sumber data (jalur IDX Edge selalu
+    mengembalikan jendela tetap). Sebelumnya period=1mo dan period=1y menghasilkan
+    analisis yang PERSIS sama tanpa petunjuk apa pun.
     PAGINASI: pakai offset/limit berulang-ulang untuk memindai SELURUH kode saham.
     Respons menyertakan total_tickers, next_offset, page, dan pages — teruskan
     next_offset sampai nilainya null untuk menuntaskan seluruh pasar.
@@ -6898,6 +7001,10 @@ def screener(
             "calibrated_files": sorted(_CALIBRATED_FLOORS),
             "meta": _CALIBRATED_META or None,
         },
+        "data_bars_median": scan.get("data_bars_median"),
+        "period_note": (_period_note(period, scan.get("data_bars_median") or 0,
+                                     "penyedia riwayat (IDX Edge / yfinance / dataset IDX)")
+                       if scan.get("data_bars_median") else None),
         "ticket_filter_note": ("Penyaring ukuran tiket: membuang saham dengan tiket "
                               "terendah (kuintil 20%) di dalam kelas likuiditasnya "
                               "(SANGAT LIKUID / LIKUID / CUKUP). Bukan sinyal beli."),
