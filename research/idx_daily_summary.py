@@ -83,17 +83,20 @@ semuanya menguat, bukan melemah (angka lama 1.000 tanggal ada di komentar git).
 
 CATATAN PENARIKAN
 -----------------
-IDX membalas HTTP 429 setelah ~40-180 permintaan berturut-turut. Penarikan
-bergerak dari sisi TERBARU (`--reverse`) supaya 429 di tanggal tua tidak
-memblokir kemajuan. Cache sekarang **1.784 dari 1.827** hari kerja
-(2019-09-12 s/d 2026-09-11); yang tersisa hanya 43 tanggal 2019
-(12 Sep - 11 Nov 2019), di LUAR jendela analisis (yang mulai 2020-01-02).
-Jadi dataset ini praktis lengkap.
+PENARIKAN SUDAH TUNTAS: 1.827 dari 1.827 hari kerja punya file cache, tanpa
+sisa. Sebarannya: 1.610 tanggal berisi data, 217 kosong.
+
+TEMUAN PENTING — ARSIP IDX MULAI 2020-01-02, dan itu batas KERAS:
+seluruh Sep-Des 2019 membalas **HTTP 200 dengan 0 emiten** (bukan 429, bukan
+blokir). Diuji langsung 8 tanggal acak (2019-09-12, -09-20, -10-01, -11-01,
+-11-11, -12-30) semuanya 0 emiten, sementara 2020-01-02 mengembalikan 671
+emiten. Jadi jangan buang waktu mencoba menarik 2019 lagi — datanya memang
+tidak diterbitkan. Jendela analisis yang sah: 2020-01-02 s/d 2026-09-11
+(6,7 tahun).
 
 Tingkat tarik yang aman dan terbukti: `--workers 2 --delay 0.45` = ~525
 permintaan dalam 228 detik TANPA satu pun 429. Setelah kena 429, cooldown
-perlu lebih dari 150 detik. Untuk menuntaskan 43 tanggal sisa:
-  .venv/bin/python research/idx_daily_summary.py --years 7 --reverse --budget 90 --workers 1 --delay 0.8 --fetch-only
+perlu lebih dari 150 detik (dua percobaan dengan jeda 150 detik masih ditolak).
 (Cache di research/.cache/idxsummary/ — sudah ter-ignore git.)
 
 Jalankan:

@@ -1266,12 +1266,34 @@ function renderScan(d) {
   const rsBypassNote = (d.rs_bypass && d.regime_blocked && d.results.length)
     ? `<div class="mt-2 text-[11px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3 py-2">🚀 Filter IHSG aktif, tetapi <b>${d.results.length}</b> saham RS LEADER (kuat lawan pasar) tetap diloloskan — inilah saham yang naik walau indeks merah.</div>`
     : "";
+  // Panel dampak penyaring ukuran tiket, dipecah per kelas likuiditas — supaya
+  // terlihat APA yang dibuang, bukan cuma berapa. Datanya dari field ticket_by_grade.
+  const tbg = d.ticket_by_grade || {};
+  const gradeOrder = ["SANGAT LIKUID", "LIKUID", "CUKUP", "KURANG LIKUID", "tidak diketahui"];
+  const gradeRank = g => { const i = gradeOrder.indexOf(g); return i < 0 ? gradeOrder.length : i; };
+  const tbKeys = Object.keys(tbg).filter(g => tbg[g] && tbg[g].kandidat)
+    .sort((a, b) => gradeRank(a) - gradeRank(b));
+  const ticketPanel = tbKeys.length
+    ? `<div class="mt-2 bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2 text-[11px] text-slate-400">`
+      + `<div class="mb-1 text-slate-300 font-semibold">🎫 Dampak penyaring ukuran tiket`
+      + `${d.skip_small_ticket ? "" : " <span class=\"text-amber-300\">(nonaktif)</span>"}</div>`
+      + `<div class="flex flex-wrap gap-x-4 gap-y-1">`
+      + tbKeys.map(g => {
+          const s = tbg[g], dibuang = s.dibuang || 0;
+          const warna = g === "KURANG LIKUID" ? "text-slate-500" : "text-sky-300";
+          return `<span>${esc(g)}: <b class="text-slate-200 tabular">${s.kandidat}</b> kandidat`
+            + `${dibuang ? ` → <b class="text-amber-300 tabular">${dibuang}</b> dibuang` : ""}`
+            + ` · sisa <b class="${warna} tabular">${s.sisa}</b></span>`;
+        }).join("")
+      + `</div><div class="mt-1 text-slate-500">Tiap kelas dibuang menurut ambangnya sendiri; `
+      + `kelas KURANG LIKUID tidak disentuh. Ini penyaring kebersihan, bukan sinyal beli.</div></div>`
+    : "";
   $("#scanInfo").innerHTML =
     `<div class="flex flex-wrap items-center">${regimeBadge}<span>Dipindai <b class="text-slate-200">${d.scanned}</b> saham · dilewati <b class="text-slate-200">${d.skipped}</b> · bandarmology dicek <b class="text-slate-200">${d.bandarmology_checked}</b> · total universe <b class="text-slate-200">${d.total_tickers}</b></span>` +
     (d.spread ? ` · <span class="text-sky-400" title="Sampel tersebar MERATA di seluruh daftar emiten, bukan 100 emiten pertama secara alfabet">sampel tersebar</span>` : "") +
     (d.next_offset ? ` · <button onclick="scanMore(${d.next_offset})" class="text-sky-400 hover:underline font-semibold">Lanjut offset ${d.next_offset} →</button>` : "") +
     (d.ticket_filtered ? ` · <span class="text-amber-300" title="Penyaring ukuran tiket: saham dengan tiket terendah (kuintil 20%) di kelas likuiditasnya dibuang">🎫 tiket kecil dibuang <b>${d.ticket_filtered}</b></span>` : "") +
-    `</div>${blockedBanner}${rsBypassNote}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
+    `</div>${ticketPanel}${blockedBanner}${rsBypassNote}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
 
   if (!d.results.length) {
     $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : "Tidak ada saham yang lolos kriteria pada halaman ini."}</div>`;

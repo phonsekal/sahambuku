@@ -3856,6 +3856,7 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
           silent_min_net: float = 2e9, skip_small_ticket: bool = False) -> dict:
     matched: List[dict] = []
     scanned = skipped = bandar_used = ticket_filtered = 0
+    by_grade: Dict[str, tuple] = {}
     # Filter kondisi pasar (IHSG vs MA200) — dihitung sekali, berlaku untuk semua saham.
     regime = _ihsg_regime() if require_regime else None
     regime_blocked = bool(require_regime and regime and regime.get("trend") == "bear")
@@ -3887,16 +3888,27 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
                     out["item"]["rs_bypass"] = True
                 if require_confirm and not (out["item"].get("book_confirm") or {}).get("ok"):
                     continue
-                # Penyaring ukuran tiket: hanya berlaku untuk kelas SANGAT LIKUID
-                # (di sanalah efeknya divalidasi) — saham kelas lain tidak dibuang.
+                # Penyaring ukuran tiket: berlaku untuk SANGAT LIKUID, LIKUID, dan
+                # CUKUP (ambang berbeda per kelas); KURANG LIKUID tidak disentuh.
+                # Dihitung per kelas supaya dampaknya bisa ditampilkan & diaudit.
+                g = str(out["item"].get("liquidity_grade") or "tidak diketahui")
+                seen, drop = by_grade.get(g, (0, 0))
+                seen += 1
                 if skip_small_ticket and out["item"].get("ticket_small"):
                     ticket_filtered += 1
+                    drop += 1
+                    by_grade[g] = (seen, drop)
                     continue
+                by_grade[g] = (seen, drop)
                 matched.append(out["item"])
     return {
         "scanned": scanned,
         "skipped": skipped,
         "ticket_filtered": ticket_filtered,
+        # Kandidat yang SAMPAI ke penyaring tiket (sudah lolos regime/konfirmasi)
+        # dan berapa yang dibuang, dipecah per kelas likuiditas.
+        "ticket_by_grade": {g: {"kandidat": s, "dibuang": d,
+                                "sisa": s - d} for g, (s, d) in by_grade.items()},
         "bandarmology_checked": bandar_used,
         "market_regime": regime,
         "regime_blocked": regime_blocked,
@@ -5924,6 +5936,7 @@ def screener(
         "silent_min_net": silent_min_net,
         "skip_small_ticket": skip_small_ticket,
         "ticket_filtered": scan.get("ticket_filtered", 0),
+        "ticket_by_grade": scan.get("ticket_by_grade", {}),
         "ticket_filter_note": ("Penyaring ukuran tiket: membuang saham dengan tiket "
                               "terendah (kuintil 20%) di dalam kelas likuiditasnya "
                               "(SANGAT LIKUID / LIKUID / CUKUP). Bukan sinyal beli."),

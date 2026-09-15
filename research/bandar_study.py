@@ -54,6 +54,30 @@ informatif daripada agregat yang saling menutupi, tetapi TIDAK boleh dipasang
 sebagai kriteria beli. Jendela 80 hari memang terlalu pendek untuk menguji sinyal
 berhorizon bulanan -- jangan ulangi uji ini tanpa data riwayat yang lebih panjang.
 
+3) KRITERIA "BANDAR" SENDIRI JUGA DIUJI (ditambahkan 15 Sep 2026).
+   Pertanyaan: yang tidak lolos itu kriteria "akumulator diam-diam", tapi bagaimana
+   dengan kriteria BANDAR yang MEMANG sudah dipakai aplikasi
+   (`status ACC` DAN `value share Top Buyer >= 60%`)? Keduanya bisa diturunkan
+   point-in-time dari data per-broker yang sama (fungsi `bandar_flag_frame`).
+   Hasil (77 tanggal, 62.054 saham-tanggal, 11.634 flagged = 18,75%):
+     BANDAR -> exc5  [blok]   : -0,16%  t=-0,27   15 blok   <- daya uji CUKUP
+     BANDAR -> exc20 [blok]   : -0,74%  t=-0,67    3 blok   <- daya uji KURANG
+     hanya ACC -> exc20 [blok]: -2,51%  t=-1,40    3 blok
+     hanya share>=60%         : -0,79%  t=-0,94    3 blok
+     (kontrol) BUKAN BANDAR   : +0,13%  t=+0,39    3 blok
+   Di antara saham ACC, arah kriteria ini BENAR (share makin besar makin baik):
+     ACC & share<40% -> -6,23% | ACC & 40-60% -> -2,80% | ACC & share>=60% -> -0,74%
+   Tetapi LEVEL-nya negatif, dan hanya h5 yang punya daya uji cukup (+-0,16%,
+   t=-0,27 = tidak berbeda dari nol). Ditambah jendela ini satu rezim (bear
+   2026-05..09, IHSG di bawah MA200), jadi ini BUKAN bukti bahwa BANDAR salah --
+   hanya bukti bahwa KITA TIDAK PUNYA BUKTI bahwa ia bekerja.
+
+   TIDAK ADA PROKSI JANGKA PANJANG YANG BISA MENGGANTIKANNYA. Porsi blok negosiasi
+   (`ng_share`) dari ringkasan IDX resmi tampak seperti kandidat, TETAPI ia nol di
+   87,2% baris kelas LIKUID (p90 = 0,02%) dan 49,1% di SANGAT LIKUID -- peringkatnya
+   didominasi ikatan nilai, sehingga IC-nya tidak bisa dipercaya (IC positif tetapi
+   kuintilnya justru menurun). Jangan pakai ng_share sebagai proksi akumulasi.
+
 Jalankan:
   .venv/bin/python research/bandar_study.py --budget 3000
   .venv/bin/python research/bandar_study.py --codes PTBA,TINS,BBRI --budget 50
@@ -354,6 +378,86 @@ def evaluate_flag(D: pd.DataFrame, mask: pd.Series, outcome: str, label: str,
           f"rata2 excess {a.mean()*100:+.2f}%  t={t:+.2f}  {verdict} ({pos_share*100:.0f}% tanggal positif)")
 
 
+def bandar_flag_frame(L: pd.DataFrame, win: int = 20) -> pd.DataFrame:
+    """Bangun flag kriteria BANDAR point-in-time dari data PER BROKER.
+
+    Kriteria BANDAR di aplikasi (api/index.py, `criteria == "bandar"`) adalah
+    `status ACC` DAN `value_share_significant` (value share Top Buyer >= 60%).
+    Di sini keduanya diturunkan dari `win` hari yang BERAKHIR di tanggal itu:
+      buy_i  = jumlah nval positif broker i selama jendela
+      ACC    = total nval seluruh broker > 0
+      share  = max(buy_i) / sum(buy_i)   (porsi pembelian oleh pembeli terbesar)
+      flag   = ACC dan share >= 0.60
+    """
+    g = L.copy()
+    g["buy"] = g["nval"].clip(lower=0.0)
+    grp = g.groupby(["code", "broker"], sort=False)
+    g["buy_w"] = grp["buy"].transform(lambda s: s.rolling(win, min_periods=win).sum())
+    g["nval_w"] = grp["nval"].transform(lambda s: s.rolling(win, min_periods=win).sum())
+    g = g.dropna(subset=["buy_w", "nval_w"])
+    if not len(g):
+        return pd.DataFrame()
+    out = g.groupby(["code", "date"], as_index=False).agg(
+        buy_total=("buy_w", "sum"),
+        nval_total=("nval_w", "sum"),
+        top_buy=("buy_w", "max"),
+        n_broker=("broker", "nunique"),
+    )
+    out["top_share"] = np.where(out["buy_total"] > 0,
+                                out["top_buy"] / out["buy_total"].replace(0, np.nan), np.nan)
+    out["acc"] = out["nval_total"] > 0
+    out["share_ok"] = out["top_share"] >= 0.60
+    out["bandar_flag"] = (out["acc"] & out["share_ok"]).astype(float)
+    return out
+
+
+def test_bandar_criteria(L: pd.DataFrame, D: pd.DataFrame, win: int = 20) -> pd.DataFrame:
+    """Uji daya prediksi kriteria BANDAR itu sendiri (bukan hanya flag 'silent').
+
+    Semua angka memakai blok tidak tumpang-tindih (stride = horizon), karena
+    horizon 20 hari di tanggal berurutan saling tumpang-tindih.
+    """
+    print(f"\n=== UJI KRITERIA BANDAR (ACC & value share Top Buyer >= 60%), jendela {win} hari ===")
+    bf = bandar_flag_frame(L, win)
+    if not len(bf):
+        print("  tidak cukup data.")
+        return D
+    bf["date"] = pd.to_datetime(bf["date"]).dt.normalize()
+    D = D.merge(bf[["code", "date", "bandar_flag", "acc", "share_ok",
+                    "top_share", "nval_total", "n_broker"]],
+                on=["code", "date"], how="left")
+    D["bandar_flag"] = D["bandar_flag"].fillna(0.0)
+    D["acc"] = D["acc"].fillna(False).astype(bool)
+    D["share_ok"] = D["share_ok"].fillna(False).astype(bool)
+    n_flag = int(D["bandar_flag"].sum())
+    print(f"  flag aktif: {n_flag:,} dari {len(D):,} saham-tanggal "
+          f"({D['bandar_flag'].mean()*100:.2f}%) · tanggal {D['date'].nunique()}")
+    if n_flag < 50:
+        print("  flag terlalu jarang -> tidak bisa disimpulkan apa pun.")
+        return D
+    print("\n  a) kriteria lengkap dan komponennya (blok tidak tumpang-tindih)")
+    for h in (5, 20):
+        evaluate_flag(D, D["bandar_flag"] == 1.0, f"exc{h}",
+                      f"BANDAR (ACC & share>=60%) -> exc{h} [blok]", stride=h)
+    evaluate_flag(D, D["acc"], "exc20", "  komponen: hanya ACC -> exc20 [blok]", stride=20)
+    evaluate_flag(D, D["share_ok"], "exc20", "  komponen: hanya share>=60% -> exc20 [blok]", stride=20)
+    evaluate_flag(D, D["bandar_flag"] == 0.0, "exc20", "  (kontrol) BUKAN BANDAR -> exc20 [blok]", stride=20)
+
+    print("\n  b) seberapa kuat buktinya? (jumlah blok independen)")
+    for h in (5, 20):
+        n_blk = len(np.sort(D["date"].unique())[::h])
+        print(f"    horizon {h:>2} hari -> {n_blk} blok tidak tumpang-tindih  "
+              f"({'cukup' if n_blk >= 12 else 'TERLALU SEDIKIT untuk diuji'})")
+
+    print("\n  c) apakah porsi 'ACC' saja sudah menentukan? (share dipecah 3 tingkat)")
+    D["share_bin"] = pd.cut(D["top_share"], [0, 0.4, 0.6, 1.0],
+                            labels=["share<40%", "40-60%", "share>=60%"])
+    for lab, sub in D[D["acc"]].groupby("share_bin", observed=True):
+        evaluate_flag(D, (D["acc"] & (D["share_bin"] == lab)).fillna(False), "exc20",
+                      f"    ACC & {lab} -> exc20 [blok]", stride=20)
+    return D
+
+
 def ic_by_date(D: pd.DataFrame, metric: str, outcome: str,
                stride: int = 1) -> Tuple[float, float, int]:
     ics = []
@@ -484,9 +588,15 @@ def main() -> None:
         quintile(D, f"silent_rel{w}", "exc20")
         quintile(D, f"bandar_rel{w}", "exc20")
 
+    D = test_bandar_criteria(L, D, win=20)
+
     print("\n-- BATASAN --")
     print("  * Jendela inti ~80 hari perdagangan (batas API) -> satu rezim. Ini penyaringan,")
     print("    BUKAN bukti final setara backtest_rs.py.")
+    print("  * Kriteria BANDAR tidak bisa diuji lintas rezim: gate-nya (ACC + value share)")
+    print("    berasal dari Broker Summary yang riwayatnya hanya ~80 hari. Proksi jangka")
+    print("    panjang yang bisa diuji hanyalah porsi blok NEGOSIASI (ng_share) di")
+    print("    research/idx_daily_summary.py — dan itu bukan kriteria BANDAR yang sama.")
     print("  * API mengirim HANYA broker teratas per saham (median 6 broker), jadi akumulator")
     print("    kecil bisa terlewat sama sekali.")
     print("  * API juga mengembalikan data basi untuk saham tidak aktif -> tanggal dengan")

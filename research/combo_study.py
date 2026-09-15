@@ -25,6 +25,9 @@ Cara menjalankan
   # Bagian D: layakkah filter tiket diperluas ke kelas LIKUID/CUKUP? (0 kuota IDX)
   .venv/bin/python research/combo_study.py --part bands
 
+  # Bagian E: kalibrasi per kelas vs global, out-of-sample (0 kuota IDX)
+  .venv/bin/python research/combo_study.py --part calib
+
 HASIL (dijalankan 14 Sep 2026)
 -----------------------------
 BAGIAN A — filter tiket: POSITIF dan tahan uji. Universe SANGAT LIKUID, alpha
@@ -114,6 +117,40 @@ BAGIAN D — FILTER TIKET DIPERLUAS KE KELAS LIKUID & CUKUP: DIDUKUNG BUKTI.
 
   DITERAPKAN di api/index.py: TICKET_RESID_FLOOR_BY_GRADE. Kelas KURANG LIKUID
   TIDAK disentuh (tidak ada bukti di sana).
+
+BAGIAN E — KALIBRASI PER KELAS: TIDAK LEBIH BAIK. JANGAN DIULANG.
+  Pertanyaan: produksi memakai SATU koefisien global (6,6712 / 0,3681) lalu ambang
+  berbeda per kelas. Apakah lebih baik menaksir koefisiennya PER KELAS?
+
+  Desain: koefisien DAN ambang hanya dipelajari dari PARUH AWAL tanggal
+  (2021-12 -> 2024-02), seluruh penilaian di PARUH AKHIR (2024-02 -> 2026-06).
+  Tiga varian: (A) konstanta produksi apa adanya, (B) global ditaksir ulang,
+  (C) per kelas likuiditas.
+
+  JEBAKAN YANG HARUS DIHINDARI: ambang tetap yang dipelajari di paruh awal
+  memotong 25% kandidat di paruh akhir untuk varian A tetapi 31% untuk varian C.
+  Dibandingkan begitu saja, varian C tampak unggul di SANGAT LIKUID
+  (+1,71% vs +1,26%) — dan itu SELURUHNYA artefak kedalaman, bukan mutu regresi.
+  Setelah kedalaman disamakan (potong tepat 20% lintas-saham per tanggal):
+    SANGAT LIKUID  A +1,45% (blok +4,00) | B +1,48% (blok +4,06) | C +1,40% (+4,17)
+    LIKUID         A +3,37% (blok +16,16)| B +3,36% (blok +16,30)| C +3,37% (+15,87)
+    CUKUP          A +3,74% (blok +17,43)| B +3,74% (blok +17,22)| C +3,48% (+15,52)
+  -> A dan B setara; C setara atau LEBIH BURUK (CUKUP). Jadi kalibrasi per kelas
+     tidak menambah apa pun. Koefisien produksi juga TIDAK basi (A = B).
+  Sebab teknis: rentang v20 DI DALAM satu kelas itu sempit, jadi regresi per kelas
+  berkondisi buruk dan koefisiennya liar (SANGAT LIKUID 2,06/0,573 vs CUKUP
+  10,10/0,207) — padahal keduanya menaksir hubungan yang sama.
+  KEPUTUSAN: PERTAHANKAN satu regresi global + ambang per kelas. Jangan ganti.
+
+  DUA TEMUAN SAMPINGAN YANG BERGUNA:
+  1. Menyaring kelas KURANG LIKUID MERUGIKAN, kini terbukti out-of-sample:
+     +6,26% -> +5,94..+6,09% di ketiga varian. Ini alasan kuat kenapa kelas itu
+     memang tidak disentuh di produksi (bukan sekadar "belum diuji").
+  2. Ambang TETAP produksi kalah dari potong-20%-lintas-saham di ketiga kelas
+     (mis. LIKUID +3,04% vs +3,37%). Artinya ambangnya melenceng seiring waktu,
+     karena distribusi residual bergeser. Produksi tidak bisa menghitung kuintil
+     lintas-saham saat menganalisis satu saham, jadi ini hanya bisa diperbaiki
+     dengan penkalibrasian ulang berkala — BELUM dikerjakan.
 
 BAGIAN B — akumulator diam-diam: TIDAK BISA DIUJI, bukan "gagal".
   Data broker hanya tersedia 80-90 hari terakhir dan yang SEGAR mulai
@@ -519,6 +556,160 @@ def part_bands(years: int, workers: int, top: int) -> None:
             print(f"    {label:<36} {holdout_split(R, mask, bm, 20)}")
 
 
+# ---------------------------------------------------------------------------
+# 3c. BAGIAN E — KALIBRASI REGRESI TIKET: GLOBAL vs PER KELAS LIKUIDITAS
+# ---------------------------------------------------------------------------
+# Produksi sekarang memakai SATU koefisien global (6,6712 / 0,3681) lalu ambang
+# yang berbeda per kelas. Pertanyaan: apakah lebih baik menaksir koefisiennya
+# PER KELAS, sehingga residualnya sebanding antar kelas?
+#
+# Desain (supaya tidak menilai diri sendiri): koefisien DAN ambang dipelajari
+# hanya dari PARUH AWAL tanggal, lalu seluruh penilaian dilakukan di PARUH AKHIR
+# yang sama sekali tidak dilihat saat menaksir. Tiga varian dibandingkan:
+#   (A) konstanta produksi apa adanya (6,6712 / 0,3681)
+#   (B) global, ditaksir ulang di paruh awal
+#   (C) per kelas likuiditas, ditaksir di paruh awal
+
+GRADE_EDGES = [-1, 100e6, 1e9, 10e9, 1e15]
+GRADE_LABELS = ["KURANG LIKUID", "CUKUP", "LIKUID", "SANGAT LIKUID"]
+GRADE_BANDS = {g: (GRADE_EDGES[i], GRADE_EDGES[i + 1])
+               for i, g in enumerate(GRADE_LABELS)}
+
+
+def _ols_log(rows: pd.DataFrame):
+    """Regresi log(tiket) ~ log(v20). Mengembalikan (intercept, slope) atau None."""
+    if rows is None or len(rows) < 500:
+        return None
+    x = np.log(rows["v20"].clip(lower=1).astype(float))
+    y = np.log(rows["ticket"].clip(lower=1).astype(float))
+    ok = np.isfinite(x) & np.isfinite(y)
+    if int(ok.sum()) < 500:
+        return None
+    slope, intercept = np.polyfit(x[ok], y[ok], 1)
+    return float(intercept), float(slope)
+
+
+def _resid(df: pd.DataFrame, coef, grade_coef=None) -> pd.Series:
+    """Residual; grade_coef (dict kelas->koefisien) mengalahkan coef bila ada."""
+    lv = np.log(df["v20"].clip(lower=1).astype(float))
+    lt = np.log(df["ticket"].clip(lower=1).astype(float))
+    out = lt - (coef[0] + coef[1] * lv)
+    if grade_coef:
+        for g, c in grade_coef.items():
+            if c is None:
+                continue
+            m = (df["grade"] == g).to_numpy()
+            if m.any():
+                out = out.where(~m, lt - (c[0] + c[1] * lv))
+    return out
+
+
+def part_calib(years: int, workers: int, top: int) -> None:
+    print("== BAGIAN E: kalibrasi regresi tiket — global vs per kelas (OOS) ==")
+    prod_coef = (TICKET_REG_INTERCEPT, TICKET_REG_SLOPE)
+
+    M.BUDGET = 0
+    T = build_ticket(M.fetch_range(years, workers, False))
+    ih, data = B.load_data(years, "all", workers)
+    frames = [B.build_rows(tk, df, ih) for tk, df in data.items()]
+    R = pd.concat([f for f in frames if f is not None], ignore_index=True)
+    R = attach_ticket(R, T)
+    R["date"] = pd.to_datetime(R["date"]).dt.normalize()
+    R["grade"] = pd.cut(R["v20"], GRADE_EDGES, labels=GRADE_LABELS)
+    have = R["v20"].notna() & R["ticket"].notna() & (R["grade"].notna())
+
+    ds = np.sort(R.loc[have, "date"].unique())
+    mid = ds[len(ds) // 2]
+    tr = R[have & (R["date"] < mid)]
+    te = R[have & (R["date"] >= mid)].copy()
+    print(f"  latih {len(tr):,} baris ({tr['date'].min().date()} s/d {tr['date'].max().date()})")
+    print(f"  uji   {len(te):,} baris ({te['date'].min().date()} s/d {te['date'].max().date()})")
+
+    coef_global = _ols_log(tr)
+    coef_class = {g: _ols_log(tr[tr["grade"] == g]) for g in GRADE_LABELS}
+    print(f"\n  koefisien (intercept, slope):")
+    print(f"    produksi apa adanya : {prod_coef[0]:.4f}, {prod_coef[1]:.4f}")
+    if coef_global:
+        print(f"    global (paruh awal) : {coef_global[0]:.4f}, {coef_global[1]:.4f}")
+    for g in GRADE_LABELS:
+        c = coef_class[g]
+        print(f"    {g:<15}     : " + ("— (sampel kurang)" if c is None
+              else f"{c[0]:.4f}, {c[1]:.4f}"))
+
+    variants = [("A produksi", prod_coef, None), ("B global-refit", coef_global, None),
+                ("C per kelas", coef_global, coef_class)]
+    for label, _c, _gc in variants:
+        te["r_" + label[0]] = _resid(te, _c, _gc)
+    # Ambang 20% terendah per kelas, DIPELAJARI DARI PARUH AWAL saja.
+    thr = {}
+    for label, c, gc in variants:
+        trr = tr.copy()
+        trr["rr"] = _resid(trr, c, gc)
+        thr[label[0]] = {g: float(trr.loc[trr["grade"] == g, "rr"].quantile(0.2))
+                         for g in GRADE_LABELS if (trr["grade"] == g).sum() > 500}
+
+    print(f"\n  ambang 20% per kelas (dari paruh AWAL):")
+    for label, _c, _gc in variants:
+        print(f"    {label:<14} " + ", ".join(f"{g[:6]}={v:+.3f}" for g, v in thr[label[0]].items()))
+
+    print(f"\n  --- IC residual vs exc, diukur HANYA di paruh AKHIR ---")
+    print(f"  {'kelas':<15} {'varian':<14} {'blok IC h5':>16} {'blok IC h20':>16}")
+    for g in GRADE_LABELS:
+        S = te[te["grade"] == g]
+        if len(S) < 5000:
+            continue
+        for label, _c, _gc in variants:
+            col = "r_" + label[0]
+            ic5, t5, _ = M.ic_by_date(S, col, "exc5", stride=5)
+            ic20, t20, _ = M.ic_by_date(S, col, "exc20", stride=20)
+            print(f"  {g:<15} {label:<14} {ic5:>+10.4f}(t{t5:+4.1f}) {ic20:>+10.4f}(t{t20:+4.1f})")
+        print()
+
+    print("  --- alpha filter di paruh AKHIR (pembanding = kelas yang sama) ---")
+    for g in GRADE_LABELS:
+        S = te[te["grade"] == g]
+        if len(S) < 5000:
+            continue
+        gidx = S.index
+        uni = pd.Series(False, index=R.index); uni.loc[gidx] = True
+        print(f"\n   [{g}] n={len(S):,}")
+        specs = [("  RS Leader (tanpa filter)", (S["leader"] == 1))]
+        for label, _c, _gc in variants:
+            # .astype("object") penting: map() pada kolom Categorical mengembalikan
+            # Categorical lagi, dan membandingkannya dengan angka melempar TypeError.
+            lim = S["grade"].astype("object").map(thr[label[0]])
+            small = (S["r_" + label[0]] <= lim).fillna(False)
+            specs.append((f"  + filter {label}", (S["leader"] == 1) & ~small))
+        # PENTING — kedalaman filter harus DISAMAKAN. Ambang tetap yang dipelajari
+        # di paruh awal bisa memotong 25% di paruh akhir untuk satu varian dan 31%
+        # untuk varian lain; perbedaan alpha lalu berasal dari KEDALAMAN, bukan dari
+        # mutu regresinya. Karena itu tiap varian juga diuji pada kuintil-20
+        # lintas-saham PER TANGGAL (memotong tepat 20% di tanggal itu).
+        specs.append(("", None))
+        for label, _c, _gc in variants:
+            col = "r_" + label[0]
+            q20 = S.groupby("date")[col].transform(lambda s: s.quantile(0.2))
+            specs.append((f"  + filter {label} (kedalaman 20%)",
+                          (S["leader"] == 1) & (S[col] > q20).fillna(False)))
+
+        uni_te = uni.reindex(te.index).fillna(False)
+        for lab, m in specs:
+            if m is None:
+                print("    (kedalaman disamakan — memotong tepat 20% per tanggal)")
+                continue
+            mm_full = pd.Series(False, index=R.index)
+            mm_full.loc[m[m].index] = True
+            ev = B.evaluate(R, mm_full, lab, universe_mask=uni)
+            r = next((x for x in ev if x["h"] == 20), None)
+            if not r:
+                print(f"    {lab:<36} —")
+                continue
+            m_te = m.reindex(te.index).fillna(False)
+            bt = block_t(te, m_te, uni_te, 20)
+            print(f"    {lab:<36} n={r['n']:>6,} alpha {r['alpha']:>+6.2f}% "
+                  f"t={r['t']:>+5.2f} blok {bt:>+6.2f}")
+
+
 def swing_flags(tk: str, df: pd.DataFrame) -> pd.DataFrame:
     """Replika jalur PROKSI kriteria SWING (api/index.py, tanpa data Broker Summary).
 
@@ -595,7 +786,7 @@ def part_swing(years: int, workers: int, top: int) -> None:
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
-                    choices=["ticket", "silent", "swing", "bands"])
+                    choices=["ticket", "silent", "swing", "bands", "calib"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -612,6 +803,8 @@ def main() -> None:
         part_swing(args.years, args.workers, args.top)
     elif args.part == "bands":
         part_bands(args.years, args.workers, args.top)
+    elif args.part == "calib":
+        part_calib(args.years, args.workers, args.top)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)
