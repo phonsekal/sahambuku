@@ -95,6 +95,7 @@
         <option value="all" selected>Semua kriteria</option>
         <option value="rs">📈 RS Leader (naik saat IHSG merah)</option>
         <option value="breakout">🚀 Breakout 20 hari</option>
+        <option value="launchpad">🔥 Launch Pad (pola buku: base rapat → breakout)</option>
         <option value="swing">Swing</option>
         <option value="scalping">Scalping</option>
         <option value="bsjp">Beli Sore Jual Pagi</option>
@@ -143,6 +144,7 @@
           <option value="scalping">Scalping</option>
           <option value="bsjp">Beli Sore Jual Pagi</option>
           <option value="buy">Sinyal Beli Kuat (Skor ≥70)</option>
+          <option value="launchpad">🔥 Launch Pad (pola buku Bab 6.2)</option>
         </select>
         <select id="btUniverse" onchange="btUniverseChanged()" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
           <option value="liquid" selected>Liquid (LQ45)</option>
@@ -1226,8 +1228,10 @@ function scParamQuery(offset) {
   const crit = $("#scCriteria").value;
   // rs & breakout tidak memakai filter "IHSG bullish": keduanya memang diuji/ditujukan
   // untuk bertahan di pasar bearish (RS: RS line rekor; breakout: uji holdout 2024-2026
-  // yang bearish). Kriteria lain tetap memakai filter regime sesuai centang pengguna.
-  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent";
+  // yang bearish). Launch Pad juga tidak: syaratnya sudah memuat tren naik SAHAM-nya
+  // sendiri (naik >=15% sebelum base), jadi filter indeks hanya memangkas sampel.
+  // Kriteria lain tetap memakai filter regime sesuai centang pengguna.
+  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent" || crit === "launchpad";
   const q = new URLSearchParams({ criteria: crit, universe: $("#scUniverse").value,
     limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked,
     require_confirm: $("#scConfirm").checked,
@@ -1240,7 +1244,7 @@ function scParamQuery(offset) {
 
 function scCriteriaChanged() {
   const crit = $("#scCriteria").value;
-  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent";
+  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent" || crit === "launchpad";
   const rg = $("#scRegime");
   if (rg) { rg.disabled = noRegime; rg.parentElement.classList.toggle("opacity-40", noRegime); }
 }
@@ -1326,8 +1330,9 @@ function renderScan(d) {
   const isRS = d.criteria === "rs";
   const isBreakout = d.criteria === "breakout";
   const isSilent = d.criteria === "silent";
+  const isLaunchpad = d.criteria === "launchpad";
   // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
-  const nCols = 15 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 3 : 0) + (isSilent ? 1 : 0);
+  const nCols = 15 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 3 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0);
   let h = isKoreksi
     ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
     : (isRS
@@ -1337,6 +1342,8 @@ function renderScan(d) {
         ? `<div class="mb-3 text-[11px] text-sky-300/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">🚀 <b>Breakout 20 hari</b>: harga menembus <b>high tertinggi 20 hari</b> sebelumnya. Backtest 5 tahun (saham likuid &ge; Rp10 miliar/hari, point-in-time): alpha20 <b>+1,94%</b> (t=+3,95) vs IHSG, dan <b>stabil</b> pada uji holdout dua paruh waktu (+1,94% vs +1,93%) — sinyal likuid terkuat yang kami uji. Kolom <b>Vol/MA20</b> adalah konteks volume: breakout dengan volume &ge;1,5&times; punya alpha lebih tinggi (+2,28%) tapi peluang entry jauh lebih sedikit (4,5 vs 6,8 saham/hari).
         <div class="mt-1.5 pt-1.5 border-t border-sky-500/20 text-amber-300/90">⚠️ Breakout di saham tipis sering gagal (false breakout). Tetap cek skor beli, RRR, dan support/resistance (tombol 📋 Rencana) sebelum entry. Kata "alpha" = keunggulan vs pasar, bukan jaminan harga naik (hijau 20 hari hanya ~44%).</div></div>`
         : ""));
+  if (isLaunchpad) h += `<div class="mb-3 text-[11px] text-orange-300/90 bg-orange-500/10 border border-orange-500/30 rounded-xl px-3.5 py-2.5">🔥 <b>The Launch Pad</b> (pola andalan buku, Bab 6.2): saham sudah <b>naik dulu</b> → rentang harga <b>menyempit</b> membentuk base (energi terkunci) → lalu <b>breakout base dengan volume &ge;1,5&times; MA20</b>. Ini pola dengan <b>bukti terkuat</b> di aplikasi — uji 5 tahun universe SANGAT LIKUID (897 emiten, 833 rb saham-hari): alpha20 <b>+6,05%</b> (blok t=+2,52), <b>absolut +5,06%</b> (sedangkan rata-rata saham likuid −0,37%), dan lolos <b>holdout dua paruh waktu</b> (+9,79% dan +3,03%).
+    <div class="mt-1.5 pt-1.5 border-t border-orange-500/20 text-amber-300/90">⚠️ Polanya <b>jarang</b> (sekitar 1 kejadian/hari se-pasar) — daftar kosong itu normal. Tetap cek Broker Summary (buku Bab 6.2: "TERPENTING! baca Broker Summary") dan pakai cut-loss bila harga <b>close di bawah base/support</b>. Versi buku yang lebih ketat (naik ≥20% dulu + base tak menembus high/low lama) diuji hanya 44 kejadian dan tidak lebih baik, jadi tidak dipakai.</div></div>`;
   if (isSilent) h += `<div class="mb-3 text-[11px] text-violet-300/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕵️ <b>Akumulasi diam-diam</b>: satu broker yang konsisten net BELI (≥70% hari, net/gross ≥ 0,5) selama 10 hari. Ini menjawab "siapa yang mengakumulasi" — pertanyaan yang gagal dijawab bila nilai seluruh broker dijumlahkan, karena arus broker lain bisa saling menutupi (PTBA: AK/UBS +463,86 M, tapi jumlah semua broker hanya +227,56 M).
     <div class="mt-1.5 pt-1.5 border-t border-violet-500/20 text-amber-300/90">⚠️ <b>Informasi bandarmology, BUKAN sinyal beli.</b> Uji 77 hari bursa (seluruh pasar): tidak ada daya prediksi — versi broker-dominan maupun versi jumlah sama-sama tidak berbeda dari noise. Riwayat API hanya 80 hari, tidak cukup untuk menguji sinyal berhorizon bulanan. Pemindaian ini memakai <b>1 permintaan API per saham</b>, jadi mulai dari limit kecil.</div></div>`;
   // Kandidat setup swing siap-entry: setup valid (pullback/breakout) + RRR ≥ 1:2.
@@ -1353,6 +1360,7 @@ function renderScan(d) {
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
       ${isRS ? `<th class="text-center px-3" title="Kekuatan relatif vs IHSG: RS line = harga saham ÷ IHSG. Rekor RS saat IHSG melemah = LEADER">RS</th>` : ""}
       ${isBreakout ? `<th class="text-right px-3" title="High tertinggi 20 hari sebelumnya — level yang baru ditembus, dan jarak harga di atasnya">High 20h</th>` : ""}
+      ${isLaunchpad ? `<th class="text-right px-3" title="Syarat pola Launch Pad: kenaikan sebelum base, seberapa rapat base-nya (semakin kecil semakin baik, ≤0,80), harga breakout base, dan volume vs MA20">Launch Pad</th>` : ""}
       ${isSilent ? `<th class="text-left px-3" title="Broker yang konsisten net beli tanpa banyak jual. Informasi bandarmology, bukan sinyal beli.">Akumulator</th>` : ""}
       ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
       ${isKoreksi ? `<th class="text-center px-3" title="Pantau: Telegram memberi tahu saat konfirmasi reversal (SELL→BUY)">🔔</th>` : ""}
@@ -1378,6 +1386,7 @@ function renderScan(d) {
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
       ${isRS ? `<td class="px-3 text-center">${rsChip(r.relative_strength)}</td>` : ""}
       ${isBreakout ? `<td class="px-3 text-right tabular">${bi.high20 ? `${fmt(bi.high20)}<div class="text-[10px] text-emerald-400">${bi.above_pct != null ? "+" + fmt(bi.above_pct, 1) + "%" : ""}</div>` : "—"}</td>` : ""}
+      ${isLaunchpad ? (() => { const li = r.launchpad_info || {}; return `<td class="px-3 text-right tabular">${li.breakout_price ? `${fmt(li.breakout_price)}<div class="text-[10px] text-orange-300">naik ${fmt(li.prior_gain_pct, 1)}% · rapat ${Number(li.contraction_ratio || 0).toFixed(2)} · vol ${fmt(li.volume_ratio, 1)}×</div>` : "—"}</td>`; })() : ""}
       ${isSilent ? `<td class="px-3 text-xs">${si.broker ? `<b>${esc(si.broker)}</b><div class="text-[10px] text-slate-500">${si.days_buy}/${si.window} hari · <span class="tabular text-emerald-400">${fmtIdr(si.net)}</span> · net/gross ${Number(si.net_ratio || 0).toFixed(2)}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>` : ""}

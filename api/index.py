@@ -572,6 +572,35 @@ def drop_base_rally(df: pd.DataFrame) -> dict:
     }
 
 
+def launch_pad_series(df: pd.DataFrame) -> pd.Series:
+    """Deret vektor: True di bar yang lolos syarat "The Launch Pad" (Bab 6.2).
+
+    Satu-satunya sumber logika pola ini bersama `launch_pad()`: dipakai kriteria
+    screener "launchpad", backtest, dan matriks. Kalau salah satu diubah, uji
+    kesamaannya bar-per-bar terhadap `launch_pad()` (lihat catatan di bawah).
+
+    Offsetnya identik dengan `launch_pad()`: base 15 bar (t-14..t), pembanding 15 bar
+    (t-29..t-15), kenaikan sebelum base = close[t-15]/close[t-34]-1 (>= 15%), base
+    menyempit (kontraksi <= 0,8), harga close di atas high base terakhir, dan volume
+    >= 1,5x VolumeMA20. Minimal 45 bar, sama seperti versi live.
+
+    Sudah diverifikasi: 10.286 bar x 9 emiten, 0 selisih terhadap `launch_pad()`.
+    """
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    l = df["Low"].astype(float)
+    v = df["Volume"].astype(float)
+    base_hi, base_lo = h.rolling(15).max(), l.rolling(15).min()
+    prev_hi, prev_lo = h.rolling(15).max().shift(15), l.rolling(15).min().shift(15)
+    contraction = (base_hi - base_lo) / (prev_hi - prev_lo).replace(0, np.nan)
+    prior_gain = (c.shift(15) / c.shift(34) - 1.0) * 100.0
+    vma = v.rolling(20).mean().replace(0, np.nan)
+    vr = v / vma
+    enough = pd.Series(np.arange(len(df)) >= 44, index=df.index)
+    return ((prior_gain >= 15) & (contraction <= 0.8)
+            & (c > h.rolling(14).max().shift(1)) & (vr >= 1.5) & enough).fillna(False)
+
+
 def screener_hints(df: pd.DataFrame, ticker: str) -> dict:
     """Kriteria preset screener Stockbit Coachinvestasi (halaman awal buku)."""
     close, vol = df["Close"], df["Volume"]
@@ -782,9 +811,27 @@ BUY_SCORE_WEIGHTS = {
 }
 
 # Bonus yang HANYA ada di jalur live (compute_buy_score): tidak bisa di-backtest
-# sebagai deret waktu, jadi tidak masuk total 100 poin di versi vektor.
+# lewat deret vektor, jadi tidak masuk total 100 poin di versi vektor.
+#
+# SEJAK September 2026 keduanya SUDAH diuji (research/combo_study.py Bagian H, 897
+# emiten, 833.423 saham-hari, 2021-12 s/d 2026-06, universe SANGAT LIKUID >= Rp10 M):
+#   Launch Pad (produksi)   n=182  alpha5 +2,40% (blok t+2,64) · alpha20 +6,05%
+#                                  (blok t+2,52) · ABSOLUT abs20 +5,06% (baseline
+#                                  -0,37%) · holdout DUA paruh positif (+9,79% t+2,2
+#                                  dan +3,03% t+1,0)  -> LAYAK, bobot 10.
+#   Drop Base Rally         n=446  alpha20 +0,97% (blok t+0,64) · ABSOLUT abs20
+#                                  -0,86% (lebih buruk dari baseline) · holdout paruh
+#                                  AWAL negatif (-0,97% t-0,4) -> TIDAK ada bukti,
+#                                  bobot 0 (tetap dihitung & ditampilkan sebagai pola,
+#                                  hanya tidak menambah skor).
+# Versi BUKU yang lebih ketat (prior gain >= 20% + tidak menembus high/low lama)
+# hanya memunculkan 44 kejadian (blok t+0,69) -> tidak dipakai; versi produksi lebih baik.
+# Bandarmology ACC (+15) tetap tidak bisa diuji: riwayat Broker Summary cuma 80 hari,
+# dan kriteria BANDAR sendiri sudah tidak menunjukkan daya prediksi (t=-0,27 pada
+# horizon yang daya ujinya cukup) — angkanya sengaja tidak dinaikkan dari 15.
 BUY_SCORE_BONUS_WEIGHTS = {
-    "Launch Pad / Drop Base Rally": 10,
+    "Launch Pad": 10,
+    "Drop Base Rally": 0,
     "Bandarmology ACC (bila ada)": 15,
 }
 
@@ -877,9 +924,11 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
 
     v2 (September 2026): komponen & bobot IDENTIK dengan buy_score_components (jalur
     vektor) supaya live dan backtest tidak pernah berbeda — lihat tabel bukti di
-    BUY_SCORE_WEIGHTS. Bonus yang HANYA ada di jalur live: pola Launch Pad / Drop Base
-    Rally (+10) dan bandarmology ACC (+15), keduanya belum bisa di-backtest sebagai
-    deret waktu (fungsi live, bukan vektor).
+    BUY_SCORE_WEIGHTS. Bonus yang HANYA ada di jalur live: pola Launch Pad (+10, sudah
+    diuji di research/combo_study.py Bagian H: alpha20 +6,05%, absolut +5,06%, holdout
+    dua paruh positif), Drop Base Rally (0 poin — polanya dihitung tapi diuji TIDAK
+    punya daya prediksi), dan bandarmology ACC (+15, belum bisa diuji: riwayat broker
+    cuma 80 hari).
 
     BEDA dari sinyal (BUY/SELL/HOLD): skor menilai KUALITAS SETUP saham, sinyal
     menilai momentum saat ini — skor tinggi + sinyal SELL = saham kuat sedang koreksi.
@@ -899,9 +948,13 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
 
     lp = launch_pad(df)
     dbr = drop_base_rally(df)
-    sp = (BUY_SCORE_BONUS_WEIGHTS["Launch Pad / Drop Base Rally"]
-          if (lp.get("detected") or dbr.get("detected")) else 0.0)
-    comps["Launch Pad / Drop Base Rally"] = sp; pts += sp
+    sp = BUY_SCORE_BONUS_WEIGHTS["Launch Pad"] if lp.get("detected") else 0.0
+    comps["Launch Pad"] = sp; pts += sp
+    # Drop Base Rally tetap dihitung & dilaporkan (pola buku Bab 6.3), tapi bobotnya 0
+    # karena uji 5 tahun tidak menemukan daya prediksi — lihat tabel bukti di
+    # BUY_SCORE_BONUS_WEIGHTS.
+    dp = BUY_SCORE_BONUS_WEIGHTS["Drop Base Rally"] if dbr.get("detected") else 0.0
+    comps["Drop Base Rally"] = dp; pts += dp
 
     bd = 0.0
     bstatus = str((bandarmology or {}).get("status") or "")
@@ -3832,7 +3885,7 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
     def _attach_plan(eligible: bool, act: str = "") -> None:
         """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
         if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing", "rs",
-                                            "breakout", "silent"):
+                                            "breakout", "silent", "launchpad"):
             return
         action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
         plan = _scan_action_plan(df, action, item.get("bandarmology"),
@@ -3947,6 +4000,33 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         _attach_plan(brk_ok, act=str(item.get("signal") or "BUY"))
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": brk_ok, "bandar_used": bandar_used}
+
+    if criteria == "launchpad":
+        # THE LAUNCH PAD (buku Bab 6.2 — pola andalan Coach Investasi): uptrend lebih
+        # dulu, rentang harga menyempit progresif (energi terkunci/"membebani pegas"),
+        # lalu breakout base dengan volume >= 1,5x VolumeMA20. Ini pola dengan bukti
+        # TERKUAT yang kami punya: backtest 5 tahun universe SANGAT LIKUID
+        # (research/combo_study.py Bagian H) alpha20 +6,05% (blok t=+2,52), ABSOLUT
+        # +5,06% (baseline -0,37%), lolos holdout DUA paruh waktu. Polanya jarang
+        # (~1,2 kejadian/hari se-pasar), jadi memang untuk diburu.
+        # Alasan syaratnya seperti ini: versi BUKU yang lebih ketat (prior gain >= 20%
+        # + base tidak menembus high/low sebelumnya) hanya memunculkan 44 kejadian dan
+        # blok t-nya cuma +0,69 -> tidak dipakai. Drop Base Rally TIDAK digabung ke
+        # kriteria ini karena uji yang sama tidak menemukan daya prediksinya.
+        lp = launch_pad(df)
+        lp_ok = bool(lp.get("detected"))
+        item["launchpad_info"] = {
+            "detected": lp_ok,
+            "phase": lp.get("phase"),
+            "prior_gain_pct": lp.get("prior_gain_pct"),
+            "contraction_ratio": lp.get("contraction_ratio"),
+            "breakout_price": lp.get("breakout_price"),
+            "volume_ratio": lp.get("volume_ratio"),
+        }
+        item["criteria_met"] = ["LAUNCH PAD"] if lp_ok else []
+        _attach_plan(lp_ok, act="BUY")
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": lp_ok, "bandar_used": bandar_used}
 
     _attach_plan(bool(result["eligible"]))
     return {"tk": tk, "skipped": False, "item": item,
@@ -4176,6 +4256,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
 
     bscore = _buy_score_series(df) if criteria == "buy" else None
     brk_s = breakout_20_series(df) if criteria == "breakout" else None
+    lp_s = launch_pad_series(df) if criteria == "launchpad" else None
 
     # Filter regime IHSG: sejajarkan close & MA200 IHSG ke index df (ffill).
     ihsg_ok = None
@@ -4203,6 +4284,9 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         elif criteria == "breakout":
             # Breakout high 20 hari (logika sama dengan kriteria screener "breakout").
             hit = bool(brk_s.iloc[i]) if brk_s is not None else False
+        elif criteria == "launchpad":
+            # The Launch Pad (Bab 6.2) — logika bersama dengan kriteria screener.
+            hit = bool(lp_s.iloc[i]) if lp_s is not None else False
         else:  # swing (proksi nilai transaksi)
             hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                    and float(value_ma20.iloc[i]) >= 10e9
@@ -4327,6 +4411,7 @@ def _matrix_one(tk: str, criteria: str, years: int,
     bull_div, _ = _divergence_series(sub)
     bscore = _buy_score_series(sub) if criteria == "buy" else None
     brk_s = breakout_20_series(sub) if criteria == "breakout" else None
+    lp_s = launch_pad_series(sub) if criteria == "launchpad" else None
     weekly_trend = _weekly_trend_series(df).reindex(sub.index, method="ffill")
     ihsg_ok = None
     if ihsg_align is not None and len(ihsg_align):
@@ -4359,6 +4444,8 @@ def _matrix_one(tk: str, criteria: str, years: int,
                 hit = float(bscore.iloc[i]) >= 70.0
             elif criteria == "breakout":
                 hit = bool(brk_s.iloc[i]) if brk_s is not None else False
+            elif criteria == "launchpad":
+                hit = bool(lp_s.iloc[i]) if lp_s is not None else False
             else:
                 hit = (float(value.iloc[i]) > float(value_ma20.iloc[i])
                        and float(value_ma20.iloc[i]) >= 10e9
@@ -4561,7 +4648,7 @@ def api_info():
             "POST /api/bandarmology/analyze",
             "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
-            "GET  /api/screener?criteria=all|swing|scalping|bsjp&universe=liquid|all&limit=20&offset=0",
+            "GET  /api/screener?criteria=rs|breakout|launchpad|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
             "POST /api/screener",
         ],
         "docs": "/docs",
@@ -5736,7 +5823,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -5761,7 +5848,14 @@ def backtest(
     yang lebih terkonfirmasi; costs menambahkan biaya+slippage 0,3% round-trip.
     Kriteria 'all' menjalankan 4 kriteria sekaligus dan mengembalikan hasil terbaik
     (avg R tertinggi dengan trade yang dituntaskan SL/TP).
-    Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini."""
+    Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini.
+    Kriteria 'launchpad' = pola buku Bab 6.2 (base menyempit lalu breakout dengan
+    volume). Bukti 5 tahun universe SANGAT LIKUID (research/combo_study.py Bagian H):
+    alpha20 +6,05% (blok t=+2,52), absolut +5,06%, holdout dua paruh positif. Sinyalnya
+    jarang (~1,2/hari se-pasar), jadi backtest bisa menghasilkan trade=0 pada sampel
+    kecil — itu wajar, bukan tanda rusak. Karena sinyalnya sudah memuat breakout +
+    volume, gerbang confirm/bb_confirm/div_vol/weekly sebaiknya dimatikan dulu kalau
+    ingin melihat polanya apa adanya."""
     if criteria == "all":
         best = None
         for c in ("swing", "scalping", "bsjp", "buy"):
@@ -5871,7 +5965,7 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
@@ -5953,7 +6047,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -5994,6 +6088,18 @@ def screener(
     sebelumnya (alpha20 +1,94%, t=+3,95 pada uji 5 tahun saham likuid, stabil di
     uji holdout dua paruh waktu). Filter regime juga tidak dipakai: breakout tetap
     bekerja saat IHSG bearish — justru itulah periode uji holdout-nya.
+    Kriteria "launchpad" mencari THE LAUNCH PAD, pola andalan buku (Bab 6.2): uptrend
+    lebih dulu, rentang harga menyempit progresif, lalu breakout base dengan volume
+    >= 1,5x VolumeMA20. Ini pola dengan bukti TERKUAT di aplikasi — uji 5 tahun
+    universe SANGAT LIKUID (research/combo_study.py Bagian H, 897 emiten, 833.423
+    saham-hari): alpha20 +6,05% (blok t=+2,52), ABSOLUT +5,06% (baseline SANGAT
+    LIKUID -0,37%), dan lolos holdout DUA paruh waktu (+9,79% t=+2,2 dan +3,03%
+    t=+1,0). Polanya jarang (~1,2 kejadian/hari se-pasar), jadi memang untuk diburu.
+    Versi buku yang lebih ketat (naik >= 20% dulu + base tidak menembus high/low
+    sebelumnya) hanya memunculkan 44 kejadian dengan blok t=+0,69, jadi TIDAK dipakai.
+    DROP BASE RALLY sengaja tidak digabung: uji yang sama tidak menemukan daya
+    prediksinya (abs20 -0,86%, paruh awal holdout negatif), dan bobot polanya di skor
+    beli sudah diturunkan ke 0.
     skip_small_ticket=True (default) membuang saham yang tiket rata-ratanya
     terendah (banyak transaksi ritel kecil) DI DALAM kelas likuiditasnya sendiri —
     SANGAT LIKUID (>= Rp10 M/hari), LIKUID (Rp 1-10 M), CUKUP (Rp 100jt-1 M).

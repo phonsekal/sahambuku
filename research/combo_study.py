@@ -31,6 +31,9 @@ Cara menjalankan
   # Bagian G: audit SCALPING & BSJP (0 kuota IDX)
   .venv/bin/python research/combo_study.py --part audit
 
+  # Bagian H: audit bonus skor beli Launch Pad / Drop Base Rally (0 kuota IDX)
+  .venv/bin/python research/combo_study.py --part special
+
 HASIL (dijalankan 14 Sep 2026)
 -----------------------------
 BAGIAN A — filter tiket: POSITIF dan tahan uji. Universe SANGAT LIKUID, alpha
@@ -217,6 +220,45 @@ BAGIAN G — AUDIT SCALPING & BSJP (kriteria yang belum pernah diukur).
   bukan kesalahan implementasi, dan (b) ambang nilai/harga yang mubazir. Keduanya
   perlu keputusan produk (batasi ke likuid akan membuat daftarnya nyaris selalu
   kosong), bukan perubahan senyap. Datanya ada di sini kalau mau diputuskan.
+
+BAGIAN H — AUDIT BONUS SKOR BELI YANG HANYA ADA DI JALUR LIVE (buku Bab 6.2/6.3).
+  Bukti buku (PDF Coachinvestasi) yang diuji di sini: "Special Pattern 1: The Launch
+  Pad" (uptrend dulu -> rentang menyempit -> breakout base dengan volume) dan
+  "Special Pattern 2: Drop Base Rally" (turun dalam -> base -> rally). Keduanya
+  dipakai api/index.py sebagai bonus skor beli (+10), tetapi komentar kode sendiri
+  mengakui keduanya "belum bisa di-backtest". 25 dari 100 poin skor beli ternyata
+  diberikan tanpa bukti. Sekarang bisa: syaratnya direplikasi vektor point-in-time,
+  dan offsetnya DIVERIFIKASI bar-per-bar terhadap fungsi live (10.286 bar x 9 emiten,
+  0 selisih — salah satu versi uji pertama meleset 7 sinyal karena shift(35)
+  seharusnya shift(34)). 897 emiten, 833.423 saham-hari, 1.081 tanggal.
+
+  1) LAUNCH PAD (replika produksi): PUNYA DAYA PREDIKSI. n=182 di SANGAT LIKUID,
+     alpha5 +2,40% (blok t+2,64), alpha20 +6,05% (blok t+2,52); ABSOLUT abs20 +5,06%
+     sementara baseline SANGAT LIKUID -0,37%. Holdout DUA paruh positif, termasuk
+     horizon 20 hari (+9,79% t+2,2 dan +3,03% t+1,0). Kejadiannya jarang: 182 dari
+     833.423 saham-hari (~1,2/hari se-pasar), jadi memang untuk diburu.
+
+  2) DROP BASE RALLY: TIDAK ADA BUKTI. n=446, alpha20 +0,97% (blok t+0,64), ABSOLUT
+     abs20 -0,86% (LEBIH BURUK dari baseline), dan holdout paruh AWAL negatif
+     (-0,97% t-0,4). Bonusnya karena itu diturunkan ke 0 poin; polanya tetap dihitung
+     dan ditampilkan sebagai informasi.
+
+  3) VERSI BUKU YANG LEBIH KETAT TIDAK LEBIH BAIK. Syarat buku tambahan (sudah naik
+     >= 20% sebelum base + base tidak boleh menembus high/low jendela sebelumnya)
+     hanya memunculkan 44 kejadian dengan blok t+0,69 -> versi produksi dipertahankan
+     (ambang 15%). Pelajaran umum: memperketat syarat "biar sesuai buku" memangkas
+     sampel 76% tanpa memperbaiki hasil.
+
+  4) EFEK BONUS PADA PERINGKAT SKOR: KECIL. Dari 22.900 saham-hari berskor >= 70,
+     bonus +10 hanya menambah 94 (0,4%), dan Top-10 peringkatnya identik jumlahnya.
+     Kelompok "masuk HANYA karena bonus" alpha20 +3,97% (blok t+1,42) — positif tapi
+     tidak signifikan. Artinya bobot 10 itu aman-aman saja, bukan pengungkit besar;
+     yang penting adalah polanya TIDAK salah diberi poin saat tidak ada bukti.
+
+  KEPUTUSAN (dipakai di produksi): bonus Launch Pad tetap 10, bonus Drop Base Rally
+  jadi 0, dan "The Launch Pad" dinaikkan statusnya menjadi KRITERIA SCREENER
+  ("launchpad") supaya pola terkuat di aplikasi bisa dicari se-pasar, bukan hanya
+  terlihat saat satu saham dianalisis.
 
 Aturan bukti yang dipakai script ini
 ------------------------------------
@@ -977,10 +1019,175 @@ def part_swing(years: int, workers: int, top: int) -> None:
             print(f"    {label:<40} {holdout_split(R, mask, uni, h)}")
 
 
+# ---------------------------------------------------------------------------
+# 3e. BAGIAN H — AUDIT BONUS SKOR BELI YANG HANYA ADA DI JALUR LIVE
+# ---------------------------------------------------------------------------
+# api/index.py punya BUY_SCORE_BONUS_WEIGHTS:
+#     "Launch Pad / Drop Base Rally": 10
+#     "Bandarmology ACC (bila ada)":  15
+# Komentar di kode itu sendiri mengakui keduanya "belum bisa di-backtest sebagai deret
+# waktu (fungsi live, bukan vektor)". Artinya 25 dari 100 poin skor beli diberikan
+# TANPA bukti — padahal setiap komponen lain di skor yang sama sudah lewat audit.
+#
+# Di sini keduanya dibuat bisa diuji: syarat pola direplikasi vektor point-in-time,
+# lalu diukur (1) daya prediksi polanya sendiri, (2) apakah bonus +10 benar-benar
+# memperbaiki peringkat skor beli, dan (3) versi BUKU yang lebih ketat apakah lebih
+# baik daripada versi produksi. Bonus Bandarmology (+15) tidak diuji di sini karena
+# butuh riwayat Broker Summary yang cuma 80 hari — sudah tersimpulkan di
+# research/bandar_study.py bahwa kriteria BANDAR tidak menunjukkan daya prediksi.
+
+def special_pattern_flags(tk: str, df: pd.DataFrame) -> pd.DataFrame:
+    """Replika vektor `launch_pad()` & `drop_base_rally()` api/index.py, point-in-time.
+
+    Offsetnya HARUS sama dengan jalur live (di sana dipakai .iloc[-N:]):
+      Launch Pad : base 15 bar (t-14..t), jendela pembanding 15 bar (t-29..t-15),
+                   prior gain = close[t-15]/close[t-34]-1, breakout = close[t] >
+                   max(high[t-14..t-1]), volume >= 1,5x VolumeMA20.
+      Drop Base  : base 10 bar (t-9..t), pembanding low 15 bar (t-24..t-10),
+                   prior drop = close[t-10]/close[t-24]-1, tanpa lower low, breakout.
+    Offset ini sudah diverifikasi bar-per-bar terhadap fungsi live di api/index.py
+    (8.112 bar, 7 emiten): 0 selisih. Salah offset satu bar saja langsung
+    menghasilkan sinyal palsu, jadi jangan diubah tanpa menjalankan ulang uji itu.
+
+    Varian BUKU yang lebih ketat (Bab 6.2/6.3): prior gain >= 20% (bukan 15%),
+    tidak ada high/low base yang melebihi high/low jendela sebelumnya, dan pada Drop
+    Base Rally volume merah di fase base tidak dominan ("hindari penurunan harga
+    dengan volume merah yang tinggi besar").
+    """
+    c = df["Close"].astype(float)
+    h = df["High"].astype(float)
+    l = df["Low"].astype(float)
+    v = df["Volume"].astype(float).fillna(0.0)
+    vr = v / v.rolling(20).mean().replace(0, np.nan)
+
+    # --- The Launch Pad (Bab 6.2) ---
+    base_hi, base_lo = h.rolling(15).max(), l.rolling(15).min()
+    prev_hi, prev_lo = h.rolling(15).max().shift(15), l.rolling(15).min().shift(15)
+    contraction = (base_hi - base_lo) / (prev_hi - prev_lo).replace(0, np.nan)
+    base_hi_excl_last = h.rolling(14).max().shift(1)
+    prior_gain = (c.shift(15) / c.shift(34) - 1.0) * 100.0
+    broke = c > base_hi_excl_last
+
+    lp_prod = ((prior_gain >= 15) & (contraction <= 0.8) & broke & (vr >= 1.5)).fillna(False)
+    lp_forming = ((prior_gain >= 15) & (contraction <= 0.85)).fillna(False)
+    no_break = (base_hi <= prev_hi) & (base_lo >= prev_lo)
+    lp_book = ((prior_gain >= 20) & (contraction <= 0.8) & no_break & broke
+               & (vr >= 1.5)).fillna(False)
+
+    # --- Drop Base Rally (Bab 6.3) ---
+    prior_drop = (c.shift(10) / c.shift(24) - 1.0) * 100.0
+    no_new_ll = l.rolling(10).min() >= l.rolling(15).min().shift(10) * 0.995
+    rallied = c > h.rolling(9).max().shift(1)
+    dbr_prod = ((prior_drop <= -10) & no_new_ll & rallied & (vr >= 1.5)).fillna(False)
+    red = (c < c.shift(1)).fillna(False)
+    red_vol_share = (v.where(red, 0.0).rolling(10).mean()
+                     / v.rolling(10).mean().replace(0, np.nan))
+    dbr_book = (dbr_prod & (red_vol_share <= 0.5).fillna(False)).fillna(False)
+
+    out = pd.DataFrame({
+        "lp_prod": lp_prod, "lp_forming": lp_forming, "lp_book": lp_book,
+        "dbr_prod": dbr_prod, "dbr_book": dbr_book,
+    })
+    out["tk"] = tk
+    return out.reset_index().rename(columns={"index": "date"})
+
+
+def part_special(years: int, workers: int) -> None:
+    print("== BAGIAN H: audit bonus skor beli jalur live (Launch Pad / Drop Base Rally) ==")
+
+    ih, data = B.load_data(years, "all", workers)
+    frames = []
+    for tk, df in data.items():
+        r = B.build_rows(tk, df, ih)
+        if r is None:
+            continue
+        r["date"] = pd.to_datetime(r["date"]).dt.normalize()
+        f = special_pattern_flags(tk, df)
+        f["date"] = pd.to_datetime(f["date"]).dt.normalize()
+        frames.append(r.merge(f, on=["tk", "date"], how="left"))
+    R = pd.concat(frames, ignore_index=True)
+    pats = ("lp_prod", "lp_forming", "lp_book", "dbr_prod", "dbr_book")
+    for col in pats:
+        R[col] = R[col].fillna(False)
+    print(f"  observasi: {len(R):,} saham-hari, {R['tk'].nunique()} emiten, "
+          f"{R['date'].nunique()} tanggal ({R['date'].min().date()} s/d {R['date'].max().date()})")
+
+    # Universe = SANGAT LIKUID (nilai 20 hari >= Rp10 M), sama seperti Bagian A/G.
+    # Dipakai val20 dari backtest (harga Adj x volume) supaya tidak bergantung cache IDX.
+    sgt = (R["val20"] >= 10e9).fillna(False)
+    uni = sgt
+    Rl = R[sgt].copy()
+    unil = pd.Series(True, index=Rl.index)
+
+    print("\n  jumlah kemunculan pola (seluruh pasar vs SANGAT LIKUID):")
+    for col in pats:
+        print(f"    {col:<11} {int(R[col].sum()):>7,}  ·  {int((R[col] & sgt).sum()):>6,}")
+
+    uni_all = pd.Series(True, index=R.index)
+    specs = [
+        ("Launch Pad (replika produksi)", R["lp_prod"]),
+        ("Launch Pad + SANGAT LIKUID", R["lp_prod"] & sgt),
+        ("Launch Pad versi BUKU (ketat)", R["lp_book"] & sgt),
+        ("Drop Base Rally (produksi)", R["dbr_prod"] & sgt),
+        ("Drop Base Rally versi BUKU", R["dbr_book"] & sgt),
+        ("gabungan produksi (LP|DBR)", (R["lp_prod"] | R["dbr_prod"]) & sgt),
+        ("(kontrol) base menyempit saja", R["lp_forming"] & sgt),
+    ]
+    print("\n=== daya prediksi pola (pembanding = SANGAT LIKUID) ===")
+    compare(Rl, [(lab, m.loc[Rl.index]) for lab, m in specs], unil, horizons=(5, 20))
+
+    print("\n  Holdout paruh waktu di dalam SANGAT LIKUID:")
+    for h in (5, 20):
+        for lab, m in specs:
+            print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m.loc[Rl.index], unil, h)}")
+
+    # Return ABSOLUT: pembanding SANGAT LIKUID bisa saja turun, jadi alpha positif
+    # belum tentu berarti kandidatnya naik (pelajaran dari Bagian G).
+    print("\n=== RETURN ABSOLUT di dalam SANGAT LIKUID ===")
+    print(f"  {'variasi':<34} {'n':>7} {'abs5':>8} {'abs20':>8} {'>0 (5h)':>8}")
+    base = Rl
+    rows = [("SANGAT LIKUID (baseline)", unil)] + \
+           [(lab, m.loc[Rl.index]) for lab, m in specs]
+    for lab, m in rows:
+        sel = base.loc[m.fillna(False)]
+        if not len(sel):
+            print(f"  {lab:<34} {'-':>7}")
+            continue
+        print(f"  {lab:<34} {len(sel):>7,} {sel['abs5'].mean():>+7.2f}% "
+              f"{sel['abs20'].mean():>+7.2f}% {(sel['abs5'] > 0).mean() * 100:>7.1f}%")
+
+    # --- inti Bagian H: apakah bonus +10 memperbaiki PERINGKAT skor beli? ---
+    print("\n=== pengaruh bonus +10 pada skor beli aplikasi (vektor, tanpa bonus ACC) ===")
+    bs = R["buy_score"].fillna(0.0)
+    bonus = 10.0 * (R["lp_prod"] | R["dbr_prod"]).astype(float)
+    Rl = Rl.copy()
+    Rl["bs_plain"] = bs.loc[Rl.index]
+    Rl["bs_bonus"] = (bs.loc[Rl.index] + bonus.loc[Rl.index]).clip(upper=100.0)
+    masuk_hanya_karena_bonus = (Rl["bs_bonus"] >= 70) & (Rl["bs_plain"] < 70)
+    sudah_lolos = (Rl["bs_plain"] >= 70)
+    print(f"  skor >= 70 tanpa bonus : {int(sudah_lolos.sum()):,} saham-hari")
+    print(f"  skor >= 70 dengan bonus: {int((Rl['bs_bonus'] >= 70).sum()):,} "
+          f"(+{int(masuk_hanya_karena_bonus.sum()):,} masuk HANYA karena bonus)")
+
+    bs_specs = [
+        ("skor >= 70 (tanpa bonus)", sudah_lolos),
+        ("skor >= 70 (dengan bonus +10)", Rl["bs_bonus"] >= 70),
+        ("  masuk HANYA karena bonus", masuk_hanya_karena_bonus),
+        ("Top-10 skor (tanpa bonus)", B.top_n_mask(Rl, "bs_plain", 10)),
+        ("Top-10 skor (dengan bonus)", B.top_n_mask(Rl, "bs_bonus", 10)),
+    ]
+    compare(Rl, bs_specs, pd.Series(True, index=Rl.index), horizons=(5, 20))
+    print("\n  Holdout paruh waktu (efek bonus):")
+    for h in (5, 20):
+        for lab, m in bs_specs:
+            print(f"    {lab:<34} h{h:<2} {holdout_split(Rl, m, pd.Series(True, index=Rl.index), h)}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
-                    choices=["ticket", "silent", "swing", "bands", "calib", "audit"])
+                    choices=["ticket", "silent", "swing", "bands", "calib", "audit",
+                             "special"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -1001,6 +1208,8 @@ def main() -> None:
         part_calib(args.years, args.workers, args.top)
     elif args.part == "audit":
         part_audit(args.years, args.workers, args.top)
+    elif args.part == "special":
+        part_special(args.years, args.workers)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)
