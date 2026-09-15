@@ -1227,6 +1227,29 @@ def _load_ticket_floors() -> Tuple[Dict[str, float], dict]:
 _CALIBRATED_FLOORS, _CALIBRATED_META = _load_ticket_floors()
 TICKET_RESID_FLOOR_BY_GRADE = {**TICKET_RESID_FLOOR_BY_GRADE_DEFAULT, **_CALIBRATED_FLOORS}
 
+# api/pattern_sim.json ditulis oleh
+#   research/combo_study.py --part combopattern --export api/pattern_sim.json
+# Isinya hasil simulasi PORTOFOLIO (bukan alpha per kejadian) tiga pola buku yang
+# dipakai produksi: launchpad, reversal, volsr -- plus jalur ekuitasnya. Angka ini
+# sengaja ditampilkan di dashboard karena ia yang menentukan pola-pola itu layak
+# dipakai sebagai SISTEM atau hanya sebagai PENYARING kandidat.
+# Berkas hilang/rusak -> endpoint melaporkan available=false, bukan gagal.
+PATTERN_SIM_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "pattern_sim.json")
+
+
+def _load_pattern_sim() -> dict:
+    """Baca hasil simulasi portofolio pola buku. {} bila berkas tidak ada/rusak."""
+    try:
+        with open(PATTERN_SIM_FILE, "r", encoding="utf-8") as fh:
+            d = json.load(fh)
+        return d if isinstance(d.get("patterns"), list) and d["patterns"] else {}
+    except Exception:
+        return {}
+
+
+_PATTERN_SIM = _load_pattern_sim()
+
 
 def calibrate_ticket_floors(idx: pd.DataFrame, quantile: float = 0.20,
                             max_gap_days: int = 10) -> dict:
@@ -4901,10 +4924,35 @@ def api_info():
             "GET  /api/screener/tickers?universe=all|liquid",
             "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0",
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
+            "GET  /api/pattern-sim  (simulasi portofolio tiga pola buku: launchpad/reversal/volsr)",
             "POST /api/screener",
         ],
         "docs": "/docs",
     }
+
+
+@app.get("/api/pattern-sim")
+def pattern_sim():
+    """Simulasi PORTOFOLIO tiga pola buku (launchpad, reversal, volsr) + jalur ekuitas.
+
+    Kenapa endpoint ini ada: alpha per KEJADIAN bisa positif sementara sistem yang
+    benar-benar diperdagangkan merugi, karena biaya transaksi dan tanggal yang dipilih
+    berulang oleh compounding. Angka di sini adalah yang kedua -- jadi ia yang dipakai
+    untuk memutuskan apakah sebuah pola layak jadi mesin beli otomatis atau cuma
+    penyaring kandidat. Dihasilkan oleh
+    `research/combo_study.py --part combopattern --export api/pattern_sim.json`.
+    """
+    if not _PATTERN_SIM:
+        return {
+            "available": False,
+            "patterns": [],
+            "note": ("api/pattern_sim.json belum ada atau rusak. Hasilkan dengan: "
+                     "python research/combo_study.py --part combopattern "
+                     "--export api/pattern_sim.json"),
+        }
+    out = dict(_PATTERN_SIM)
+    out["available"] = True
+    return out
 
 
 @app.get("/dashboard")

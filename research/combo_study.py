@@ -47,7 +47,9 @@ Cara menjalankan
   .venv/bin/python research/combo_study.py --part volsr
 
   # Bagian M: kombinasi Launch Pad x role reversal x filter tiket + simulasi portofolio
-  .venv/bin/python research/combo_study.py --part combopattern
+  # --export menulis hasil simulasi tiga pola ke api/pattern_sim.json (dipakai panel
+  # dashboard). Jalankan tiap kali angka pola berubah, supaya panel tidak basi.
+  .venv/bin/python research/combo_study.py --part combopattern --export api/pattern_sim.json
 
   # Semua di atas 0 kuota Arjum maupun IDX: data tiket & broker sudah di cache.
 
@@ -374,13 +376,24 @@ BAGIAN M — KOMBINASI DUA POLA + FILTER TIKET: tidak ada sinergi, dan simulasi
      bisa disebut nyata; arahnya konsisten, itu saja. (Ini alasan cron Launch Pad
      memakai penyaring tiket default aplikasi.)
   4) SIMULASI PORTOFOLIO (non-overlap, bobot sama, biaya 0,3% x turnover) — inilah
-     angka yang menentukan bisa-tidaknya dipakai, bukan alpha:
+     angka yang menentukan bisa-tidaknya dipakai, bukan alpha. Ketiga pola yang
+     BENAR-BENAR dipakai produksi diuji pada kedalaman yang sama:
        Launch Pad (hold 5)  total +80,2% · CAGR 15,7% · Sharpe 0,54 · MDD -43,6%
-                            tetapi window terisi hanya 30/204 (15%) -> modal menganggur
-       role reversal (h5)   total -44,6% · Sharpe -0,28 · MDD -56,8%
+                            window terisi hanya 30/204 (15%) -> modal menganggur
+       role reversal (h5)   total -44,6% · CAGR -13,6% · Sharpe -0,28 · MDD -56,8%
+                            window terisi 193/204 (95%)
+       S&R volume (h5)      total -20,9% · CAGR -5,6% · Sharpe -0,04 · MDD -62,6%
+                            window terisi 204/204 (100%)  <-- KOMBINASI TERBURUK
        LP | RR (h5)         total -33,3% · Sharpe -0,10
        role reversal (h20)  total -4,0% vs universe -11,0% (kalah volatilitas)
      (IHSG pembanding: -7,0% untuk jendela h5, -6,0% untuk h20.)
+     Angka ini diekspor ke api/pattern_sim.json (--export) dan ditampilkan dashboard.
+     S&R volume menunjukkan corak yang paling tidak layak dijadikan sistem otomatis:
+     alpha per kejadian POSITIF (+0,90%, holdout lolos) tetapi portofolionya terisi
+     100% waktu DAN merugi (-20,9%, MDD -62,6%) -- jadi seluruh modal bekerja terus
+     sementara hasilnya kalah, persis kebalikan Launch Pad yang untung tapi jarang
+     terisi. Itu alasan kuat ketiga pola ini DIPAKAI SEBAGAI PENYARING KANDIDAT, bukan
+     mesin beli otomatis; keduanya hanya masuk akal dengan konfirmasi manual.
   5) KENAPA ALPHA POSITIF TAPI PORTOFOLIO NEGATIF — diperiksa, bukan didiamkan:
      rata-rata abs5 role reversal per KEJADIAN +0,278%, tetapi portofolio 5-hari yang
      non-overlap hanya rata-rata -0,189% per window. Selisih ~0,29pp itu seukuran
@@ -1769,7 +1782,13 @@ def part_volume_sr(years: int, workers: int) -> None:
 # portofolio (bukan cuma alpha) karena pola yang jarang punya masalah praktis lain:
 # modal sering menganggur dan turnover mahal.
 
-def part_combo_patterns(years: int, workers: int) -> None:
+def part_combo_patterns(years: int, workers: int, export: str = "") -> None:
+    """Bagian M + ekspor opsional ke `api/pattern_sim.json`.
+
+    `export` diisi path -> hasil simulasi portofolio tiga pola (launchpad, reversal,
+    volsr) ditulis sebagai JSON dan dibaca aplikasi, supaya dashboard bisa
+    menampilkan angka yang BENAR-BENAR dihitung, bukan yang diketik ulang.
+    """
     print("== BAGIAN M: kombinasi Launch Pad x role reversal x filter tiket ==")
 
     M.BUDGET = 0
@@ -1785,19 +1804,24 @@ def part_combo_patterns(years: int, workers: int) -> None:
         f["date"] = pd.to_datetime(f["date"]).dt.normalize()
         g = role_reversal_flags(tk, df)
         g["date"] = pd.to_datetime(g["date"]).dt.normalize()
+        w = volume_sr_flags(tk, df)
+        w["date"] = pd.to_datetime(w["date"]).dt.normalize()
         frames.append(r.merge(f[["tk", "date", "lp_prod"]], on=["tk", "date"], how="left")
-                       .merge(g[["tk", "date", "role_reversal"]], on=["tk", "date"], how="left"))
+                       .merge(g[["tk", "date", "role_reversal"]], on=["tk", "date"], how="left")
+                       .merge(w[["tk", "date", "vsr_support"]], on=["tk", "date"], how="left"))
     R = pd.concat(frames, ignore_index=True)
     R = attach_ticket(R, T)
-    for col in ("lp_prod", "role_reversal"):
+    for col in ("lp_prod", "role_reversal", "vsr_support"):
         R[col] = R[col].fillna(False)
     R["small"] = R["small"].fillna(False)
     sgt = (R["val20"] >= 10e9).fillna(False)
     Rl = R[sgt].copy()
     unil = pd.Series(True, index=Rl.index)
     lp, rr = Rl["lp_prod"], Rl["role_reversal"]
+    vsr = Rl["vsr_support"]
     print(f"  {len(Rl):,} saham-hari SANGAT LIKUID")
     print(f"  Launch Pad: {int(lp.sum())} · role reversal: {int(rr.sum())} · "
+          f"S&R volume: {int(vsr.sum())} · "
           f"dua-duanya di hari yang sama: {int((lp & rr).sum())}")
     print(f"  tiket kecil di antara kandidat: LP {int((lp & Rl['small']).sum())} · "
           f"RR {int((rr & Rl['small']).sum())}")
@@ -1830,12 +1854,55 @@ def part_combo_patterns(years: int, workers: int) -> None:
 
     # Simulasi portofolio: inilah yang membedakan "alpha bagus" dari "bisa dipakai".
     # HOLD 5 hari (sesuai sifat pola breakout) dan 20 hari, bobot sama, biaya 0,3%.
+    # Tiga POLA YANG BENAR-BENAR DIPAKAI DI PRODUKSI (kriteria screener launchpad/
+    # reversal/volsr). Ketiganya diuji pada kedalaman yang sama, jadi angkanya bisa
+    # dibandingkan langsung -- dan inilah angka yang diekspor ke api/pattern_sim.json.
+    used = (("Launch Pad", lp), ("Role reversal", rr), ("S&R volume", vsr))
+
     print("\n=== SIMULASI PORTOFOLIO (bobot sama, biaya 0,3% x turnover) ===")
+    sims: List[dict] = []
     for hold in (5, 20):
-        for lab, m in (("Launch Pad saja", lp), ("role reversal saja", rr),
-                       ("Launch Pad ATAU role reversal", lp | rr)):
+        for lab, m in used:
+            s = B.simulate_equity(Rl, m, f"{lab} (hold {hold})", top_n=10, hold=hold,
+                                  cost=0.003, rank_col=None, min_names=1)
+            if s and hold == 5:
+                sims.append(s)
+        for lab, m in (("Launch Pad ATAU role reversal", lp | rr),):
             B.simulate_equity(Rl, m, f"{lab} (hold {hold})", top_n=10, hold=hold,
                               cost=0.003, rank_col=None, min_names=1)
+
+    if export:
+        _export_pattern_sim(sims, Rl, export)
+
+
+def _export_pattern_sim(sims: List[dict], Rl: pd.DataFrame, path: str) -> None:
+    """Tulis hasil simulasi tiga pola ke JSON yang dibaca api/index.py.
+
+    Yang disimpan sengaja mencakup angka yang TIDAK enak dilihat (MDD, % window
+    terisi, biaya per rebalance) -- tanpa itu panel dashboard akan menyiratkan bahwa
+    pola-pola ini mesin laba, padahal bukti portofolionya justru membatasinya.
+    """
+    if not sims:
+        print("\n  Ekspor dilewati: tidak ada hasil simulasi (sampel kosong).")
+        return
+    doc = {
+        "meta": {
+            "generated_by": "research/combo_study.py --part combopattern --export",
+            "universe": "SANGAT LIKUID (nilai transaksi >= Rp 10 M/hari)",
+            "cost_note": "biaya 0,3% x turnover per rebalance, portofolio non-overlap",
+            "sample": {"stock_days": int(len(Rl)),
+                       "tickers": int(Rl["tk"].nunique()),
+                       "dates": int(Rl["date"].nunique())},
+            "warning": ("Angka ini menghitung PORTOFOLIO, bukan alpha per kejadian. "
+                        "Karena itu ia bisa negatif walaupun alpha positif: biaya "
+                        "transaksi dan tanggal yang dipilih berulang oleh compounding."),
+        },
+        "patterns": sims,
+    }
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    with open(path, "w", encoding="utf-8") as fh:
+        json.dump(doc, fh, indent=2)
+    print(f"\n  Ekspor -> {path}  ({len(sims)} pola, hold 5)")
 
 
 def main() -> None:
@@ -1850,6 +1917,8 @@ def main() -> None:
     ap.add_argument("--universe", default="all", choices=["all", "liquid"])
     ap.add_argument("--codes", default="", help="daftar kode dipisah koma untuk --part silent")
     ap.add_argument("--win", type=int, default=10, help="jendela hari untuk flag silent")
+    ap.add_argument("--export", default="",
+                    help="tulis hasil simulasi pola ke path JSON (mis. api/pattern_sim.json)")
     ap.add_argument("--recent-days", type=int, default=75,
                     help="batasi ke N hari terakhir (data basi disingkirkan); 0 = semua")
     args = ap.parse_args()
@@ -1875,7 +1944,7 @@ def main() -> None:
     elif args.part == "volsr":
         part_volume_sr(args.years, args.workers)
     elif args.part == "combopattern":
-        part_combo_patterns(args.years, args.workers)
+        part_combo_patterns(args.years, args.workers, export=args.export)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)

@@ -388,6 +388,14 @@
         <p class="text-[11px] text-slate-500 mt-2">Di dashboard: status ACC/DIS, AVG bandar, share Top Buyer, dan net foreign diambil dari IDX Edge PRO (tab Analisis &amp; Banding).</p>
       </div>
     </div>
+
+    <h3 class="text-sm font-extrabold text-rose-400 uppercase tracking-wider mb-3">D. Uji Portofolio Pola Buku — kenapa ini penyaring, bukan mesin beli</h3>
+    <div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5 mb-8">
+      <p class="text-xs text-slate-400 leading-relaxed mb-3">
+        Angka di bawah menghitung <b>portofolio yang benar-benar diperdagangkan</b> — bobot sama, jendela non-tumpang-tindih, biaya 0,3% × turnover — bukan keunggulan rata-rata per kejadian. Perbedaannya menentukan: sebuah pola bisa punya alpha positif tetapi tetap <b>merugi setelah biaya</b>. Karena itu tabel ini yang dipakai untuk memutuskan apakah sebuah pola layak menjadi <i>sistem otomatis</i> atau cukup menjadi <i>penyaring kandidat</i> yang masih dikonfirmasi manual. Sumber: uji 5 tahun atas saham SANGAT LIKUID.
+      </p>
+      <div id="pattern-sim-panel" class="text-xs text-slate-500">Memuat…</div>
+    </div>
   </section>
 
   <!-- ======= FOOTER ======= -->
@@ -2095,6 +2103,82 @@ async function checkAlerts(manual) {
 }
 
 /* =================================================================
+   PANEL SIMULASI PORTOFOLIO POLA BUKU  (/api/pattern-sim)
+   Angka dihasilkan research/combo_study.py -> api/pattern_sim.json.
+================================================================= */
+let patternSimLoaded = false;
+async function loadPatternSim() {
+  if (patternSimLoaded) return;
+  const box = $("#pattern-sim-panel");
+  if (!box) return;
+  patternSimLoaded = true;
+  const num = (v, dg = 1) => (v == null || !isFinite(v)) ? "—" : Number(v).toFixed(dg);
+  const sgn = v => (v == null) ? "text-slate-400" : (v > 0 ? "text-emerald-400" : "text-rose-400");
+  // Sparkline sengaja kecil: tujuannya menunjukkan BENTUK risiko (MDD, jalur ekuitas),
+  // bukan mengundang pembacaan presisi dari grafik sebesar jempol.
+  const spark = (eq, w = 104, h = 30) => {
+    if (!eq || eq.length < 2) return "";
+    const lo0 = Math.min(...eq), hi0 = Math.max(...eq);
+    const pad = (hi0 - lo0) * 0.08 || 0.01;
+    const lo = lo0 - pad, hi = hi0 + pad;
+    const X = i => (i / (eq.length - 1)) * w;
+    const Y = v => h - ((v - lo) / (hi - lo)) * h;
+    const pts = eq.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+    const col = eq[eq.length - 1] >= eq[0] ? "#34d399" : "#fb7185";
+    const y1 = Y(1).toFixed(1);   // garis putus-putus = titik impas (1,0)
+    return `<svg width="${w}" height="${h}"><line x1="0" y1="${y1}" x2="${w}" y2="${y1}" stroke="#475569" stroke-width="0.7" stroke-dasharray="2 2"/><polyline points="${pts}" fill="none" stroke="${col}" stroke-width="1.4"/></svg>`;
+  };
+  try {
+    const d = await (await fetch("/api/pattern-sim")).json();
+    if (!d.available || !(d.patterns || []).length) {
+      box.innerHTML = `<div class="text-amber-400">Data simulasi belum tersedia. ${d.note || ""}</div>`;
+      return;
+    }
+    const m = d.meta || {}, s = m.sample || {}, b = d.patterns[0] || {};
+    let rows = "";
+    for (const p of d.patterns) {
+      rows += `<tr class="border-t border-slate-800/60">
+        <td class="py-2 pr-3 font-semibold text-slate-200 whitespace-nowrap">${p.label}</td>
+        <td class="px-2 text-right tabular ${sgn(p.total_pct)}">${num(p.total_pct)}%</td>
+        <td class="px-2 text-right tabular ${sgn(p.cagr_pct)}">${num(p.cagr_pct)}%</td>
+        <td class="px-2 text-right tabular text-slate-300">${num(p.sharpe, 2)}</td>
+        <td class="px-2 text-right tabular text-rose-400">${num(p.mdd_pct)}%</td>
+        <td class="px-2 text-right tabular text-slate-300">${num(p.fill_pct, 0)}%</td>
+        <td class="px-2 text-right tabular text-slate-500">${(p.n_events || 0).toLocaleString("id-ID")}</td>
+        <td class="px-2">${spark(p.equity)}</td>
+      </tr>`;
+    }
+    box.innerHTML = `
+      <div class="overflow-x-auto">
+        <table class="w-full text-xs">
+          <thead><tr class="text-[10px] uppercase tracking-wider text-slate-500 text-left">
+            <th class="pb-2 pr-3">Pola (hold 5 hari)</th>
+            <th class="px-2 pb-2 text-right" title="Total imbal hasil portofolio selama periode uji">Total</th>
+            <th class="px-2 pb-2 text-right" title="CAGR memakai waktu berjalan sebenarnya; window yang dilewati tetap dihitung">CAGR</th>
+            <th class="px-2 pb-2 text-right" title="Imbal hasil per unit risiko">Sharpe</th>
+            <th class="px-2 pb-2 text-right" title="Penurunan terdalam dari puncak">MDD</th>
+            <th class="px-2 pb-2 text-right" title="Persentase rebalance yang benar-benar terisi sinyal; sisanya modal menganggur">Terisi</th>
+            <th class="px-2 pb-2 text-right" title="Jumlah kejadian sinyal dalam sampel">Sinyal</th>
+            <th class="px-2 pb-2">Ekuitas</th>
+          </tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+      <p class="text-[11px] text-slate-500 mt-3 leading-relaxed">
+        Pembanding periode yang sama: <b>IHSG ${num(b.bench_total_pct)}%</b> · universe sama-rata ${num(b.universe_total_pct)}%.
+        Sampel: ${(s.tickers || 0).toLocaleString("id-ID")} saham · ${(s.stock_days || 0).toLocaleString("id-ID")} saham-hari · ${(s.dates || 0).toLocaleString("id-ID")} tanggal.
+        Garis putus-putus pada grafik = titik impas (1,0). ${m.cost_note || ""}.
+      </p>
+      <p class="text-[11px] text-slate-500 mt-2 leading-relaxed">
+        Cara membaca: <b>Terisi rendah</b> berarti pola jarang muncul sehingga modal sebagian besar menganggur; <b>Terisi tinggi + total negatif</b> berarti modal terus bekerja tetapi hasilnya tetap kalah — itu jenis pola yang paling tidak layak dijadikan sistem otomatis. ${m.warning || ""}
+      </p>`;
+  } catch (e) {
+    patternSimLoaded = false;
+    box.innerHTML = `<div class="text-rose-400">Gagal memuat data simulasi: ${e}</div>`;
+  }
+}
+
+/* =================================================================
    INIT
 ================================================================= */
 document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () => {
@@ -2109,6 +2193,7 @@ document.querySelectorAll(".tab").forEach(t => t.addEventListener("click", () =>
   ["analyze", "screener", "portfolio", "watch", "edu"].forEach(k =>
     $("#tab-" + k).classList.toggle("hidden", t.dataset.tab !== k));
   if (t.dataset.tab === "watch" && !$("#watchResult").innerHTML.trim()) compare();
+  if (t.dataset.tab === "edu") loadPatternSim();
   if (t.dataset.tab === "portfolio") {
     if (porto.length && !Object.keys(portoQuotes).length) refreshPortoQuotes();
     else checkAlerts(false);

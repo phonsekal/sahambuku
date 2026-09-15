@@ -493,7 +493,7 @@ def print_breakdown(R: pd.DataFrame) -> None:
 
 def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
                     top_n: int = 10, hold: int = 5, cost: float = 0.003,
-                    rank_col: Optional[str] = "score", min_names: int = 5) -> None:
+                    rank_col: Optional[str] = "score", min_names: int = 5) -> dict:
     """Portofolio non-overlapping: tiap `hold` hari bursa pilih N nama teratas (bila
     rank_col=None -> SELURUH nama yang lolos mask, bobot sama), biaya 0,3% x turnover.
     Pembanding: IHSG buy&hold dan universe sama-rata.
@@ -501,12 +501,16 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
     CAGR memakai waktu berjalan yang SEBENARNYA (window yang dilewati ikut dihitung),
     jadi strategi yang sering tidak punya sinyal tidak bisa terlihat untung hanya
     karena banyak duduk di kas.
+
+    Mengembalikan dict berisi angka + jalur ekuitas (dipakai
+    scripts/export_pattern_sim.py untuk mengisi api/pattern_sim.json), atau {} bila
+    tidak ada sinyal.
     """
     cols = ["date", "tk", f"abs{hold}", f"ih{hold}"] + ([rank_col] if rank_col else [])
     sel = R.loc[mask.fillna(False), cols].dropna()
     if sel.empty:
         print(f"\n{label}: tidak ada sinyal.")
-        return
+        return {}
     allw = R[["date", f"abs{hold}", f"ih{hold}"]].dropna()
     uni_w = {pd.Timestamp(k): float(v) for k, v in
              allw.groupby("date")[f"abs{hold}"].mean().items()}
@@ -574,6 +578,30 @@ def simulate_equity(R: pd.DataFrame, mask: pd.Series, label: str,
               f"(biaya per rebalance ~{np.mean(turns) * cost * 100:.2f}%)")
     print(f"   window: {invested}/{windows} terisi ({invested / max(windows, 1) * 100:.0f}%), "
           f"~{ppy:.0f} rebalance/tahun, durasi {years:.1f} tahun")
+    sc, bc, uc = stats(eqs), stats(bhs), stats(uqs)
+    return {
+        "label": label,
+        "mode": mode,
+        "hold": hold,
+        "cost_pct": cost * 100,
+        "n_events": int(mask.fillna(False).sum()),
+        "total_pct": (eqs[-1] - 1) * 100 if eqs else None,
+        "cagr_pct": sc[0], "vol_pct": sc[1], "sharpe": sc[2], "mdd_pct": sc[3],
+        "bench_total_pct": (bhs[-1] - 1) * 100 if bhs else None,
+        "bench_cagr_pct": bc[0], "bench_mdd_pct": bc[3],
+        "universe_total_pct": (uqs[-1] - 1) * 100 if uqs else None,
+        "universe_cagr_pct": uc[0],
+        "windows": windows,
+        "invested": invested,
+        "fill_pct": invested / max(windows, 1) * 100,
+        "turnover_avg_pct": float(np.mean(turns) * 100) if turns else None,
+        "cost_per_rebalance_pct": float(np.mean(turns) * cost * 100) if turns else None,
+        "rebalance_per_year": ppy,
+        "years": years,
+        "equity": [float(x) for x in eqs],
+        "bench": [float(x) for x in bhs],
+        "universe": [float(x) for x in uqs],
+    }
 
 
 def print_signal_audit(R: pd.DataFrame, floor: float = 1e10) -> None:
