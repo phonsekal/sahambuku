@@ -4130,6 +4130,42 @@ def _scan_action_plan(df: pd.DataFrame, action: str,
         return None
 
 
+def _momentum_trade_plan(df: pd.DataFrame) -> dict:
+    """Rencana dagang harian untuk kriteria momentum (1-5 hari), berbasis ATR.
+
+    Kenapa terpisah dari `build_action_plan`: rencana itu dirancang untuk swing
+    (S&R, Fibonacci, trailing) dan horizon 20 hari, sedangkan bukti momentum ada di
+    1-5 hari. Di sini levelnya sengaja sederhana dan bisa dipakai apa adanya:
+    stop 1,5×ATR14 di bawah harga tutup, target 2× risiko (RRR 1:2 sesuai buku
+    Bab 8), dan batas waktu 5 hari (horizon yang diuji).
+    """
+    try:
+        close = df["Close"].astype(float)
+        last = float(close.iloc[-1])
+        atr_v = float(atr(df, 14).iloc[-1])
+        if not np.isfinite(atr_v) or atr_v <= 0:
+            atr_v = last * 0.03
+        risk = 1.5 * atr_v
+        day_low = float(df["Low"].astype(float).iloc[-1])
+        return {
+            "entry": num(last, 2),
+            "stop_loss": num(last - risk, 2),
+            "target": num(last + 2 * risk, 2),
+            "atr14": num(atr_v, 2),
+            "risk_pct": num(risk / last * 100, 2) if last > 0 else None,
+            "reward_pct": num(2 * risk / last * 100, 2) if last > 0 else None,
+            "rrr": 2.0,
+            "max_hold_days": 5,
+            "day_low": num(day_low, 2),
+            "note": ("Rencana harian: entry di harga tutup, stop 1,5×ATR14, "
+                     "target 2× risiko (RRR 1:2), keluar maksimum 5 hari bursa. "
+                     "Batas waktu WAJIB: bukti momentum ada di 1-5 hari, bukan 20."),
+        }
+    except Exception:
+        return {"entry": None, "stop_loss": None, "target": None, "rrr": None,
+                "max_hold_days": 5, "note": "Rencana harian tidak dapat dihitung."}
+
+
 def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
                  include_bandarmology: bool, with_rs: bool = False,
                  silent_min_net: float = 2e9, mom_min_pct: float = 8.0):
@@ -4291,14 +4327,63 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
             "estimated_value_idr": num(est_val, 0),
             "value_floor_idr": MOMENTUM_VALUE_FLOOR,
             "liquid_enough": bool(est_val >= MOMENTUM_VALUE_FLOOR),
-            "note": ("Momentum murni (return harian + lantai nilai Rp100 juta). Audit "
-                     "2020-2026: alpha murni lebih tinggi daripada SCALPING/BSJP yang "
-                     "menambah syarat tanpa manfaat. Kabar harian, bukan posisi."),
+            "breakout_20h": bool(breakout_20_series(df).iloc[-1]) if len(df) > 25 else None,
+            "plan": _momentum_trade_plan(df),
+            "note": ("Momentum murni (return harian + lantai nilai Rp100 juta). "
+                     "Audit 2020-2026: syarat ini lebih baik daripada SCALPING/BSJP "
+                     "yang menambah ambang tanpa manfaat — TETAPI keunggulannya "
+                     "datang dari subset yang JUGA menembus high 20 hari "
+                     "(lihat kriteria 'momentumkuat'): tanpa breakout, alphanya "
+                     "tinggal +0,13% per 5 hari."),
         }
         item["criteria_met"] = [f"MOMENTUM >= {mom_min_pct:g}%"] if mom_ok else []
         _attach_plan(mom_ok, act="BUY")
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": mom_ok, "bandar_used": bandar_used}
+
+    if criteria == "momentumkuat":
+        # MOMENTUM + BREAKOUT — kriteria dengan bukti TERKUAT untuk dipakai harian.
+        # Audit 2020-2026 (1,34 juta saham-hari): irisan "naik >= 8% HARI INI" dan
+        # "close menembus high tertinggi 20 bar sebelumnya" memberi alpha 5 hari
+        # +3,58% (blok t=+22,25, n=17.726, ~11/hari) dan 1 hari +1,64% (t=+16,45).
+        # Kedua sisinya SENDIRI lemah: momentum tanpa breakout +0,13%, breakout
+        # tanpa momentum -0,14%. Jadi yang bekerja adalah momentum DI DALAM
+        # struktur naik — bukan bounce di tren turun. Positif di KETUJUH tahun, di
+        # SEMUA kelas likuiditas (SANGAT LIKUID +2,88%), dengan buang tiket +5,22%
+        # vs tiket kecil +1,62%, dan rezim bull 5,71% vs bear 1,77%.
+        # JUJUR SOAL RISIKONYA: persentase kejadian untung setelah biaya 0,3% hanya
+        # 46-47% (di bawah 50%) — rata-rata ditarik ekor keuntungan.
+        mtr = result.get("metrics") or {}
+        day_ret = float(mtr.get("day_return_pct") or 0.0)
+        est_val = float(mtr.get("estimated_value_idr") or 0.0)
+        close_s = df["Close"].astype(float)
+        high_s = df["High"].astype(float)
+        brk_ok = bool(breakout_20_series(df).iloc[-1]) if len(df) > 25 else False
+        prev_high20 = (float(high_s.rolling(20).max().shift(1).iloc[-1])
+                       if len(df) > 25 else 0.0)
+        kuat_ok = bool(day_ret >= mom_min_pct and est_val >= MOMENTUM_VALUE_FLOOR
+                       and brk_ok)
+        item["momentum_info"] = {
+            "day_return_pct": num(day_ret, 2),
+            "min_pct": float(mom_min_pct),
+            "estimated_value_idr": num(est_val, 0),
+            "value_floor_idr": MOMENTUM_VALUE_FLOOR,
+            "liquid_enough": bool(est_val >= MOMENTUM_VALUE_FLOOR),
+            "breakout_20h": brk_ok,
+            "high20": num(prev_high20, 2),
+            "above_high20_pct": (num((float(close_s.iloc[-1]) / prev_high20 - 1) * 100, 1)
+                                 if prev_high20 > 0 else None),
+            "plan": _momentum_trade_plan(df),
+            "note": ("Momentum + breakout high 20 hari. Alpha 5 hari +3,58% "
+                     "(blok t=+22,25) dan 1 hari +1,64% — sedangkan kedua sisinya "
+                     "sendiri cuma +0,13% / -0,14%. Positif di ketujuh tahun dan di "
+                     "semua kelas likuiditas. Persentase untung setelah biaya hanya "
+                     "46-47%: ekor keuntungan yang menentukan, jadi disiplin stop wajib."),
+        }
+        item["criteria_met"] = (["MOMENTUM + BREAKOUT 20H"] if kuat_ok else [])
+        _attach_plan(kuat_ok, act="BUY")
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": kuat_ok, "bandar_used": bandar_used}
 
     if criteria == "buykuat":
         # KUALITAS BELI TERBAIK — kombinasi PERSIS yang diukur audit 2020-2026:
@@ -4698,7 +4783,7 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     bull_div, _ = _divergence_series(df)
 
     bscore = _buy_score_series(df) if criteria == "buy" else None
-    brk_s = breakout_20_series(df) if criteria == "breakout" else None
+    brk_s = breakout_20_series(df) if criteria in ("breakout", "momentumkuat") else None
     lp_s = launch_pad_series(df) if criteria == "launchpad" else None
     rr_s = role_reversal_series(df) if criteria == "reversal" else None
     vs_s = volume_sr_series(df) if criteria == "volsr" else None
@@ -4729,6 +4814,10 @@ def _backtest_one(ticker: str, criteria: str, years: int,
         elif criteria == "momentum":
             # Momentum MURNI + lantai likuiditas (lihat screener "momentum").
             hit = day_ret >= mom_min_pct and v >= 100e6
+        elif criteria == "momentumkuat":
+            # Momentum + breakout high 20 hari (lihat screener "momentumkuat").
+            brk_now = bool(brk_s.iloc[i]) if brk_s is not None else False
+            hit = bool(day_ret >= mom_min_pct and v >= 100e6 and brk_now)
         elif criteria == "buy":
             # Optimasi sinyal beli: skor komposit multi-konfirmasi (vektor).
             hit = float(bscore.iloc[i]) >= 70.0
@@ -4783,9 +4872,10 @@ def _backtest_one(ticker: str, criteria: str, years: int,
     # Momentum = dagang pendek (bukti audit ada di 1-5 hari), jadi hold 5 hari dan
     # TIDAK memakai mode plan (gerbang RRR>=2 dirancang untuk swing dan akan
     # membuang hampir semua sinyal momentum).
-    max_hold = 5 if criteria in ("scalping", "bsjp", "momentum") else 20
+    max_hold = 5 if criteria in ("scalping", "bsjp", "momentum", "momentumkuat") else 20
     # Mode plan (SL struktural + gerbang RRR + BE + trailing) hanya untuk swing/buy.
-    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum"))
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum",
+                                                   "momentumkuat"))
     sup_s, res_s = _structural_levels(low, high, 20) if plan_eff else (None, None)
     wins = losses = timeouts = skipped = 0
     r_sum = 0.0
@@ -4884,8 +4974,9 @@ def _matrix_one(tk: str, criteria: str, years: int,
             ihsg_ok = None
 
     n = len(sub)
-    max_hold = 5 if criteria in ("scalping", "bsjp", "momentum") else 20
-    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum"))
+    max_hold = 5 if criteria in ("scalping", "bsjp", "momentum", "momentumkuat") else 20
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum",
+                                                   "momentumkuat"))
     sup_s, res_s = _structural_levels(low, high, 20) if plan_eff else (None, None)
     combos = list(itertools.product((True, False), repeat=5))
     out: Dict[str, dict] = {}
@@ -5114,7 +5205,7 @@ def api_info():
             "POST /api/bandarmology/analyze",
             "GET  /api/chart/{ticker}?period=1y&limit=120&interval=daily|intraday",
             "GET  /api/screener/tickers?universe=all|liquid",
-            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|momentum|buykuat|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0&mom_min_pct=8",
+            "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|momentum|momentumkuat|buykuat|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0&mom_min_pct=8",
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "GET  /api/pattern-sim  (simulasi portofolio tiga pola buku: launchpad/reversal/volsr)",
             "GET  /api/scan-history  (riwayat pemindaian cron Launch Pad, termasuk hari kosong)",
@@ -6585,6 +6676,145 @@ def cron_launchpad(request: Request, secret: str = Query(""),
             "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
 
 
+@app.get("/api/cron/momentum")
+def cron_momentum(request: Request, secret: str = Query(""),
+                  universe: str = Query("all", pattern="^(all|liquid)$"),
+                  limit: int = Query(250, ge=10, le=900),
+                  mom_min_pct: float = Query(8.0, ge=1.0, le=30.0),
+                  with_buykuat: bool = Query(True)):
+    """Cron: pindai MOMENTUM harian dan kirim ringkasannya ke Telegram.
+
+    Kenapa dipisah dari cron Launch Pad: pola Launch Pad hanya benar di SATU titik
+    waktu dan sangat jarang (~0,6 sinyal/hari), sedangkan momentum harian adalah
+    pertanyaan yang berbeda — "saham mana hari ini yang naik kuat DI DALAM struktur
+    naik?" — dan kejadiannya ~11/hari se-pasar, jadi bisa dipakai setiap hari.
+
+    BUKTI (research/criteria_audit.py Bagian H, 1,34 juta saham-hari 2020-2026):
+    irisan "naik >= 8% hari ini" DAN "close menembus high 20 hari" memberi alpha
+    5 hari +3,58% (blok t=+22,25) dan 1 hari +1,64% (t=+16,45), positif di ketujuh
+    tahun dan di semua kelas likuiditas. Kedua sisinya SENDIRI lemah: momentum tanpa
+    breakout +0,13%, breakout tanpa momentum -0,14%. Karena itu notifikasi MEMISAHKAN
+    keduanya — supaya syarat yang lemah tidak menumpang kredit syarat yang kuat.
+
+    KEJUJURAN YANG HARUS IKUT TERKIRIM: persentase kejadian yang untung setelah biaya
+    0,3% hanya 46-47% (di bawah 50%). Rata-rata positif itu ditarik ekor keuntungan
+    yang jarang, jadi stop dan ukuran posisi yang menentukan. Notifikasi menyebut ini.
+    buykuat (skor >= 70 + tiket sehat + rezim bull) ikut dipindai karena ia pertanyaan
+    yang berbeda (kualitas fundamental-ish, bukan momentum harga); saat pasar bear ia
+    memang kosong, dan itu dilaporkan apa adanya, bukan disembunyikan.
+    Dedupe sekali per hari.
+    """
+    auth = request.headers.get("authorization", "")
+    bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
+    if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
+        raise HTTPException(403, "Forbidden")
+
+    all_tickers = load_idx_tickers(universe)
+    tickers = (spread_pick(all_tickers, limit) if universe == "all"
+               else all_tickers[:limit])
+    scan = _scan(tickers, "momentum", "3mo", True, False, False, False, False,
+                 True, mom_min_pct)
+    rg = _ihsg_regime()
+    trend = str((rg or {}).get("trend") or "?").upper()
+
+    kuat: List[dict] = []
+    murni: List[dict] = []
+    for r in scan["results"]:
+        (kuat if (r.get("momentum_info") or {}).get("breakout_20h") else murni).append(r)
+
+    bk_scan = None
+    bk_hits: List[dict] = []
+    if with_buykuat:
+        bk_scan = _scan(tickers, "buykuat", "3mo", True, False, False, None,
+                        False, 2e9, True, mom_min_pct)
+        bk_hits = bk_scan["results"]
+
+    today = time.strftime("%Y-%m-%d")
+    sent = 0
+    if (kuat or bk_hits) and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+        dedupe = f"ci:notif:momentum:{today}"
+        if not _upstash_get(dedupe):
+            def plan_line(r: dict) -> str:
+                p = (r.get("momentum_info") or {}).get("plan") or {}
+                if p.get("stop_loss") is None:
+                    return ""
+                return (f"\n     SL {p['stop_loss']} ({num(p.get('risk_pct'), 1)}%) · "
+                        f"TP {p['target']} (+{num(p.get('reward_pct'), 1)}%) · maks "
+                        f"{p.get('max_hold_days', 5)} hari")
+
+            lines: List[str] = []
+            if kuat:
+                kuat.sort(key=lambda r: GRADE_RANK.get(str(r.get("liquidity_grade")), 9))
+                lines.append(f"\n💥 MOMENTUM + BREAKOUT HIGH 20 HARI — {len(kuat)} "
+                             f"(alpha5 +3,58%, blok t=+22,25):")
+                for i, r in enumerate(kuat[:12], 1):
+                    mi = r.get("momentum_info") or {}
+                    lines.append(
+                        f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
+                        f"[{r.get('liquidity_grade')}] {num(r.get('price'), 2)} "
+                        f"({signed_num(r.get('day_return_pct'), 2, '%')}) · tembus high20 "
+                        f"{num(mi.get('high20'), 2)} (+{num(mi.get('above_high20_pct'), 1)}%) · "
+                        f"nilai {_rp_id(r.get('estimated_value_idr'))}"
+                        + (" · tiket " + _rp_id(r.get("avg_ticket_idr"))
+                           if r.get("avg_ticket_idr") else "") + plan_line(r))
+            if bk_hits:
+                lines.append(f"\n🏆 KUALITAS BELI TERBAIK (skor>=70 + tiket sehat + bull) — "
+                             f"{len(bk_hits)} (bersih biaya +0,47% 1 hari s/d +2,20% 5 hari):")
+                for i, r in enumerate(bk_hits[:10], 1):
+                    lines.append(f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
+                                 f"[{r.get('liquidity_grade')}] skor "
+                                 f"{num((r.get('buy_score') or {}).get('score'), 0)} · "
+                                 f"{num(r.get('price'), 2)} "
+                                 f"({signed_num(r.get('day_return_pct'), 2, '%')})")
+            elif with_buykuat:
+                reasons = ("IHSG di bawah MA200 (filter rezim aktif)" if trend == "BEAR"
+                           else f"tidak ada yang lolos, dipindai {bk_scan['scanned'] if bk_scan else 0} saham")
+                lines.append(f"\n🏆 KUALITAS BELI TERBAIK: 0 — {reasons}.")
+            if murni:
+                lines.append(f"\n⚡ Momentum TANPA breakout: {len(murni)} kandidat "
+                             f"(alpha5 hanya +0,13% — sengaja dipisah, bukan sinyal).")
+
+            msg = (f"💥 MOMENTUM HARIAN ({today})\n"
+                   f"Rezim IHSG: {trend} ({(rg or {}).get('close')} vs MA200 "
+                   f"{(rg or {}).get('ma200')}). Dipindai {scan['scanned']} saham "
+                   f"({universe}, {scan.get('data_bars_median')} bar).\n"
+                   + "\n".join(lines)
+                   + "\n\n⏱ Batas waktu 5 hari bursa — buktinya ada di 1-5 hari, bukan 20. "
+                     "⚠️ Kejadian untung setelah biaya hanya 46-47%: rata-rata ditarik ekor "
+                     "keuntungan, jadi STOP & ukuran posisi yang menentukan, bukan hit-rate. "
+                     "Momentum + breakout diuji menang lawan kelas likuiditas yang sama, "
+                     "BUKAN jaminan harga naik.")
+            if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
+                _upstash_set(dedupe, "1", ttl=86400)
+                sent = 1
+
+    return {"scanned": scan["scanned"], "skipped": scan["skipped"],
+            "momentum_hits": len(scan["results"]),
+            "momentum_breakout_hits": len(kuat), "momentum_only_hits": len(murni),
+            "buykuat_hits": len(bk_hits),
+            "telegram_sent": sent,
+            "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
+            "universe": universe, "requested": len(tickers),
+            "mom_min_pct": float(mom_min_pct),
+            "market_regime": rg,
+            "data_bars_median": scan.get("data_bars_median"),
+            "honesty_note": ("Persentase kejadian untung setelah biaya 0,3% hanya 46-47% "
+                             "(satu hari) — distribusinya ditarik ekor keuntungan yang "
+                             "jarang. Ini daftar pantau harian, bukan portofolio otomatis."),
+            "evidence_note": ("momentum+breakout: alpha5 +3,58% (blok t=+22,25, n=17.726, "
+                              "~11/hari) vs momentum sendirian +0,13% dan breakout "
+                              "sendirian -0,14%."),
+            "breakout": [{"ticker": r.get("ticker"), "price": r.get("price"),
+                          "day_return_pct": r.get("day_return_pct"),
+                          "liquidity_grade": r.get("liquidity_grade"),
+                          "plan": (r.get("momentum_info") or {}).get("plan")}
+                         for r in kuat[:20]],
+            "buykuat": [{"ticker": r.get("ticker"), "price": r.get("price"),
+                         "buy_score": (r.get("buy_score") or {}).get("score"),
+                         "liquidity_grade": r.get("liquidity_grade")} for r in bk_hits[:20]],
+            "time": time.strftime("%Y-%m-%d %H:%M:%S %Z")}
+
+
 @app.get("/api/cron/alerts")
 def cron_alerts(request: Request, secret: str = Query("")):
     """Cron (mis. Vercel Cron tiap 15 menit): cek semua portofolio tersinkron dan
@@ -6628,7 +6858,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|momentumkuat|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -6665,7 +6895,12 @@ def backtest(
     volume, gerbang confirm/bb_confirm/div_vol/weekly sebaiknya dimatikan dulu kalau
     ingin melihat polanya apa adanya.
     Kriteria 'momentum' = momentum MURNI: return harian >= mom_min_pct (default 8%)
-    DAN nilai transaksi >= Rp100 juta/hari (lantai likuiditas). Ini hasil audit
+    DAN nilai transaksi >= Rp100 juta/hari (lantai likuiditas). PENTING: keunggulan
+    syarat momentum ternyata datang dari subset yang JUGA menembus high 20 hari —
+    tanpa breakout, alphanya tinggal +0,13% (5 hari) sedangkan irisannya +3,58%.
+    Jadi jangan pakai 'momentum' sendirian kalau tujuannya hasil; pakai
+    'momentumkuat' (lihat di bawah). Untuk pembanding antar-kriteria, 'momentum'
+    tetap berguna. Ini hasil audit
     2020-2026 (research/criteria_audit.py): syarat tambahan SCALPING/BSJP (nilai
     >= Rp1 M/Rp5 M, harga > 50, volume >= 2x) TIDAK menambah alpha — kandidatnya
     adalah subset dari syarat momentum murni, dan alpha momentum murni lebih tinggi.
@@ -6674,6 +6909,14 @@ def backtest(
     pada 1-5 hari konsisten. Karena itu di endpoint ini momentum memakai hold maks
     5 hari TANPA mode plan (gerbang RRR>=2 dirancang untuk swing dan akan membuang
     hampir semua sinyal momentum) — bukan hold 20 hari seperti swing/buy.
+    Kriteria 'momentumkuat' = momentum + breakout high 20 hari. Uji gabungan
+    (research/criteria_audit.py Bagian H, 1,34 juta saham-hari): alpha 5 hari +3,58%
+    (blok t=+22,25, n=17.726, ~11 sinyal/hari) dan 1 hari +1,64% (t=+16,45), holdout
+    dua paruh +2,64%/+4,52%, positif di ketujuh tahun dan di semua kelas likuiditas.
+    Kedua sisinya SENDIRI lemah: momentum tanpa breakout +0,13%, breakout tanpa
+    momentum -0,14% — jadi sinerginya nyata, bukan penumpukan syarat. Persentase
+    kejadian untung setelah biaya 0,3% hanya 46-47%, jadi ekor keuntungan yang
+    menentukan hasil; stop wajib disiplin.
     Kriteria 'reversal' = role reversal S&R buku Bab 1.4 (resistance ditembus lalu
     diuji dari atas sebagai support). Bukti 5 tahun universe SANGAT LIKUID
     (research/combo_study.py Bagian I): alpha20 +1,16% (blok t=+5,96), absolut +0,68%
@@ -6749,7 +6992,8 @@ def backtest(
     results.sort(key=lambda r: r["trades"], reverse=True)
     avg_r = (sum(r["avg_r"] or 0 for r in results) / len(results)
              if results else None)
-    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum"))
+    plan_eff = bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum",
+                                                  "momentumkuat"))
     return {
         "criteria": criteria,
         "years": years,
@@ -6775,7 +7019,8 @@ def backtest(
         # Mode plan hanya berlaku untuk swing/buy. Scalping/BSJP/momentum hold pendek
         # dan TIDAK memakai gerbang RRR (kalau tidak, hampir semua sinyal terbuang).
         # Dilaporkan terpisah supaya respons tidak menjanjikan exit yang tidak dipakai.
-        "plan_mode_effective": bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum")),
+        "plan_mode_effective": bool(plan_mode and criteria not in ("scalping", "bsjp", "momentum",
+                                                                  "momentumkuat")),
         "rr_min": float(rr_min),
         "trail_mult": float(trail_mult),
         "win_rate_pct": num(tot_wins / decided * 100, 1) if decided else None,
@@ -6787,8 +7032,9 @@ def backtest(
                     f"lalu trailing {trail_mult:g}×ATR. "
                     if plan_eff else
                     "Mode LAMA: SL 2×ATR, TP 2R (RRR 1:2). ")
-                 + "hold maks 5 hari (scalping/BSJP/momentum) / 20 hari (swing/buy); timeout keluar di close. "
-                 "Filter optimasi aktif: "
+                 + ("hold maks 5 hari (scalping/BSJP/momentum/momentumkuat) / "
+                    "20 hari (swing/buy); timeout keluar di close. ")
+                 + "Filter optimasi aktif: "
                  + ("IHSG>MA200 " if regime else "") + ("BB band bawah/tengah+tren naik " if bb_confirm else "")
                  + ("divergensi RSI+volume " if div_vol else "") + ("tren mingguan " if weekly else "")
                  + ("| biaya+slippage 0,3% round-trip " if costs else "tanpa biaya") + ". "
@@ -6886,7 +7132,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|momentumkuat|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=300),
     offset: int = Query(0, ge=0),
@@ -7012,6 +7258,20 @@ def screener(
     41-42% — artinya kurang dari separuh kejadian untung, dan rata-ratanya ditarik
     oleh ekor keuntungan yang jarang. Pakai ini sebagai daftar pantau harian dengan
     disiplin stop, BUKAN sebagai portofolio otomatis.
+    Kriteria "momentumkuat" (BARU, uji gabungan research/criteria_audit.py Bagian H)
+    = MOMENTUM + BREAKOUT: return harian >= mom_min_pct DAN close menembus high
+    tertinggi 20 bar sebelumnya DAN nilai >= Rp100 juta/hari. Inilah kriteria dengan
+    bukti TERKUAT untuk dipakai harian, dan alasannya penting: KEDUA SISINYA LEMAH
+    SENDIRI-SENDIRI. Momentum tanpa breakout hanya +0,13% (5 hari), breakout tanpa
+    momentum -0,14%, tetapi IRISANNYA +3,58% (blok t=+22,25, n=17.726, ~11 sinyal/hari)
+    dengan dua paruh holdout positif (+2,64%/+4,52%). Jadi yang bekerja adalah momentum
+    DI DALAM struktur naik, bukan bounce di tren turun. Positif di KETUJUH tahun
+    (2020-2026), di SEMUA kelas likuiditas (SANGAT LIKUID +2,88%), membaik dengan
+    penyaring tiket (+5,22% vs +1,62% untuk yang dibuang), dan rezim bull 5,71% vs
+    bear 1,77%. JUJUR SOAL RISIKO: kejadian yang untung setelah biaya 0,3% hanya
+    46-47% (di bawah 50%) — rata-rata ditarik ekor keuntungan, jadi disiplin stop dan
+    ukuran posisi yang menentukan. Rencana hariannya (stop 1,5xATR14, target 2x risiko,
+    maksimum 5 hari) tersedia di momentum_info.plan.
     Kriteria "buykuat" (BARU) = KUALITAS BELI TERBAIK: skor beli >= 70 DAN tiket tidak
     kecil, dengan filter rezim IHSG aktif secara default. Ini kombinasi PERSIS yang
     diukur audit, dan kombinasi itu memang lebih baik daripada skor sendirian:

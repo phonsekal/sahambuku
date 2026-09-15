@@ -1,0 +1,50 @@
+name: Pindai Momentum Harian (momentum + breakout & kualitas beli terbaik)
+
+# Kenapa cron ini ada di samping cron Launch Pad:
+# Pola Launch Pad benar hanya di SATU titik waktu dan sangat jarang (~0,6 sinyal/hari
+# se-pasar), jadi ia untuk diburu. Momentum harian menjawab pertanyaan yang berbeda —
+# "saham mana hari ini yang naik kuat DI DALAM struktur naik?" — dan kejadiannya
+# ~11/hari se-pasar, sehingga bisa dipakai setiap hari.
+#
+# BUKTI (research/criteria_audit.py Bagian H, 1,34 juta saham-hari 2020-2026):
+# irisan "naik >= 8% hari ini" DAN "close menembus high 20 hari" memberi alpha
+# 5 hari +3,58% (blok t=+22,25) dan 1 hari +1,64% (t=+16,45), positif di ketujuh
+# tahun (2020-2026) dan di semua kelas likuiditas. Kedua sisinya SENDIRI lemah:
+# momentum tanpa breakout +0,13%, breakout tanpa momentum -0,14%. Notifikasi
+# memisahkan keduanya supaya syarat yang lemah tidak menumpang kredit yang kuat.
+#
+# KEJUJURAN: kejadian yang untung setelah biaya 0,3% hanya 46-47% (di bawah 50%),
+# jadi rata-rata ditarik ekor keuntungan yang jarang. Notifikasi menyebut ini dan
+# menyertakan rencana harian (SL 1,5xATR14, TP 2x risiko, maksimum 5 hari bursa).
+#
+# CAKUPAN: universe=all&limit=250 -> sampel tersebar merata se-pasar (spread_pick),
+# bukan 250 emiten pertama alfabetis. buykuat (skor>=70 + tiket sehat + rezim bull)
+# ikut dipindai; saat IHSG bear ia memang kosong, dan itu dilaporkan apa adanya.
+#
+# Dijalankan setelah bursa tutup (~17:50 WIB), setelah cron Launch Pad, supaya data
+# hari itu sudah final.
+on:
+  schedule:
+    - cron: "50 10 * * 1-5"   # 10:50 UTC = 17:50 WIB, Senin-Jumat
+  workflow_dispatch: {}
+
+jobs:
+  pindai-momentum:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Panggil endpoint /api/cron/momentum
+        run: |
+          set -euo pipefail
+          echo "Memindai momentum pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 280 -o resp_momentum.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/momentum?universe=all&limit=250&with_buykuat=true")
+          echo "HTTP $code"
+          cat resp_momentum.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint momentum membalas HTTP $code"
+            exit 1
+          fi
+          echo "Selesai."

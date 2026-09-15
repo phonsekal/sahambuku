@@ -109,6 +109,30 @@ rezim bull tetap berguna di 1-5 hari? YA untuk keduanya.
   4. launchpad tetap paling efisien per kejadian (+0,78 net di 1 hari, 45,9% untung),
      tetapi tetap paling jarang (0,5 sinyal/hari).
 
+GABUNGAN (--combos): yang paling penting dari seluruh audit ini.
+
+  momentum>=8% x breakout 20 hari  n irisan 17.726 (~11/hari)
+    momentum saja (tanpa breakout)     h1 -0,00  h5 +0,13  h20 +0,93   net5 +1,44%
+    breakout saja (tanpa momentum)     h1 -0,01  h5 -0,14  h20 -1,06   net5 +0,07%
+    IRISAN keduanya                    h1 +1,64  h5 +3,58  h20 +6,07   net5 +5,35%
+    blok t h1 +16,45 / h5 +22,25 / h20 +12,56 · holdout h5 +2,64/+4,52
+    positif di KETUJUH tahun (2020-2026) · semua kelas likuiditas (SANGAT +2,88)
+    buang tiket +5,22% vs tiket kecil +1,62% · bull +5,71% vs bear +1,77%
+
+  momentum>=8% x volsr              n irisan 1.964
+    momentum saja h5 +1,42 | volsr saja h5 -0,11 | IRISAN h5 +7,28 (t=+12,8), net5 +8,92%
+  momentum>=8% x buy>=70            n irisan 21.826
+    momentum saja h5 +0,64 | buy saja h5 +0,38 | IRISAN h5 +2,32 (t=+19,3), net5 +4,04%
+  momentum>=8% x launchpad          n irisan   560
+    momentum saja h5 +1,55 | launchpad saja h5 +2,20 | IRISAN h5 +1,84  <-- TIDAK ADA SINERGI
+
+  KESIMPULAN: momentum SENDIRI hampir tidak berisi (-0,00 sampai +0,13 pada 1-5
+  hari). Yang berisi adalah momentum DI DALAM struktur naik. Karena itu kriteria
+  "momentumkuat" (momentum + breakout) ditambahkan sebagai kriteria tersendiri, dan
+  deskripsi kriteria "momentum" menyebut bahwa keunggulannya berasal dari subset itu.
+  Pengecualian yang jujur: dengan launchpad TIDAK ada sinergi (irisan < sisi terbaik),
+  jadi jangan menggabungkan keduanya hanya karena keduanya terdengar kuat.
+
 BATASAN YANG HARUS DISEBUT
 --------------------------
 * Panel memakai kolom Open/High/Low dari ringkasan harian IDX. Kolom OpenPrice
@@ -547,6 +571,59 @@ def report_short(S: pd.DataFrame) -> None:
           f"  yang positif SETELAH biaya) lebih penting daripada rata-ratanya.")
 
 
+def report_combos(S: pd.DataFrame) -> None:
+    """Apakah MENGGABUNGKAN kriteria menambah alpha, atau cuma menumpuk syarat?
+
+    Yang dibandingkan: tiap kriteria SENDIRI, IRISANNYA dengan momentum (dua-duanya
+    benar), dan kasus momentum yang TIDAK punya pola itu. Kalau gabungan lebih baik
+    daripada keduanya, ada sinergi; kalau irisan hanya mewarisi salah satu, itu
+    penumpukan syarat (sampel mengecil tanpa imbalan).
+    """
+    conds = [
+        ("momentum>=8%", S["momentum>=8%"]),
+        ("launchpad", S["launchpad"]),
+        ("volsr", S["volsr"]),
+        ("breakout", S["breakout"]),
+        ("buy>=70", S["buy>=70"]),
+    ]
+    combos = []
+    for name, m in conds[1:]:
+        mom = S["momentum>=8%"].fillna(False)
+        mm = m.fillna(False)
+        combos.append((name, mom, mm))
+
+    print(f"\n-- H. GABUNGAN: momentum x pola lain (alpha H1/H5/H20 vs KELAS, blok t) --")
+    for name, mom, other in combos:
+        both = mom & other
+        print(f"\n  {name}:  n(momentum)={int(mom.sum()):,} n({name})={int(other.sum()):,} "
+              f"n(irisan)={int(both.sum()):,}")
+        rows = [("momentum saja", mom & ~other), (f"{name} saja", other & ~mom),
+                ("IRISAN keduanya", both)]
+        for label, m in rows:
+            n = int(m.sum())
+            if n < 30:
+                print(f"    {label:<20} {n:>7,}  (sampel terlalu kecil untuk disimpulkan)")
+                continue
+            cells = []
+            for h in (1, 5, 20):
+                per = S.loc[m].groupby("date")[f"excg{h}"].mean()
+                cells.append(f"h{h} {per.mean():+6.2f} (t{block_t(per, h):+5.1f})")
+            net5 = (S.loc[m, "fwd5"] - COST_ROUND_TRIP * 100).mean()
+            print(f"    {label:<20} {n:>7,}  " + "  ".join(cells) + f"  net5 {net5:+.2f}%")
+        if int(both.sum()) >= 30:
+            # Apakah irisan benar-benar lebih baik, atau hanya mewarisi salah satu sisi?
+            per_b = S.loc[both].groupby("date")["excg5"].mean()
+            per_m = S.loc[mom & ~other].groupby("date")["excg5"].mean()
+            per_o = S.loc[other & ~mom].groupby("date")["excg5"].mean()
+            best_single = max(per_m.mean(), per_o.mean())
+            verdict = ("ADA SINERGI (irisan > kedua sisi)" if per_b.mean() > best_single
+                       else "TIDAK ADA SINERGI (irisan <= sisi terbaik; syarat cuma menumpuk)")
+            print(f"    -> h5: irisan {per_b.mean():+.2f}% vs sisi terbaik {best_single:+.2f}%  => {verdict}")
+
+
+COMBO_SIZES = []
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Audit head-to-head kriteria screener")
     ap.add_argument("--years", type=float, default=None,
@@ -556,6 +633,8 @@ def main() -> None:
     ap.add_argument("--min-bars", type=int, default=60)
     ap.add_argument("--short", action="store_true",
                     help="hanya jalankan tabel horizon pendek (1/2/3/5 hari)")
+    ap.add_argument("--combos", action="store_true",
+                    help="hanya jalankan uji gabungan momentum x pola lain")
     args = ap.parse_args()
 
     p = P.load_panel()
@@ -573,6 +652,10 @@ def main() -> None:
         # Horizon pendek: cukup buang baris yang fwd5 belum tersedia.
         S = S[S["fwd5"].notna()].reset_index(drop=True)
         report_short(S)
+        return
+    if args.combos:
+        S = S[S["fwd20"].notna()].reset_index(drop=True)
+        report_combos(S)
         return
     S = S[S["fwd20"].notna()].reset_index(drop=True)
     report_criteria(S, args.min_grade, args.years)
