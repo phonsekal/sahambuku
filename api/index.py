@@ -6681,7 +6681,11 @@ def cron_momentum(request: Request, secret: str = Query(""),
                   universe: str = Query("all", pattern="^(all|liquid)$"),
                   limit: int = Query(250, ge=10, le=900),
                   mom_min_pct: float = Query(8.0, ge=1.0, le=30.0),
-                  with_buykuat: bool = Query(True)):
+                  with_buykuat: bool = Query(True),
+                  buykuat_regime: bool = Query(False, description=(
+                      "True = hanya laporkan buykuat saat IHSG di atas MA200 (kondisi "
+                      "yang diuji). Default False: tetap dilaporkan TETAPI diberi "
+                      "peringatan bahwa di rezim bear buktinya hilang (+0,04%)."))):
     """Cron: pindai MOMENTUM harian dan kirim ringkasannya ke Telegram.
 
     Kenapa dipisah dari cron Launch Pad: pola Launch Pad hanya benar di SATU titik
@@ -6725,9 +6729,23 @@ def cron_momentum(request: Request, secret: str = Query(""),
     bk_scan = None
     bk_hits: List[dict] = []
     if with_buykuat:
-        bk_scan = _scan(tickers, "buykuat", "3mo", True, False, False, None,
-                        False, 2e9, True, mom_min_pct)
+        # PENTING: `_scan` memperlakukan require_regime=None sebagai OFF — normalisasi
+        # "default aktif untuk buykuat" ada di endpoint /api/screener, bukan di _scan.
+        # Di sini pilihannya dibuat EKSPLISIT supaya tidak ada penyaring yang menyala
+        # atau mati tanpa disengaja.
+        bk_scan = _scan(tickers, "buykuat", "3mo", True, False, False,
+                        bool(buykuat_regime), False, 2e9, True, mom_min_pct)
         bk_hits = bk_scan["results"]
+    # Di rezim bear kombinasi buykuat kehilangan buktinya (audit: +2,88% bull vs
+    # +0,04% bear). Kandidatnya tetap ditampilkan bila diminta (default), TETAPI
+    # peringatannya ikut — bukan disembunyikan dan bukan dibuang diam-diam.
+    bk_bear_warning = bool(bk_hits and not buykuat_regime and trend == "BEAR")
+
+    # Urutkan dari kelas paling likuid SEBELUM apa pun: kalau diurutkan di dalam blok
+    # pengiriman Telegram, urutan di respons akan ikut berubah tergantung dedupe
+    # (terkirim/tidak) — respons jadi tidak konsisten antar pemanggilan.
+    kuat.sort(key=lambda r: GRADE_RANK.get(str(r.get("liquidity_grade")), 9))
+    bk_hits.sort(key=lambda r: GRADE_RANK.get(str(r.get("liquidity_grade")), 9))
 
     today = time.strftime("%Y-%m-%d")
     sent = 0
@@ -6744,7 +6762,6 @@ def cron_momentum(request: Request, secret: str = Query(""),
 
             lines: List[str] = []
             if kuat:
-                kuat.sort(key=lambda r: GRADE_RANK.get(str(r.get("liquidity_grade")), 9))
                 lines.append(f"\n💥 MOMENTUM + BREAKOUT HIGH 20 HARI — {len(kuat)} "
                              f"(alpha5 +3,58%, blok t=+22,25):")
                 for i, r in enumerate(kuat[:12], 1):
@@ -6758,8 +6775,13 @@ def cron_momentum(request: Request, secret: str = Query(""),
                         + (" · tiket " + _rp_id(r.get("avg_ticket_idr"))
                            if r.get("avg_ticket_idr") else "") + plan_line(r))
             if bk_hits:
-                lines.append(f"\n🏆 KUALITAS BELI TERBAIK (skor>=70 + tiket sehat + bull) — "
-                             f"{len(bk_hits)} (bersih biaya +0,47% 1 hari s/d +2,20% 5 hari):")
+                lines.append(f"\n🏆 KUALITAS BELI TERBAIK (skor>=70 + tiket sehat) — "
+                             f"{len(bk_hits)} (bersih biaya +0,47% 1 hari s/d +2,20% 5 hari "
+                             f"SAAT BULL):")
+                if bk_bear_warning:
+                    lines.append("⚠️ IHSG di BAWAH MA200: kombinasi ini diuji untuk rezim "
+                                 "bull (+2,88%); di bear angkanya tinggal +0,04% — daftar "
+                                 "ini di LUAR kondisi yang diuji.")
                 for i, r in enumerate(bk_hits[:10], 1):
                     lines.append(f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
                                  f"[{r.get('liquidity_grade')}] skor "
@@ -6767,8 +6789,10 @@ def cron_momentum(request: Request, secret: str = Query(""),
                                  f"{num(r.get('price'), 2)} "
                                  f"({signed_num(r.get('day_return_pct'), 2, '%')})")
             elif with_buykuat:
-                reasons = ("IHSG di bawah MA200 (filter rezim aktif)" if trend == "BEAR"
-                           else f"tidak ada yang lolos, dipindai {bk_scan['scanned'] if bk_scan else 0} saham")
+                reasons = ("filter rezim aktif (buykuat_regime=true) dan IHSG di bawah MA200"
+                           if buykuat_regime and trend == "BEAR"
+                           else f"tidak ada yang lolos, dipindai "
+                                f"{bk_scan['scanned'] if bk_scan else 0} saham")
                 lines.append(f"\n🏆 KUALITAS BELI TERBAIK: 0 — {reasons}.")
             if murni:
                 lines.append(f"\n⚡ Momentum TANPA breakout: {len(murni)} kandidat "
@@ -6792,6 +6816,13 @@ def cron_momentum(request: Request, secret: str = Query(""),
             "momentum_hits": len(scan["results"]),
             "momentum_breakout_hits": len(kuat), "momentum_only_hits": len(murni),
             "buykuat_hits": len(bk_hits),
+            "buykuat_regime_filtered": bool(buykuat_regime),
+            "buykuat_bear_warning": bk_bear_warning,
+            "buykuat_note": ("Kombinasi ini diuji untuk rezim bull (+2,88% alpha 20 hari) "
+                             "dan hampir tanpa edge saat bear (+0,04%). Kandidat tetap "
+                             "dilaporkan bila buykuat_regime=false, dengan peringatan. "
+                             "Kelas SANGAT LIKUID juga melemahkan skor beli; di kelas itu "
+                             "pola/volsr/breakout lebih layak."),
             "telegram_sent": sent,
             "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
             "universe": universe, "requested": len(tickers),
