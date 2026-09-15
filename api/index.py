@@ -8177,7 +8177,14 @@ def cron_preclose(request: Request, secret: str = Query(""),
             head = (f"⏱ PINDAI PRA-TUTUP · {label} · {sess['wib'][11:16]} WIB · "
                     f"sisa sesi {sess['minutes_left']:.0f} menit\n"
                     "Harga masuk = harga PASAR SEKARANG (bisa dibayar hari ini).\n"
-                    "Harga & volume belum final sampai lewat lelang penutupan.\n")
+                    "Harga & volume belum final sampai lewat lelang penutupan.\n"
+                    # Kalau sesi reguler TIDAK berjalan (dijalankan manual di luar jam),
+                    # itu dikatakan di depan: harga yang ditampilkan bukan harga berjalan
+                    # yang bisa dibayar, melainkan harga sesi terakhir yang selesai.
+                    + ("" if sess["session_open"] else
+                       f"⚠️ SESI REGULER TIDAK BERJALAN (fase {sess['phase']}). Harga di "
+                       f"bawah adalah harga sesi terakhir yang selesai, bukan harga "
+                       f"berjalan yang bisa dibayar hari ini.\n"))
             body = []
             if used in ("momentum", "momentumkuat"):
                 if kuat:
