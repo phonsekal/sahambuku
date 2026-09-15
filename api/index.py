@@ -4152,10 +4152,16 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
     item["buy_score"] = compute_buy_score(df, item.get("bandarmology"))
 
     def _attach_plan(eligible: bool, act: str = "") -> None:
-        """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria."""
+        """Lampirkan rencana aksi hanya untuk kandidat yang lolos kriteria.
+
+        "all" (semua kriteria), scalping, dan bsjp WAJIB ikut: sebelumnya ketiganya
+        tidak masuk daftar ini, sehingga memakai mode "semua kriteria" menghasilkan
+        tabel tanpa kolom Rencana sama sekali — padahal justru di mode itulah pemakai
+        paling butuh tahu harus menunggu apa dan di harga berapa.
+        """
         if not eligible or criteria not in ("buy", "koreksi", "bandar", "swing", "rs",
                                             "breakout", "silent", "launchpad", "reversal",
-                                            "volsr"):
+                                            "volsr", "all", "scalping", "bsjp"):
             return
         action = act or str(item.get("signal") or ("BUY" if criteria == "buy" else "HOLD"))
         plan = _scan_action_plan(df, action, item.get("bandarmology"),

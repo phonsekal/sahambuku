@@ -1196,28 +1196,10 @@ async function toggleKoreksiWatch(tk, btn) {
 }
 
 // Tambahkan SEMUA kandidat setup swing siap-entry di hasil scan ke pantauan Telegram.
-async function watchSwingSetups(btn) {
-  const ready = ((lastScanData && lastScanData.results) || [])
-    .filter(r => r.action_plan && r.action_plan.setup && r.action_plan.setup.layak_entry);
-  const toAdd = [...new Set(ready.map(r => r.ticker))].filter(t => !koreksiWatch.has(String(t).toUpperCase()));
-  if (!toAdd.length) { toast("Semua kandidat sudah ada di pantauan Telegram.", "info"); return; }
-  btn.disabled = true; btn.textContent = "Menambahkan…";
-  let ok = 0;
-  for (const tk of toAdd) {
-    try {
-      const r = await fetch("/api/koreksi/watch", { method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ticker: tk, action: "add" }) });
-      const d = await r.json();
-      if (!r.ok) throw new Error(d.detail || `HTTP ${r.status}`);
-      koreksiWatch.add(String(tk).toUpperCase());
-      ok += 1;
-    } catch (e) { /* lanjutkan sisanya */ }
-  }
-  btn.disabled = false; btn.textContent = `✓ ${ok} ditambahkan`;
-  toast(`${ok} kandidat setup swing masuk pantauan Telegram — Anda akan diberi tahu otomatis saat setup siap entry.`, ok ? "success" : "sl");
-  if (lastScanData) renderScan(lastScanData);
-}
+// Catatan: penambahan MASSAL ke pantauan Telegram sudah dihapus atas permintaan
+// pemilik aplikasi — daftar pantauan menjadi tidak terkelola bila sekali klik
+// memasukkan puluhan saham. Sekarang hanya tombol 🔔 per baris (toggleKoreksiWatch),
+// jadi yang dipantau selalu pilihan sadar per saham.
 
 async function renderKoreksiWatch() {
   const el = $("#koreksiWatchPanel");
@@ -1226,7 +1208,7 @@ async function renderKoreksiWatch() {
     const d = await getJSON("/api/koreksi/watch");
     const rows = d.results || [];
     if (!rows.length) {
-      el.innerHTML = `<div class="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3">🔔 Pantauan Telegram kosong. Di hasil scan, klik <b class="text-emerald-300">🔔 Pantau</b> — untuk kandidat <b class="text-slate-300">🛒 Beli Koreksi</b> atau untuk baris dengan setup swing siap-entry (tombol <b class="text-slate-300">🔔 Pantau semua di Telegram</b> di atas tabel). Telegram akan otomatis memberi tahu saat sinyal berubah SELL → BUY (konfirmasi reversal) atau saat setup swing siap entry.</div>`;
+      el.innerHTML = `<div class="text-xs text-slate-500 bg-slate-900/70 border border-slate-800 rounded-xl px-4 py-3">🔔 Pantauan Telegram kosong. Di hasil scan, klik tombol <b class="text-emerald-300">➕ Pantau</b> pada baris saham yang Anda minati (ada di <b class="text-slate-300">semua kriteria</b>, termasuk "semua kriteria"). Tambah <b class="text-slate-300">satu per satu</b> — tidak ada tombol yang memasukkan seluruh hasil pindai sekaligus. Telegram akan otomatis memberi tahu saat sinyal berubah SELL → BUY (konfirmasi reversal) atau saat setup swing siap entry.</div>`;
       return;
     }
     const reversal = a => (a.signal === "BUY" || a.signal === "STRONG BUY")
@@ -1370,7 +1352,9 @@ function renderScan(d) {
   const isReversal = d.criteria === "reversal";
   const isVolSr = d.criteria === "volsr";
   // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
-  const nCols = 15 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 3 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0);
+  // 16 kolom dasar (15 + kolom 🔔 Pantau yang kini SELALU ada); koreksi menambah 2
+  // (Support + AVG Bandar) karena kolom 🔔-nya sudah dihitung di dasar.
+  const nCols = 16 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 2 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0);
   let h = isKoreksi
     ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
     : (isRS
@@ -1392,8 +1376,7 @@ function renderScan(d) {
   const swingReady = (d.results || []).filter(r => r.action_plan && r.action_plan.setup && r.action_plan.setup.layak_entry);
   if (swingReady.length) {
     h += `<div class="mb-3 flex flex-wrap items-center gap-2 text-[11px] text-emerald-300/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">
-      <span>🎯 <b>${swingReady.length}</b> kandidat setup swing siap-entry (setup valid + RRR ≥ 1:2) di halaman ini.</span>
-      <button onclick="watchSwingSetups(this)" class="ml-auto text-[11px] px-3 py-1.5 rounded-lg font-bold border border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20 transition">🔔 Pantau semua di Telegram</button>
+      <span>🎯 <b>${swingReady.length}</b> kandidat setup swing siap-entry (setup valid + RRR ≥ 1:2) di halaman ini. Pantau <b>satu per satu</b> lewat tombol 🔔 di baris yang Anda minati — tidak ada penambahan massal.</span>
     </div>`;
   }
   h += `<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl overflow-x-auto shadow-xl shadow-black/20"><table class="w-full text-sm min-w-[820px]">
@@ -1407,11 +1390,11 @@ function renderScan(d) {
       ${isVolSr ? `<th class="text-right px-3" title="Low candle dengan volume terbesar (kuantil-90 dari 250 bar) = support, dan high-nya = resistance. Jarak = posisi harga terhadap support itu.">S&R Volume</th>` : ""}
       ${isSilent ? `<th class="text-left px-3" title="Broker yang konsisten net beli tanpa banyak jual. Informasi bandarmology, bukan sinyal beli.">Akumulator</th>` : ""}
       ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
-      ${isKoreksi ? `<th class="text-center px-3" title="Pantau: Telegram memberi tahu saat konfirmasi reversal (SELL→BUY)">🔔</th>` : ""}
+      <th class="text-center px-3" title="Pantau SAHAM INI saja — klik per baris. Telegram akan memberi tahu saat sinyal berubah menguntungkan atau harga masuk zona entry. Tidak menambahkan seluruh hasil pindai.">🔔</th>
       <th class="text-center px-3" title="Konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">✓ Buku</th>
       <th class="text-center px-3" title="Skor komposit kualitas beli 0-100 (multi-konfirmasi)">🎯 Beli</th>
       <th class="text-left px-3" title="Kelas likuiditas dari nilai transaksi rata-rata 20 hari">Likuiditas</th>
-      <th class="text-right px-3" title="Ukuran tiket = nilai transaksi ÷ jumlah transaksi (20 sesi). Angka kecil DI DALAM kelas likuiditasnya = banyak transaksi ritel berukuran tipis — uji 5 tahun: tertinggal ~0,4-1,3 poin persen per 20 hari dari kandidat lain di kelas yang sama. Tanda ⚠️ berarti masuk kuintil 20% terendah kelasnya dan dibuang oleh penyaring 'Tiket wajar'.">Tiket</th>
+      <th class="text-right px-3" title="RATA-RATA NILAI PER TRANSAKSI (Rp) selama 20 sesi = nilai transaksi ÷ jumlah transaksi. Contoh: Rp 5 juta berarti tiap transaksi rata-rata bernilai Rp 5 juta. Fungsinya menunjukkan SIAPA yang bertransaksi: angka kecil = banyak transaksi tipis (ritel), angka besar = dominasi institusi. BUKAN harga saham dan BUKAN sinyal beli. Yang diuji 5 tahun adalah ukuran RELATIFNYA di dalam kelas likuiditas: kandidat dengan tiket paling tipis tertinggal ~0,4-1,3% per 20 hari dari kandidat lain di kelas yang sama. Tanda ⚠️ = kuintil 20% terendah kelasnya, dibuang saat penyaring 'Tiket wajar' aktif.">Tiket<br><span class="font-normal normal-case text-[9px] text-slate-500">rata-rata per transaksi</span></th>
       <th class="text-left px-3">Kriteria</th><th class="text-left px-3">Sumber</th><th class="text-left px-3">Bandar</th>
       <th class="text-center px-3" title="Rasio risiko:imbalan dari harga entry rencana — layak bila ≥ 1:2">⚖️ RRR</th>
       <th class="text-center px-3" title="Rencana aksi: tunggu apa & di harga berapa sebelum entry">📋 Rencana</th>
@@ -1420,6 +1403,14 @@ function renderScan(d) {
     const ki = r.koreksi_info || {};
     const bi = r.breakout_info || {};
     const si = r.silent_info || {};
+    // Penjelasan kolom Tiket dibuat per baris (bukan hanya di judul kolom), karena
+    // angkanya gampang disalahartikan sebagai harga saham.
+    const tiketTitle = r.avg_ticket_idr != null
+      ? `Rata-rata nilai PER TRANSAKSI selama 20 sesi (nilai transaksi ÷ jumlah transaksi). Bukan harga saham. `
+        + `Menunjukkan siapa yang bertransaksi: angka kecil = banyak transaksi tipis (ritel), angka besar = dominasi institusi. `
+        + `Ukuran relatif di kelas ${r.liquidity_grade || "—"}: resid ${r.ticket_resid != null ? Number(r.ticket_resid).toFixed(2) : "—"}`
+        + (r.ticket_small ? ` — kuintil 20% TERENDAH kelas ini, jadi dibuang saat penyaring "Tiket wajar" aktif.` : ".")
+      : "Data tiket tidak tersedia (butuh ringkasan transaksi IDX untuk saham ini).";
     if (r.action_plan) planRegistry[String(r.ticker).toUpperCase()] = { ap: r.action_plan, tk: stripJK(r.ticker) };
     h += `<tr class="border-b border-slate-800/60 hover:bg-slate-800/30 transition">
       <td class="px-4 py-3"><div class="font-bold">${esc(stripJK(r.ticker))}</div><div class="text-[10px] text-slate-500">${esc(r.data_date || "")}</div></td>
@@ -1435,11 +1426,11 @@ function renderScan(d) {
       ${isVolSr ? (() => { const vi = r.volume_sr_info || {}; return `<td class="px-3 text-right tabular">${vi.volume_support ? `${fmt(vi.volume_support)}<div class="text-[10px] text-lime-300">${vi.distance_to_support_pct != null ? pct(vi.distance_to_support_pct) : ""} · R ${vi.volume_resistance != null ? fmt(vi.volume_resistance) : "—"}</div>` : "—"}</td>`; })() : ""}
       ${isSilent ? `<td class="px-3 text-xs">${si.broker ? `<b>${esc(si.broker)}</b><div class="text-[10px] text-slate-500">${si.days_buy}/${si.window} hari · <span class="tabular text-emerald-400">${fmtIdr(si.net)}</span> · net/gross ${Number(si.net_ratio || 0).toFixed(2)}</div>` : "—"}</td>` : ""}
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
-      ${isKoreksi ? `<td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>` : ""}
+      <td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" title="Pantau ${esc(stripJK(r.ticker))} di Telegram — notifikasi saat sinyal membaik atau harga masuk zona entry" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>
       <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
       <td class="px-3 text-center">${buyScoreChip(r.buy_score)}</td>
       <td class="px-3">${liqChip(r.liquidity_grade)}</td>
-      <td class="px-3 text-right tabular">${r.avg_ticket_idr != null ? `${r.ticket_small ? '<span class="text-amber-300" title="Kuintil tiket terendah di kelas likuiditasnya — dibuang saat penyaring aktif">⚠️ </span>' : ""}${fmtIdr(r.avg_ticket_idr)}` : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-3 text-right tabular" title="${tiketTitle}">${r.avg_ticket_idr != null ? `${r.ticket_small ? '<span class="text-amber-300">⚠️ </span>' : ""}${fmtIdr(r.avg_ticket_idr)}` : '<span class="text-slate-600">—</span>'}</td>
       <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}</td>
       <td class="px-3 text-xs text-violet-400">${esc(r.source || "—")}</td>
       <td class="px-3 text-xs">${r.bandarmology
