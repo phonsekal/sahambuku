@@ -16663,5 +16663,43 @@
         "regime": "bear saja"
       }
     ]
+  },
+  "effective_sample": {
+    "note": "Keputusan independen = tanggal sinyal yang berjarak minimal `hold` hari. Kejadian yang berdempetan menumpang pergerakan pasar yang sama, jadi tidak menambah informasi independen.",
+    "hold": 5,
+    "dates_total": 2292,
+    "blocks_available": 458,
+    "patterns": [
+      {
+        "pattern": "Launch Pad",
+        "events": 356,
+        "signal_dates": 303,
+        "independent_dates": 173,
+        "independent_dates_bull": 122,
+        "events_per_signal_date": 1.17,
+        "blocks_available": 458,
+        "indep_per_block": 0.38
+      },
+      {
+        "pattern": "Role reversal",
+        "events": 13147,
+        "signal_dates": 2139,
+        "independent_dates": 49,
+        "independent_dates_bull": 41,
+        "events_per_signal_date": 6.15,
+        "blocks_available": 458,
+        "indep_per_block": 0.11
+      },
+      {
+        "pattern": "S&R volume",
+        "events": 26244,
+        "signal_dates": 2245,
+        "independent_dates": 38,
+        "independent_dates_bull": 39,
+        "events_per_signal_date": 11.69,
+        "blocks_available": 458,
+        "indep_per_block": 0.08
+      }
+    ]
   }
 }

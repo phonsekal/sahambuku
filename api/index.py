@@ -635,9 +635,13 @@ def role_reversal_info(df: pd.DataFrame, lookback: int = 60) -> dict:
         "breakouts_in_history": n_brk,
         "note": (
             "ROLE REVERSAL: harga retest level yang dulu resistance dan kini jadi support "
-            "(Bab 1.4). Uji 5 tahun: alpha20 +1,16% (blok t=+5,96), holdout dua paruh "
-            "positif, dan positif di semua tahun. Zona entry di sekitar level ini; "
-            "batalkan idenya bila close jatuh >3% di bawah level."
+            "(Bab 1.4). Uji 10 tahun: alpha20 +1,64% (blok t=+9,10) tetapi alpha5 hanya "
+            "+0,19%. CATATAN SAMPEL: 13.147 kejadian itu hanya mewakili ~49 hari keputusan "
+            "independen (sinyal muncul di ~93% hari bursa), jadi blok t besar berasal dari "
+            "lebar cross-section, bukan banyak bukti terpisah. Hasil PORTOFOLIO-nya "
+            "berbalik tanda antar jendela uji, jadi ini penyaring kandidat, bukan sistem. "
+            "Zona entry di sekitar level ini; batalkan idenya bila close jatuh >3% di "
+            "bawah level."
             if detected else
             ("Level sebelumnya sudah ditembus tapi harga belum/tidak lagi menguji ulang "
              "area itu (retest terjadi 2-20 bar setelah breakout)."
@@ -712,9 +716,11 @@ def volume_sr_info(df: pd.DataFrame, lookback: int = 250) -> dict:
                                     if sv is not None and not pd.isna(sv) and float(sv) > 0 else None),
         "note": (
             "S&R dari candle VOLUME BESAR (Bab 11): support = low candle volume terbesar. "
-            "Harga sedang menguji ulang level itu dalam tren naik. Uji 5 tahun: alpha20 "
-            "+0,90% (blok t=+3,93), absolut +1,00%, holdout dua paruh positif; kontrol "
-            "memakai candle volume TERKECIL hanya +0,27% dan gagal holdout."
+            "Harga sedang menguji ulang level itu dalam tren naik. Uji 10 tahun: alpha20 "
+            "+0,70% (blok t=+7,64); kontrol memakai candle volume TERKECIL justru NEGATIF "
+            "(-0,10%) dan gagal holdout, jadi kontrasnya kuat. Tetapi edgenya kecil dan "
+            "sinyalnya ada di ~98% hari bursa (26.244 kejadian = ~38 hari keputusan "
+            "independen), jadi ini penyaring kelas, bukan sinyal entry tunggal."
             if det else
             "Harga tidak sedang menguji support candle bervolume besar (syarat: dalam 2% "
             "dari low candle volume terbesar, harga di atas SMA50, dan SMA50 menanjak)."),
@@ -1074,10 +1080,11 @@ def compute_buy_score(df: pd.DataFrame, bandarmology: Optional[dict] = None) -> 
     v2 (September 2026): komponen & bobot IDENTIK dengan buy_score_components (jalur
     vektor) supaya live dan backtest tidak pernah berbeda — lihat tabel bukti di
     BUY_SCORE_WEIGHTS. Bonus yang HANYA ada di jalur live: pola Launch Pad (+10, sudah
-    diuji di research/combo_study.py Bagian H: alpha20 +6,05%, absolut +5,06%, holdout
-    dua paruh positif), Drop Base Rally (0 poin — polanya dihitung tapi diuji TIDAK
-    punya daya prediksi), dan bandarmology ACC (+15, belum bisa diuji: riwayat broker
-    cuma 80 hari).
+    diuji di research/combo_study.py Bagian H: uji 10 tahun alpha20 +5,49%, blok t=+2,00,
+    kedua paruh holdout positif; alfa per kejadiannya terbesar di aplikasi tetapi
+    dukungan statistiknya paling tipis — 356 kejadian hanya mewakili ~173 hari keputusan
+    independen), Drop Base Rally (0 poin — polanya dihitung tapi diuji TIDAK punya daya
+    prediksi), dan bandarmology ACC (+15, belum bisa diuji: riwayat broker cuma 80 hari).
 
     BEDA dari sinyal (BUY/SELL/HOLD): skor menilai KUALITAS SETUP saham, sinyal
     menilai momentum saat ini — skor tinggi + sinyal SELL = saham kuat sedang koreksi.
@@ -6172,11 +6179,15 @@ def cron_launchpad(request: Request, secret: str = Query(""),
                        "untuk hanya melaporkan kelas yang menjadi dasar bukti pola ini."))):
     """Cron: pindai pola THE LAUNCH PAD (buku Bab 6.2) dan kirim kandidatnya ke Telegram.
 
-    Alasan pola ini dipindai otomatis, bukan sekadar jadi komponen skor: buktinya
-    paling kuat di aplikasi (alpha20 +6,05%, blok t=+2,52, absolut +5,06%, holdout
-    dua paruh positif) SEKALIGUS paling jarang (~1,2 kejadian/hari se-pasar). Karena
-    syaratnya (base menyempit + breakout + volume) hanya benar di SATU titik waktu,
-    melewatkan sehari berarti sinyalnya hilang — bukan tertunda.
+    Alasan pola ini dipindai otomatis, bukan sekadar jadi komponen skor: alfa PER
+    KEJADIAN-nya paling besar di aplikasi (uji 10 tahun: alpha20 +5,49%, blok t=+2,00,
+    n=356, kedua paruh holdout positif) SEKALIGUS paling jarang (~1,2 kejadian/hari
+    se-pasar). Karena syaratnya (base menyempit + breakout + volume) hanya benar di SATU
+    titik waktu, melewatkan sehari berarti sinyalnya hilang — bukan tertunda.
+    KEJUJURAN SAMPEL yang harus dibaca sebelum mempercayainya: 356 kejadian itu hanya
+    mewakili ~173 hari keputusan independen (122 di antaranya rezim bull), dan hasil
+    PORTOFOLIONYA tidak stabil — dengan sinyal & periode sama, menggeser titik-awal
+    window memberi rentang -26% sampai +1.490%. Jadi ini pemicu riset, bukan target.
 
     Dedupe sekali per hari supaya tidak mengirim berulang bila dijalankan berkali-kali.
     Cakupan buktinya kelas SANGAT LIKUID (nilai >= Rp10 M/hari). Konsekuensinya penting:
@@ -6193,6 +6204,8 @@ def cron_launchpad(request: Request, secret: str = Query(""),
     +5,06% -> +7,57%, dan kedua paruh holdout menguat (+11,39%/+4,88% vs +9,79%/+3,03%).
     Kejujuran sampelnya: 182 -> 146 kejadian, sehingga perbedaannya TIDAK bisa
     disebut nyata secara statistik; arahnya konsisten di semua metrik, jadi dipakai.
+    (Angka itu dari jendela 5 tahun. Penyaring tiket ini BELUM diuji ulang di jendela
+    10 tahun — jangan menganggapnya sudah tervalidasi lintas jendela.)
     """
     auth = request.headers.get("authorization", "")
     bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
@@ -6263,8 +6276,8 @@ def cron_launchpad(request: Request, secret: str = Query(""),
                     f"Rezim IHSG: {trend} ({(rg or {}).get('close')} vs MA200 "
                     f"{(rg or {}).get('ma200')}). "
                     f"Pindai {scan['scanned']} saham ({universe}). "
-                    f"Uji 5 tahun: alpha20 +6,05% (blok t=+2,52), absolut +5,06% "
-                    f"(rata-rata saham likuid -0,37%).{caveat}{regime_note}\n")
+                    f"Uji 10 tahun: alpha20 +5,49% (blok t=+2,00) dari ~173 hari \u200b"
+                    f"keputusan independen.{caveat}{regime_note}\n")
             lines: List[str] = []
             for i, r in enumerate(hits, 1):
                 li = r.get("launchpad_info") or {}
@@ -6374,10 +6387,11 @@ def backtest(
     (avg R tertinggi dengan trade yang dituntaskan SL/TP).
     Kriteria 'bandar' tidak dapat diuji: Broker Summary hanya snapshot hari ini.
     Kriteria 'launchpad' = pola buku Bab 6.2 (base menyempit lalu breakout dengan
-    volume). Bukti 5 tahun universe SANGAT LIKUID (research/combo_study.py Bagian H):
-    alpha20 +6,05% (blok t=+2,52), absolut +5,06%, holdout dua paruh positif. Sinyalnya
-    jarang (~1,2/hari se-pasar), jadi backtest bisa menghasilkan trade=0 pada sampel
-    kecil — itu wajar, bukan tanda rusak. Karena sinyalnya sudah memuat breakout +
+    volume). Bukti 10 tahun universe SANGAT LIKUID (research/combo_study.py Bagian H):
+    alpha20 +5,49% (blok t=+2,00), holdout dua paruh positif. Alfa per kejadiannya
+    terbesar di aplikasi tetapi dukungan statistiknya paling tipis (~173 hari keputusan
+    independen). Sinyalnya jarang (~1,2/hari se-pasar), jadi backtest bisa menghasilkan
+    trade=0 pada sampel kecil — itu wajar, bukan tanda rusak. Karena sinyalnya sudah memuat breakout +
     volume, gerbang confirm/bb_confirm/div_vol/weekly sebaiknya dimatikan dulu kalau
     ingin melihat polanya apa adanya.
     Kriteria 'reversal' = role reversal S&R buku Bab 1.4 (resistance ditembus lalu
@@ -6627,13 +6641,15 @@ def screener(
     bekerja saat IHSG bearish — justru itulah periode uji holdout-nya.
     Kriteria "launchpad" mencari THE LAUNCH PAD, pola andalan buku (Bab 6.2): uptrend
     lebih dulu, rentang harga menyempit progresif, lalu breakout base dengan volume
-    >= 1,5x VolumeMA20. Ini pola dengan bukti TERKUAT di aplikasi — uji 5 tahun
-    universe SANGAT LIKUID (research/combo_study.py Bagian H, 897 emiten, 833.423
-    saham-hari): alpha20 +6,05% (blok t=+2,52), ABSOLUT +5,06% (baseline SANGAT
-    LIKUID -0,37%), dan lolos holdout DUA paruh waktu (+9,79% t=+2,2 dan +3,03%
-    t=+1,0). Polanya jarang (~1,2 kejadian/hari se-pasar), jadi memang untuk diburu.
+    >= 1,5x VolumeMA20. Alfa PER KEJADIAN-nya paling besar di aplikasi — uji 10 tahun
+    universe SANGAT LIKUID (research/combo_study.py Bagian H, 576 saham, 238.253
+    saham-hari): alpha20 +5,49% (blok t=+2,00), kedua paruh holdout positif (+3,30%
+    t=+2,6 dan +2,17% t=+1,8). Tetapi dukungan statistiknya PALING TIPIS: 356 kejadian
+    hanya mewakili ~173 hari keputusan independen (122 rezim bull), dan hasil
+    portofolionya sangat bergantung titik-awal window. Pakai sebagai pemicu riset, bukan
+    target imbal hasil. Polanya jarang (~1,2 kejadian/hari se-pasar).
     Versi buku yang lebih ketat (naik >= 20% dulu + base tidak menembus high/low
-    sebelumnya) hanya memunculkan 44 kejadian dengan blok t=+0,69, jadi TIDAK dipakai.
+    sebelumnya) hanya memunculkan 81 kejadian dengan blok t=+1,20, jadi TIDAK dipakai.
     DROP BASE RALLY sengaja tidak digabung: uji yang sama tidak menemukan daya
     prediksinya (abs20 -0,86%, paruh awal holdout negatif), dan bobot polanya di skor
     beli sudah diturunkan ke 0.
@@ -6641,10 +6657,13 @@ def screener(
     paling kuat"): resistance yang sudah ditembus berubah peran jadi support saat
     harga menguji level itu dari atas. Resistance = HIGH tertinggi 60 bar sebelumnya;
     retest = 2-20 bar setelah breakout, selama harga belum pernah close >3% di bawah
-    level (kalau tembus, peran baliknya gagal). Uji 5 tahun universe SANGAT LIKUID
-    (897 emiten, 833.423 saham-hari): alpha20 +1,16% (blok t=+5,96), absolut abs20
-    +0,68% (baseline -0,37%), holdout DUA paruh positif, dan positif di SEMUA tahun
-    (2022 +0,7 · 2023 +1,8 · 2024 +0,6 · 2025 +0,7 · 2026 +3,1). Dua hal yang penting
+    level (kalau tembus, peran baliknya gagal). Uji 10 tahun universe SANGAT LIKUID
+    (576 saham, 238.253 saham-hari): alpha20 +1,64% (blok t=+9,10). Perlu dibaca dengan
+    hati-hati: 13.147 kejadian itu hanya mewakili ~49 hari keputusan independen (sinyal
+    muncul di ~93% hari bursa), jadi blok t besar berasal dari lebar cross-section, bukan
+    dari banyak bukti terpisah. Di horizon 5 hari alphanya hanya +0,19%, dan hasil
+    PORTOFOLIO-nya berbalik tanda antar jendela (-44,6% di 5 tahun, +87,5% di 10 tahun) —
+    karena itu ini PENYARING KANDIDAT, bukan sistem otomatis. Dua hal yang penting
     dan mudah salah: (1) pembanding "pullback ke SMA20" GAGAL holdout (-0,50% di
     paruh akhir), jadi ini bukan pengganti biasa dari "dekat support"; (2) menambah
     syarat volume >= 1,5x justru MERUSAK (alpha5 -0,74%) — retest yang sehat itu sepi.
@@ -6652,12 +6671,11 @@ def screener(
     60 hari, jadi kekuatan sahamnya sudah jadi bagian dari kriteria.
     Kriteria "volsr" mencari S&R BERBASIS VOLUME (buku Bab 11): support diambil dari
     LOW candle dengan volume TERBESAR (kuantil-90 dari 250 bar), lalu dicari harga yang
-    menguji ulang level itu dalam tren naik. Uji 5 tahun universe SANGAT LIKUID
-    (research/combo_study.py Bagian L): alpha20 +0,90% (blok t=+3,93), absolut abs20
-    +1,00% (baseline -0,37%), holdout DUA paruh positif.
+    menguji ulang level itu dalam tren naik. Uji 10 tahun universe SANGAT LIKUID
+    (research/combo_study.py Bagian L): alpha20 +0,70% (blok t=+7,64).
     Kontrol yang membuat ini masuk akal: geometri sama persis tapi levelnya diambil dari
-    candle bervolume TERKECIL hanya memberi +0,27% dan GAGAL holdout di paruh akhir
-    (-0,78%) — jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga
+    candle bervolume TERKECIL justru NEGATIF (-0,10%, blok t=-0,37) dan gagal holdout di
+    KEDUA paruh — jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga
     menyentuh harga lama". Pembanding support biasa (pullback SMA20) +0,47% dan juga
     gagal holdout; breakout 20 hari masih lebih kuat (+1,96%).
     Sisi RESISTANCE dari Bab 11 (tembus high candle volume besar) sengaja tidak

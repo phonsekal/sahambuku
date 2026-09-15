@@ -451,6 +451,44 @@ BAGIAN N — POLA SEBAGAI SISTEM, DIBATASI REZIM IHSG (MA200): dugaan lama "port
      tetapi tanda role reversal dan S&R volume BERBALIK dari negatif ke positif hanya
      karena jendelanya diperpanjang.
 
+BAGIAN O — BERAPA BANYAK KEPUTUSAN INDEPENDEN YANG SEBENARNYA TERSEDIA?
+  Menjawab "kenapa angkanya bergoyang": bukan bug, melainkan ukuran sampel. Sinyal
+  yang berdempetan menumpang pergerakan pasar yang sama, jadi "jumlah kejadian" bukan
+  ukuran bukti. Yang dihitung: tanggal sinyal yang berjarak >= hold (5 hari).
+
+    pola            kejadian  tgl sinyal  tgl INDEP  kepadatan  bull indep  per blok
+    Launch Pad         356        303        173        1,2        122        0,38x
+    Role reversal   13.147       2139         49        6,1         41        0,11x
+    S&R volume      26.244       2245         38       11,7         39        0,08x
+    (458 blok rebalance tersedia; jendela 10 tahun)
+
+  HASIL YANG MEMBALIK INTUISI: pola dengan kejadian TERBANYAK justru punya sampel
+  independen TERSEDIKIT. Role reversal dan S&R volume muncul di ~93-98% hari bursa,
+  jadi puluhan ribu "kejadian" itu hanya mewakili ~38-49 hari keputusan. Karena itu
+  blok t besar mereka (+9,10 dan +7,64) berasal dari lebar cross-section, BUKAN dari
+  13-26 ribu bukti terpisah. Launch Pad sebaliknya: kejadiannya paling sedikit (356)
+  tetapi tersebar, sehingga memberi ~173 hari keputusan (122 bull) — sampel independen
+  TERBANYAK di antara ketiganya.
+
+BAGIAN P — APAKAH ALPHA PER-KEJADIAN BERTAHAN DI JENDELA 10 TAHUN? YA (dan ini yang
+  paling penting dari seluruh rangkaian uji ketahanan). Bagian H/I/L diulang dengan
+  --years 10 (1.419.373 saham-hari, 906 emiten, 2292 tanggal) lalu dibandingkan:
+
+    sinyal                       alpha20    blok t    n        (5 tahun: alpha20/blok t)
+    Launch Pad (produksi)         +5,49%    +2,00    356      (+6,05% / +2,52)
+    role reversal (retest)        +1,64%    +9,10  13.147      (+1,16% / +5,96)
+    S&R volume besar - retest     +0,70%    +7,64  26.244      (+0,90% / +3,93)
+    (kontrol) volume KECIL retest -0,10%    -0,37  13.490      (+0,27%, gagal holdout)
+    Drop Base Rally (produksi)    -0,42%    -0,42    673      (+0,97% / +0,64)
+
+  Jadi: alpha per-kejadian NAIK kualitasnya untuk role reversal dan S&R volume
+  (blok t +5,96 -> +9,10 dan +3,93 -> +7,64) dan kontrol volume kecil berubah menjadi
+  NEGATIF sehingga kontrasnya makin tajam. Untuk Launch Pad, blok t MELEMAH
+  (+2,52 -> +2,00) walau per-kejadiannya tetap besar. Drop Base Rally tetap tanpa bukti.
+  Konsekuensi: yang layak dipercaya adalah alpha per-kejadian dengan blok t-stat,
+  BUKAN angka portofolio. Tapi tetap kalikan dengan Bagian O: blok t besar pada sinyal
+  yang muncul tiap hari tidak sama artinya dengan blok t besar pada sinyal langka.
+
   KESIMPULAN YANG JUJUR: hasil portofolio pola-pola ini didominasi variasi sampel.
   Yang bisa dipercaya hanya DUA hal: (a) arah "bull lebih baik daripada bear" konsisten
   di semua fase pada jendela 10 tahun, dan (b) alpha per-kejadian dengan blok t-stat
@@ -2123,12 +2161,98 @@ def part_regime(years: int, workers: int, export: str = "", phases: int = 5) -> 
         print(f"  Rezim ditambahkan ke {export}")
 
 
+def count_independent_dates(dates, gap_days: int) -> int:
+    """Hitung titik keputusan yang benar-benar INDEPENDEN dari daftar tanggal sinyal.
+
+    Dua sinyal yang berjarak 1-2 hari bukan dua keputusan terpisah: keduanya menumpang
+    pergerakan pasar yang sama. Yang layak disebut keputusan berbeda adalah tanggal
+    yang berjarak minimal `gap_days` dari tanggal sinyal sebelumnya.
+    """
+    ds = sorted({pd.Timestamp(d) for d in dates})
+    if not ds:
+        return 0
+    n = 1
+    for a, b in zip(ds, ds[1:]):
+        if (b - a).days >= gap_days:
+            n += 1
+    return n
+
+
+def part_sample(years: int, workers: int, export: str = "", hold: int = 5) -> None:
+    """Bagian O: berapa banyak KEPUTUSAN INDEPENDEN yang sebenarnya tersedia?
+
+    Pertanyaan ini muncul karena uji fase (Bagian N) menunjukkan angka portofolio
+    bergoyang hebat. Penyebabnya bukan bug, melainkan ukuran sampel: sinyal pola ini
+    datang bergelombang (banyak saham breakout di hari yang sama), sehingga "jumlah
+    kejadian" berapa pun tetap hanya sesedikit itu hari keputusan.
+
+    Yang dilaporkan di sini adalah batas atas kejujuran: berapa hari sinyal yang
+    benar-benar terpisah (>= hold), karena hari-hari yang berdempetan tidak menambah
+    informasi independen.
+    """
+    print("== BAGIAN O: berapa banyak KEPUTUSAN INDEPENDEN yang tersedia? ==")
+    ih, Rl, bull = build_pattern_frame(years, workers)
+    dates_all = sorted(Rl["date"].unique())
+    n_dates = len(dates_all)
+    max_blocks = n_dates // max(hold, 1)
+    print(f"  {len(Rl):,} saham-hari | {n_dates} tanggal | "
+          f"blok non-overlap hold-{hold}: {max_blocks}")
+    print(f"  rezim bull: {int(Rl.loc[bull, 'date'].nunique())} tanggal · "
+          f"bear: {int(Rl.loc[~bull, 'date'].nunique())} tanggal\n")
+
+    print(f"  {'pola':<15}{'kejadian':>9}{'tgl sinyal':>11}{'tgl indep':>10}"
+          f"{'kepadatan':>10}{'bull indep':>11}{'per blok':>9}")
+    out: List[dict] = []
+    for lab, mask in (("Launch Pad", Rl["lp_prod"].fillna(False)),
+                      ("Role reversal", Rl["role_reversal"].fillna(False)),
+                      ("S&R volume", Rl["vsr_support"].fillna(False))):
+        sub = Rl.loc[mask, ["tk", "date"]]
+        events = int(len(sub))
+        sig_dates = sub["date"].unique()
+        n_sig = int(len(sig_dates))
+        indep = count_independent_dates(sig_dates, hold)
+        indep_bull = count_independent_dates(sub.loc[sub["date"].isin(
+            Rl.loc[bull, "date"].unique()), "date"].unique(), hold)
+        density = events / n_sig if n_sig else 0.0
+        print(f"  {lab:<15}{events:>9,}{n_sig:>11}{indep:>10}"
+              f"{density:>10.1f}{indep_bull:>11}{indep / max_blocks:>8.2f}x")
+        out.append({"pattern": lab, "events": events, "signal_dates": n_sig,
+                    "independent_dates": indep, "independent_dates_bull": indep_bull,
+                    "events_per_signal_date": round(density, 2),
+                    "blocks_available": max_blocks,
+                    "indep_per_block": round(indep / max_blocks, 2) if max_blocks else None})
+
+    print("\n  Cara membaca: 'tgl sinyal' bisa ratusan, tetapi 'tgl indep' (jarak >= "
+          f"{hold} hari) yang menentukan berapa kali strategi ini benar-benar diuji. "
+          "'kepadatan' = berapa saham sinyal per hari sinyal; makin besar, makin "
+          "bergelombang, dan makin sedikit informasi independen per kejadian. "
+          "'per blok' > 1 berarti sinyal tersedia lebih sering daripada slot rebalance.")
+    if export:
+        try:
+            with open(export, "r", encoding="utf-8") as fh:
+                doc = json.load(fh)
+        except Exception:
+            doc = {"meta": {}, "patterns": []}
+        doc["effective_sample"] = {
+            "note": ("Keputusan independen = tanggal sinyal yang berjarak minimal `hold` "
+                     "hari. Kejadian yang berdempetan menumpang pergerakan pasar yang "
+                     "sama, jadi tidak menambah informasi independen."),
+            "hold": hold,
+            "dates_total": n_dates,
+            "blocks_available": max_blocks,
+            "patterns": out,
+        }
+        with open(export, "w", encoding="utf-8") as fh:
+            json.dump(doc, fh, indent=2)
+        print(f"  Sampel efektif ditambahkan ke {export}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description="Uji kombinasi filter tiket x akumulator diam-diam")
     ap.add_argument("--part", default="ticket",
                     choices=["ticket", "silent", "swing", "bands", "calib", "audit",
                              "special", "reversal", "lpweight", "brokercombo",
-                             "volsr", "combopattern", "regime"])
+                             "volsr", "combopattern", "regime", "sample"])
     ap.add_argument("--years", type=int, default=5)
     ap.add_argument("--workers", type=int, default=8)
     ap.add_argument("--top", type=int, default=10)
@@ -2168,6 +2292,8 @@ def main() -> None:
                             phases=args.phases)
     elif args.part == "regime":
         part_regime(args.years, args.workers, export=args.export, phases=args.phases)
+    elif args.part == "sample":
+        part_sample(args.years, args.workers, export=args.export)
     else:
         part_silent(args.years, args.workers, args.top, args.universe, args.win,
                     args.codes, args.recent_days)
