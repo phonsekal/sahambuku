@@ -2062,6 +2062,46 @@ def spread_pick(tickers: List[str], limit: int) -> List[str]:
     return [tickers[min(n - 1, (i * n) // limit)] for i in range(limit)]
 
 
+def spread_page(tickers: List[str], limit: int, offset: int) -> tuple:
+    """(window, next_offset, page, pages) — satu HALAMAN sampel tersebar merata.
+
+    Kenapa ada: sebelumnya `spread=True` (default untuk universe=all) selalu
+    mengembalikan SATU sampel dan `next_offset=None`, sehingga pemakaian
+    "Semua (951 saham)" tidak pernah bisa lanjut ke halaman berikutnya — hasilnya
+    mentok di sebesar limit. Sekarang pemindaian bisa dituntaskan halaman demi
+    halaman, dan gabungan semua halaman = SELURUH daftar emiten TEPAT SEKALI
+    (tidak ada yang terlewat, tidak ada yang dipindai dua kali).
+
+    Bentuk halamannya:
+      - halaman 0  = spread_pick() — sampel representatif se-pasar (perilaku lama,
+                     tidak berubah, jadi tampilan pertama pemakai tetap sama);
+      - halaman 1+ = sisa daftar dibagi jadi beberapa kelompok BERJARAK SERAGAM,
+                     jadi tiap halaman tetap mewakili seluruh abjad (bukan
+                     menumpuk di A-B seperti paginasi berurutan biasa).
+
+    offset adalah penghitung halaman (kelipatan limit): 0, limit, 2*limit, ...
+    """
+    n = len(tickers)
+    if n == 0 or limit <= 0:
+        return [], None, 1, 1
+    if limit >= n:
+        return list(tickers), None, 1, 1
+    first = spread_pick(tickers, limit)
+    if offset <= 0:
+        return first, limit, 1, 1 + math.ceil((n - len(first)) / limit)
+    taken = set(first)
+    rest = [t for t in tickers if t not in taken]
+    if not rest:
+        return [], None, 1, 1
+    pages = max(1, math.ceil(len(rest) / limit))
+    k = (offset // limit) - 1          # halaman 1 -> k=0
+    if k < 0 or k >= pages:
+        return [], None, offset // limit, 1 + pages
+    window = rest[k::pages]
+    nxt = offset + limit if (k + 1) < pages else None
+    return window, nxt, k + 2, 1 + pages
+
+
 def _download_github_csv(ticker: str, max_rows: Optional[int] = 500) -> Optional[pd.DataFrame]:
     """Fallback data historis IDX dari dataset publik GitHub (2019-2025).
 
@@ -6686,7 +6726,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 def screener(
     criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|bandar|buy|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(20, ge=1, le=300),
     offset: int = Query(0, ge=0),
     spread: Optional[bool] = Query(None, description=(
         "Saat limit < jumlah emiten, ambil sampel yang TERSEBAR MERATA di seluruh "
@@ -6802,8 +6842,13 @@ def screener(
     bandarmology, BUKAN sinyal beli (uji 77 hari: tidak ada daya prediksi). Kuota
     per pemindaian tinggi (1 permintaan per saham), jadi pakai limit kecil atau
     spread=true.
-    Gunakan offset/limit berulang-ulang untuk memindai SELURUH kode saham
-    (total_tickers & next_offset disediakan untuk paginasi).
+    PAGINASI: pakai offset/limit berulang-ulang untuk memindai SELURUH kode saham.
+    Respons menyertakan total_tickers, next_offset, page, dan pages — teruskan
+    next_offset sampai nilainya null untuk menuntaskan seluruh pasar.
+    Ini berlaku untuk KEDUA mode: spread=true (default universe=all) sekarang juga
+    berhalaman, dan gabungan seluruh halaman dijamin menutup semua emiten tepat
+    sekali. Sebelumnya spread=true selalu mengembalikan satu sampel dengan
+    next_offset=null, sehingga pemindaian "semua saham" mentok di sebesar limit.
     """
     if require_regime is None:
         require_regime = criteria in ("swing", "buy", "koreksi")
@@ -6816,10 +6861,18 @@ def screener(
     # dengan limit=100 sebenarnya hanya memeriksa A-B: hasil BANDAR universe=all
     # isinya cuma AHAP, AIMS, AKSI, ... BMSR. spread=false mengembalikan perilaku
     # lama (offset/limit berurutan) untuk pemindaian sistematis penuh.
+    # spread=True kini juga BERPAGINASI (spread_page) sehingga seluruh pasar bisa
+    # dituntaskan halaman demi halaman tanpa kehilangan sifat "tersebar merata".
+    page = pages = 1
+    next_offset = None
     if spread and 0 < limit < len(all_tickers):
-        window = spread_pick(all_tickers, limit)
+        window, next_offset, page, pages = spread_page(all_tickers, limit, offset)
     else:
         window = all_tickers[offset:offset + limit]
+        if 0 < limit < len(all_tickers):
+            pages = max(1, math.ceil(len(all_tickers) / limit))
+            page = min(pages, offset // limit + 1)
+            next_offset = (offset + limit) if offset + limit < len(all_tickers) else None
     if not window:
         raise HTTPException(404, "Offset melebihi jumlah ticker.")
 
@@ -6857,8 +6910,13 @@ def screener(
         "market_regime": scan.get("market_regime"),
         "regime_blocked": scan.get("regime_blocked"),
         "total_tickers": len(all_tickers),
-        "next_offset": (None if spread else
-                        (offset + limit if offset + limit < len(all_tickers) else None)),
+        "next_offset": next_offset,
+        # Info cakupan paginasi supaya pemakai tahu ia sedang di halaman berapa dari
+        # berapa — sebelumnya tidak ada cara mengetahui apakah pemindaian sudah tuntas.
+        "page": page,
+        "pages": pages,
+        "offset": offset,
+        "limit": limit,
         "results": scan["results"],
         "bandarmology_note": _screener_bandar_note(),
         "disclaimer": DISCLAIMER,

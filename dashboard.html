@@ -106,11 +106,13 @@
         <option value="koreksi">🛒 Beli Koreksi (Kualitas Kuat + SELL)</option>
         <option value="silent">🕵️ Akumulasi Diam-diam (1 broker konsisten beli)</option>
       </select>
-      <select id="scLimit" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
-        <option value="5">5 saham</option>
-        <option value="10" selected>10 saham</option>
-        <option value="20">20 saham</option>
-        <option value="50">50 saham</option>
+      <select id="scLimit" title="Jumlah saham per halaman. Hasil scan bisa DILANJUT ke halaman berikutnya, dan seluruh pasar bisa dituntaskan halaman demi halaman." class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+        <option value="5">5 saham/halaman</option>
+        <option value="10" selected>10 saham/halaman</option>
+        <option value="20">20 saham/halaman</option>
+        <option value="50">50 saham/halaman</option>
+        <option value="100">100 saham/halaman</option>
+        <option value="300">300 saham/halaman</option>
       </select>
       <label class="flex items-center gap-2 text-xs text-slate-400" title="Hanya tampilkan saham yang lolos konfirmasi ala buku: harga > SMA20, RSI < 70, volume > VolumeMA20">
         <input type="checkbox" id="scConfirm" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> Konfirmasi buku
@@ -1367,6 +1369,10 @@ async function scan() {
   $("#screenerResult").innerHTML = "";
   try {
     await loadKoreksiWatch();
+    // Scan baru = mulai dari halaman 1; buang hasil gabungan pemindaian sebelumnya
+    // supaya tidak tercampur dengan kriteria/universe yang berbeda.
+    scanAccum = null;
+    scanWalk = false;
     renderScan(await getJSON(`/api/screener?${q}`));
   } catch (e) {
     $("#screenerResult").innerHTML = errorBox(e.message);
@@ -1425,15 +1431,31 @@ function renderScan(d) {
       + `</div><div class="mt-1 text-slate-500">Tiap kelas dibuang menurut ambangnya sendiri; `
       + `kelas KURANG LIKUID tidak disentuh. Ini penyaring kebersihan, bukan sinyal beli.</div></div>`
     : "";
+  // Info paginasi: halaman berapa dari berapa, dan tombol untuk menuntaskan sisanya.
+  // Tanpa ini, "Semua (951 saham)" terasa mentok — dulu memang tidak bisa dilanjut.
+  const totalPages = Number(d.pages || 1);
+  const pageNow = Number(d.page || 1);
+  const pageInfo = totalPages > 1
+    ? ` · <span class="text-slate-400" title="Gabungan SEMUA halaman menutup seluruh emiten tepat sekali — tidak ada yang terlewat atau dipindai dua kali">halaman <b class="text-slate-200">${pageNow}</b>/<b class="text-slate-200">${totalPages}</b></span>`
+    : "";
+  const accInfo = d.accumulated
+    ? ` · <span class="text-emerald-300" title="Hasil dari halaman-halaman yang sudah dipindai, digabung">hasil gabungan <b>${(d.results || []).length}</b> saham</span>`
+    : "";
+  const walkBtns = d.next_offset
+    ? ` · <button onclick="scanMore(${d.next_offset}, false)" class="text-sky-400 hover:underline font-semibold">Lanjut halaman ${pageNow + 1} →</button>`
+      + (totalPages > 2
+        ? ` · <button onclick="scanAll()" class="text-emerald-400 hover:underline font-semibold" title="Pindai halaman demi halaman sampai seluruh emiten tuntas, lalu gabungkan hasilnya">⏭ Tuntaskan semua ${totalPages} halaman</button>`
+        : "")
+    : (totalPages > 1 ? ` · <span class="text-emerald-400">✓ seluruh ${d.total_tickers} emiten sudah dipindai sampai halaman terakhir</span>` : "");
   $("#scanInfo").innerHTML =
     `<div class="flex flex-wrap items-center">${regimeBadge}<span>Dipindai <b class="text-slate-200">${d.scanned}</b> saham · dilewati <b class="text-slate-200">${d.skipped}</b> · bandarmology dicek <b class="text-slate-200">${d.bandarmology_checked}</b> · total universe <b class="text-slate-200">${d.total_tickers}</b></span>` +
-    (d.spread ? ` · <span class="text-sky-400" title="Sampel tersebar MERATA di seluruh daftar emiten, bukan 100 emiten pertama secara alfabet">sampel tersebar</span>` : "") +
-    (d.next_offset ? ` · <button onclick="scanMore(${d.next_offset})" class="text-sky-400 hover:underline font-semibold">Lanjut offset ${d.next_offset} →</button>` : "") +
+    (d.spread ? ` · <span class="text-sky-400" title="Sampel tersebar MERATA di seluruh daftar emiten, bukan hanya emiten pertama secara alfabet">sampel tersebar</span>` : "") +
+    pageInfo + accInfo + walkBtns +
     (d.ticket_filtered ? ` · <span class="text-amber-300" title="Penyaring ukuran tiket: saham dengan tiket terendah (kuintil 20%) di kelas likuiditasnya dibuang">🎫 tiket kecil dibuang <b>${d.ticket_filtered}</b></span>` : "") +
     `</div>${ticketPanel}${blockedBanner}${rsBypassNote}<div class="mt-1.5 text-slate-500">${esc(d.bandarmology_note)}</div>`;
 
   if (!d.results.length) {
-    $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : "Tidak ada saham yang lolos kriteria pada halaman ini."}</div>`;
+    $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : (d.accumulated ? "Belum ada saham yang lolos kriteria di halaman-halaman yang sudah dipindai." : "Tidak ada saham yang lolos kriteria pada halaman ini.")}</div>`;
     return;
   }
   const isKoreksi = d.criteria === "koreksi";
@@ -1730,14 +1752,82 @@ function applyMatrixConfig(key, silent) {
   if (!silent) toast("Konfigurasi filter diterapkan ke form Uji Win Rate — klik 📊 Uji Win Rate untuk menjalankan.", "info");
 }
 
-async function scanMore(offset) {
+// Hasil gabungan saat memindai bertahap (scanAll). Reset tiap Scan baru.
+let scanAccum = null;
+let scanWalk = false;
+function stopScanWalk() { scanWalk = false; }
+
+async function scanMore(offset, accumulate) {
   const q = scParamQuery(offset);
-  $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
+  if (!accumulate) {
+    $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
+  }
   try {
-    renderScan(await getJSON(`/api/screener?${q}`));
+    const d = await getJSON(`/api/screener?${q}`);
+    if (accumulate && scanAccum) {
+      // Gabungkan dengan halaman sebelumnya supaya pemakaian bisa melihat SELURUH
+      // hasil pemindaian, bukan hanya halaman terakhir yang kebetulan dibuka.
+      scanAccum.results = (scanAccum.results || []).concat(d.results || []);
+      scanAccum.scanned = (scanAccum.scanned || 0) + (d.scanned || 0);
+      scanAccum.skipped = (scanAccum.skipped || 0) + (d.skipped || 0);
+      scanAccum.bandarmology_checked = (scanAccum.bandarmology_checked || 0) + (d.bandarmology_checked || 0);
+      scanAccum.ticket_filtered = (scanAccum.ticket_filtered || 0) + (d.ticket_filtered || 0);
+      // Panel dampak penyaring tiket dijumlahkan antar halaman, supaya angkanya
+      // mewakili seluruh pemindaian dan bukan hanya halaman terakhir.
+      const tbg = {}, tbgOld = scanAccum.ticket_by_grade || {}, tbgNew = d.ticket_by_grade || {};
+      new Set([...Object.keys(tbgOld), ...Object.keys(tbgNew)]).forEach(g => {
+        const a = tbgOld[g] || {}, b = tbgNew[g] || {};
+        tbg[g] = { kandidat: (a.kandidat || 0) + (b.kandidat || 0),
+                   dibuang: (a.dibuang || 0) + (b.dibuang || 0),
+                   sisa: (a.sisa || 0) + (b.sisa || 0) };
+      });
+      scanAccum.ticket_by_grade = tbg;
+      scanAccum.next_offset = d.next_offset;
+      scanAccum.page = d.page;
+      scanAccum.pages = d.pages;
+      scanAccum.accumulated = true;
+      renderScan(scanAccum);
+    } else {
+      renderScan(d);
+    }
   } catch (e) {
     $("#screenerResult").innerHTML = errorBox(e.message);
     $("#scanInfo").innerHTML = "";
+    throw e;
+  }
+}
+
+// Tuntaskan seluruh pasar: teruskan halaman sampai next_offset habis, sambil
+// menampilkan kemajuan. Bisa dihentikan kapan saja lewat tombol ⏹ Hentikan.
+async function scanAll() {
+  if (!lastScanData || !lastScanData.next_offset) {
+    toast("Klik Scan dulu, lalu tuntaskan halaman berikutnya.", "info");
+    return;
+  }
+  const btn = $("#btnScan");
+  scanAccum = lastScanData;
+  scanWalk = true;
+  btn.disabled = true;
+  const maxPages = Math.max(1, Number(scanAccum.pages || 1));
+  let done = 0;
+  try {
+    while (scanWalk && scanAccum.next_offset && done < maxPages + 5) {
+      done += 1;
+      $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-emerald-400 rounded-full animate-spin align-middle mr-2"></span>`
+        + `Memindai bertahap — halaman <b class="text-slate-200">${Number(scanAccum.page || 1) + 1}</b>/${maxPages}`
+        + ` (terkumpul <b class="text-slate-200">${(scanAccum.results || []).length}</b> saham)`
+        + ` <button onclick="stopScanWalk()" class="text-rose-400 hover:underline font-semibold ml-2">⏹ Hentikan</button>`;
+      await scanMore(scanAccum.next_offset, true);
+    }
+    const tuntas = !scanAccum.next_offset;
+    toast(tuntas
+      ? `Selesai — seluruh ${scanAccum.total_tickers} emiten sudah dipindai (${(scanAccum.results || []).length} hasil terkumpul).`
+      : `Pemindaian bertahap dihentikan di halaman ${scanAccum.page}/${maxPages}.`, tuntas ? "success" : "info");
+  } catch (e) {
+    toast(`Pemindaian bertahap berhenti: ${e.message}`, "sl");
+  } finally {
+    scanWalk = false;
+    btn.disabled = false; btn.textContent = "Scan";
   }
 }
 
