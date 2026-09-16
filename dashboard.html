@@ -1375,6 +1375,30 @@ function scCriteriaChanged() {
 // permintaannya dialihkan, supaya pemakai tahu apa yang sebenarnya dinilai.
 const PRECLOSE_CRITERIA = ["momentum", "momentumkuat", "breakout", "launchpad", "volsr"];
 
+// Mode pemindaian TERAKHIR: "normal" (/api/screener) atau "preclose"
+// (/api/screener/preclose). Dipakai scanMore()/scanAll() supaya tombol "Lanjut" tetap
+// memanggil ENDPOINT yang sama dengan pemindaian awalnya. Sebelumnya tombol lanjut
+// selalu memanggil /api/screener, sehingga halaman lanjutan diam-diam berpindah mode
+// (harga tutup, bukan harga berjalan) — dan pada pra-tutup tombol itu tidak pernah ada
+// karena endpoint-nya belum menerima offset sama sekali.
+let scanMode = "normal";
+// Setelan pra-tutup yang dipakai pemindaian terakhir, supaya halaman lanjutan memakai
+// kriteria/universe/limit yang SAMA (bukan membaca ulang form yang mungkin sudah diubah).
+let precloseParams = null;
+
+function precloseParamQuery(offset) {
+  const p = precloseParams || {};
+  const q = new URLSearchParams({
+    universe: p.universe || $("#scUniverse").value,
+    criteria: p.criteria || "momentumkuat",
+    limit: String(p.limit || 250),
+    mom_min_pct: String(p.mom_min_pct != null ? p.mom_min_pct : 8) });
+  if (p.min_value != null) q.set("min_value", String(p.min_value));
+  if (p.spread != null) q.set("spread", String(p.spread));
+  if (offset) q.set("offset", offset);
+  return q;
+}
+
 async function scanPreclose() {
   const btn = $("#btnPreclose");
   const picked = $("#scCriteria").value;
@@ -1382,9 +1406,13 @@ async function scanPreclose() {
   if (crit !== picked) {
     toast(`Kriteria "${picked}" belum didukung mode pra-tutup (hanya ${PRECLOSE_CRITERIA.join(", ")}); memakai ${crit}.`, "info");
   }
-  const q = new URLSearchParams({ universe: $("#scUniverse").value, criteria: crit,
-    limit: $("#scLimit").value, mom_min_pct: "8" });
-  if ($("#scLimit").value === "50") q.set("limit", "250");   // pra-tutup memeriksa banyak nama
+  // Pra-tutup memakai satu permintaan harga per emiten, jadi daftar 50 nama terlalu
+  // sedikit untuk mewakili pasar — dinaikkan tanpa mengubah pilihan pemakai.
+  const lim = Number($("#scLimit").value) <= 50 ? 250 : Number($("#scLimit").value);
+  precloseParams = { universe: $("#scUniverse").value, criteria: crit,
+                     limit: lim, mom_min_pct: 8 };
+  const q = precloseParamQuery();
+  scanMode = "preclose";
   btn.disabled = true; btn.textContent = "Memindai harga berjalan…";
   $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-rose-400 rounded-full animate-spin align-middle mr-2"></span>Mengambil harga berjalan + memverifikasi high 20 sesi…`;
   $("#screenerResult").innerHTML = "";
@@ -1412,6 +1440,7 @@ async function scan() {
     // supaya tidak tercampur dengan kriteria/universe yang berbeda.
     scanAccum = null;
     scanWalk = false;
+    scanMode = "normal";
     renderScan(await getJSON(`/api/screener?${q}`));
   } catch (e) {
     $("#screenerResult").innerHTML = errorBox(e.message);
@@ -1836,12 +1865,16 @@ let scanWalk = false;
 function stopScanWalk() { scanWalk = false; }
 
 async function scanMore(offset, accumulate) {
-  const q = scParamQuery(offset);
+  // Endpoint mengikuti mode pemindaian awal: pra-tutup TIDAK boleh lanjut ke
+  // /api/screener, karena itu akan menilai harga TUTUP — pertanyaan yang berbeda
+  // dari "apa yang bisa saya beli sekarang".
+  const isPre = scanMode === "preclose";
+  const q = isPre ? precloseParamQuery(offset) : scParamQuery(offset);
   if (!accumulate) {
-    $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-sky-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
+    $("#scanInfo").innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-${isPre ? "rose" : "sky"}-400 rounded-full animate-spin align-middle mr-2"></span>Memindai halaman berikutnya (offset ${offset})…`;
   }
   try {
-    const d = await getJSON(`/api/screener?${q}`);
+    const d = await getJSON(isPre ? `/api/screener/preclose?${q}` : `/api/screener?${q}`);
     if (accumulate && scanAccum) {
       // Gabungkan dengan halaman sebelumnya supaya pemakaian bisa melihat SELURUH
       // hasil pemindaian, bukan hanya halaman terakhir yang kebetulan dibuka.
@@ -1860,6 +1893,21 @@ async function scanMore(offset, accumulate) {
                    sisa: (a.sisa || 0) + (b.sisa || 0) };
       });
       scanAccum.ticket_by_grade = tbg;
+      if (isPre) {
+        // Ringkasan pra-tutup dihitung dari cakupan ANTAR halaman: kalau hanya halaman
+        // terakhir yang dipakai, "cakupan" akan mewakili 250 emiten terakhir padahal
+        // yang benar-benar diperiksa sudah ribuan. Cakupannya dihitung ulang dari
+        // jumlah, bukan dirata-ratakan (rata-rata persentase != persentase gabungan).
+        const add = (k, v) => { scanAccum[k] = (scanAccum[k] || 0) + (v || 0); };
+        add("requested", d.requested);
+        add("quotes_ok", d.quotes_ok);
+        add("quotes_today", d.quotes_today);
+        add("quotes_failed", d.quotes_failed);
+        add("passed_stage1", d.passed_stage1);
+        scanAccum.coverage_pct = scanAccum.requested
+          ? Math.round(1000 * (scanAccum.quotes_today || 0) / scanAccum.requested) / 10 : null;
+        scanAccum.total_tickers = d.total_tickers;
+      }
       scanAccum.next_offset = d.next_offset;
       scanAccum.page = d.page;
       scanAccum.pages = d.pages;
@@ -1882,7 +1930,10 @@ async function scanAll() {
     toast("Klik Scan dulu, lalu tuntaskan halaman berikutnya.", "info");
     return;
   }
-  const btn = $("#btnScan");
+  // Tombol yang dipegang adalah tombol mode yang sedang berjalan, supaya status
+  // "sedang berjalan" dan pemulihannya tidak nyangkut di tombol yang salah.
+  const btn = scanMode === "preclose" ? $("#btnPreclose") : $("#btnScan");
+  const btnIdle = scanMode === "preclose" ? "⏱ Pindai pra-tutup" : "Scan";
   scanAccum = lastScanData;
   scanWalk = true;
   btn.disabled = true;
@@ -1905,7 +1956,7 @@ async function scanAll() {
     toast(`Pemindaian bertahap berhenti: ${e.message}`, "sl");
   } finally {
     scanWalk = false;
-    btn.disabled = false; btn.textContent = "Scan";
+    btn.disabled = false; btn.textContent = btnIdle;
   }
 }
 

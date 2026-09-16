@@ -7991,6 +7991,8 @@ def screener_preclose(
                           pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$",
                           description="Kriteria yang dinilai pada keadaan sesi berjalan"),
     limit: int = Query(250, ge=1, le=951, description="Jumlah emiten yang diperiksa harga berjalan"),
+    offset: int = Query(0, ge=0, description="Penghitung halaman (kelipatan limit); teruskan next_offset"),
+    spread: Optional[bool] = Query(None, description="Sampel tersebar merata + berhalaman (default: aktif untuk universe=all)"),
     mom_min_pct: float = Query(8.0, ge=1.0, le=30.0, description="Ambang return harian berjalan (%)"),
     min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0, description="Lantai nilai transaksi berjalan (Rp)"),
     period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
@@ -8012,12 +8014,31 @@ def screener_preclose(
     Gunakan pada 15:00-15:49 WIB (preclose.session.preclose_window_ok = true). Di luar
     jam itu hasilnya tetap dikembalikan tetapi dengan label fase sesi (BELUM BUKA /
     ISTIRAHAT / SUDAH TUTUP) supaya tidak disangka sinyal pra-tutup.
+
+    PAGINASI: mode ini memeriksa SETIAP emiten dengan satu permintaan harga berjalan,
+    jadi memeriksa 951 emiten sekaligus jauh melebihi anggaran waktu satu permintaan.
+    Karena itu respons menyertakan next_offset/page/pages dan pemakaian harus
+    meneruskan next_offset sampai null. Aturan halamannya sama dengan /api/screener
+    (spread_page): halaman 1 = sampel representatif se-pasar, halaman berikutnya =
+    kelompok berjarak seragam, dan gabungan semua halaman menutup seluruh emiten
+    TEPAT SEKALI. Sebelumnya endpoint ini tidak menerima offset sama sekali,
+    sehingga "Lanjut" tidak mungkin ada dan pemindaian pra-tutup mentok di sebesar limit.
     """
-    tickers = load_idx_tickers(universe)
-    if universe == "all" and limit < len(tickers):
-        tickers = spread_pick(tickers, limit)
-    elif limit < len(tickers):
-        tickers = tickers[:limit]
+    all_tickers = load_idx_tickers(universe)
+    if spread is None:
+        spread = universe == "all"
+    page = pages = 1
+    next_offset = None
+    if spread and 0 < limit < len(all_tickers):
+        tickers, next_offset, page, pages = spread_page(all_tickers, limit, offset)
+    else:
+        tickers = all_tickers[offset:offset + limit]
+        if 0 < limit < len(all_tickers):
+            pages = max(1, math.ceil(len(all_tickers) / limit))
+            page = min(pages, offset // limit + 1)
+            next_offset = (offset + limit) if offset + limit < len(all_tickers) else None
+    if not tickers:
+        raise HTTPException(404, "Offset melebihi jumlah emiten.")
     used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
                           period=period, workers=workers, criteria=used)
@@ -8032,6 +8053,14 @@ def screener_preclose(
         "mom_min_pct": mom_min_pct,
         "min_value_idr": min_value,
         "requested": len(tickers),
+        # Penanda halaman: "Lanjut" di dashboard butuh kunci-kunci ini. Tanpa
+        # next_offset, pemakaian tidak punya cara berpindah halaman sama sekali.
+        "offset": offset,
+        "limit": limit,
+        "next_offset": next_offset,
+        "page": page,
+        "pages": pages,
+        "spread_paged": spread,
         "scanned": scan["checked"],
         # Kunci berikut tidak berlaku di mode ini (tidak ada bandarmology, tidak ada
         # konsep "dilewati"), tetapi tetap DIKIRIM dengan nilai yang benar supaya tidak
