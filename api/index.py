@@ -8848,6 +8848,62 @@ def _preclose_agg(rows: List[dict]) -> dict:
     }
 
 
+def _preclose_verify_message(day: str, criteria: str, primary_label: str,
+                             rows: List[dict], by_capture: dict,
+                             captured_wib: Optional[str], track: dict) -> str:
+    """Susun notifikasi verifikasi pra-tutup (dipisah agar bisa diuji langsung).
+
+    Kenapa tidak ditulis langsung di dalam endpoint: blok "PER JAM PENGAMBILAN" dan
+    peringatan "di luar jendela" hanya muncul pada keadaan yang jarang (dua pengambilan
+    dalam sehari, atau snapshot sore). Kalau logikanya menempel di endpoint, satu-satunya
+    cara mengujinya adalah menunggu cron berjalan pada jam yang tepat — dan galat seperti
+    koma berlebih pada pernyataan gabungan yang panjang tidak akan pernah ketahuan.
+    Notifikasi ini juga satu-satunya tempat angka 15:00 vs 15:40 disampaikan, jadi salah
+    format di sini sama dengan salah memberi tahu kesimpulan.
+    """
+    drift_vals = [r["drift_pct"] for r in rows if r.get("drift_pct") is not None]
+    abs_vals = [abs(v) for v in drift_vals]
+    n = len(drift_vals)
+    rows_n = len(rows) or 0
+    survived_n = sum(1 for r in rows if r.get("still_fires_at_close"))
+    plabel = _capture_label(primary_label)
+    # Baris TANPA harga pembanding harus dibuang sebelum diurutkan. Kalau tidak, ia
+    # dianggap 0% dan bisa masuk daftar "selisih terbesar" sebagai "None%" — teks sampah
+    # di notifikasi yang justru muncul persis ketika ada saham yang gagal dibandingkan,
+    # yaitu saat pembaca paling butuh tahu apa yang sebenarnya terjadi.
+    worst = sorted((r for r in rows if r.get("drift_pct") is not None),
+                   key=lambda r: r["drift_pct"])[:3]
+    parts = [
+        f"✅ VERIFIKASI PRA-TUTUP · {day} · kriteria {criteria}\n",
+        f"Sinyal dibandingkan (pengambilan {plabel}): {rows_n}\n",
+        f"Selisih harga masuk (pengambilan {plabel}) ke tutup resmi: rata-rata "
+        f"{num(sum(drift_vals) / n, 3) if n else '—'}% · rata-rata |selisih| "
+        f"{num(sum(abs_vals) / n, 3) if n else '—'}%\n",
+        f"Sinyal yang MASIH berlaku pada penutupan: {survived_n}/{rows_n} "
+        f"({num(100.0 * survived_n / rows_n, 1) if rows_n else '—'}%)\n",
+    ]
+    if len(by_capture) > 1:
+        parts.append("PER JAM PENGAMBILAN:\n" + "\n".join(
+            f"  · {label}: |selisih| {num(a['mean_abs_drift_pct'], 3)}% · bertahan "
+            f"{num(a['survival_pct'], 1)}% ({a['n']} sinyal, {a['days']} hari)"
+            for label, a in sorted(by_capture.items())) + "\n")
+    # Kalau snapshotnya diambil setelah bursa tutup, angkanya wajar 0% dan itu BUKAN bukti
+    # akurasi. Dikatakan di notifikasi supaya tidak disangka hasil sempurna.
+    if _capture_in_window(captured_wib) is False:
+        parts.append(
+            f"⚠ Snapshot diambil {captured_wib} WIB, DI LUAR jendela pra-tutup "
+            "(15:00-15:49). Harganya sudah final, jadi selisih ~0% itu wajar dan TIDAK "
+            "membuktikan akurasi 15:40.\n")
+    parts.append("Selisih terbesar: " + (" · ".join(
+        f"{strip_suffix(str(r['ticker']))} {num(r['drift_pct'], 2)}%" for r in worst)
+        if worst else "tidak ada baris yang punya harga pembanding"))
+    parts.append(
+        f"\n\nCATATAN AKURASI BERGULIR ({track['days']} hari, {track['pairs']} sinyal): "
+        f"rata-rata selisih {track['mean_drift_pct']}% · rata-rata |selisih| "
+        f"{track['mean_abs_drift_pct']}% · bertahan {track['survival_pct']}%")
+    return "".join(parts)
+
+
 @app.get("/api/cron/preclose-verify")
 def cron_preclose_verify(request: Request, secret: str = Query(""),
                          date: str = Query("", description="Tanggal snapshot YYYY-MM-DD; kosong = hari ini WIB"),
@@ -9035,35 +9091,8 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
     if send and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         dedupe = f"ci:notif:preclose-verif:{day}:{criteria}"
         if not _upstash_get(dedupe):
-            worst = sorted(rows, key=lambda r: (r.get("drift_pct") or 0))[:3]
-            per_jam = "\n".join(
-                f"  · {label}: |selisih| {num(a['mean_abs_drift_pct'], 3)}% · bertahan "
-                f"{num(a['survival_pct'], 1)}% ({a['n']} sinyal, {a['days']} hari)"
-                for label, a in sorted(by_capture.items()))
-            msg = (f"✅ VERIFIKASI PRA-TUTUP · {day} · kriteria {criteria}\n"
-                   f"Sinyal dibandingkan (pengambilan {_capture_label(primary_label)}): "
-                   f"{len(rows)}\n"
-                   f"Selisih harga masuk (pengambilan {_capture_label(primary_label)}) ke "
-                   f"tutup resmi: rata-rata "
-                   f"{num(sum(drift_vals) / len(drift_vals), 3)}% · rata-rata |selisih| "
-                   f"{num(sum(abs_vals) / len(abs_vals), 3)}%\n"
-                   f"Sinyal yang MASIH berlaku pada penutupan: {survived_n}/{len(rows)} "
-                   f"({num(100.0 * survived_n / len(rows), 1)}%)\n"
-                   + (f"PER JAM PENGAMBILAN:\n{per_jam}\n" if len(by_capture) > 1 else "")
-                   # Kalau snapshotnya diambil setelah bursa tutup, angkanya wajar 0% dan
-                   # itu BUKAN bukti akurasi. Dikatakan di notifikasi supaya tidak disangka
-                   # hasil sempurna.
-                   + (f"⚠ Snapshot diambil {snap.get('captured_wib')} WIB, DI LUAR jendela "
-                      "pra-tutup (15:00-15:49). Harganya sudah final, jadi selisih ~0% itu "
-                      "wajar dan TIDAK membuktikan akurasi 15:40.\n"
-                      if _capture_in_window(snap.get("captured_wib")) is False else "")
-                   + f"Selisih terbesar: " + " · ".join(
-                       f"{strip_suffix(str(r['ticker']))} {num(r.get('drift_pct'), 2)}%"
-                       for r in worst)
-                   + f"\n\nCATATAN AKURASI BERGULIR ({track['days']} hari, {track['pairs']} "
-                     f"sinyal): rata-rata selisih {track['mean_drift_pct']}% · rata-rata "
-                     f"|selisih| {track['mean_abs_drift_pct']}% · bertahan "
-                     f"{track['survival_pct']}%")
+            msg = _preclose_verify_message(day, criteria, primary_label, rows,
+                                           by_capture, snap.get("captured_wib"), track)
             if _telegram_send(msg + "\n\n(dedesaputra_invst)"):
                 _upstash_set(dedupe, "1", ttl=86400)
                 sent = 1
