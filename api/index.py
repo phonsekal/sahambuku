@@ -218,12 +218,29 @@ def detect_trend(df: pd.DataFrame, lookback: int = 120) -> dict:
 
 
 def find_sr_zones(df: pd.DataFrame, lookback: int = 120, tol_pct: float = 0.015) -> List[dict]:
-    """Level Support & Resistance (Bab 1): cluster swing high/low menjadi zona harga."""
+    """Level Support & Resistance (Bab 1): cluster swing high/low menjadi zona harga.
+
+    Harga pivot yang nol / tidak terhingga DIBUANG lebih dulu. Ringkasan harian IDX
+    memuat baris dengan harga 0 pada saham yang tidak diperdagangkan hari itu, dan
+    pembagian dengan harga itu melempar ZeroDivisionError — yang lalu ditangkap
+    `quick_signal` sehingga kolom Sinyal menampilkan "N/A". Terukur: pada sampel panel
+    1,36 juta saham-hari, 19,1% panggilan gagal karena satu harga nol ini (contoh ABBA),
+    jadi hilangnya sinyal bukan peristiwa langka melainkan kebetulan data harga kosong.
+    """
     n = len(df)
     start = max(0, n - lookback)
     sh, sl = find_swings(df, k=2)
-    points = [{"idx": i, "price": p, "type": "resistance"} for i, p in sh if i >= start]
-    points += [{"idx": i, "price": p, "type": "support"} for i, p in sl if i >= start]
+
+    def _valid(p) -> bool:
+        try:
+            return math.isfinite(float(p)) and float(p) > 0
+        except (TypeError, ValueError):
+            return False
+
+    points = [{"idx": i, "price": float(p), "type": "resistance"}
+              for i, p in sh if i >= start and _valid(p)]
+    points += [{"idx": i, "price": float(p), "type": "support"}
+               for i, p in sl if i >= start and _valid(p)]
     if not points:
         return []
 
@@ -4450,6 +4467,29 @@ PRECLOSE_GRADE_MEASURED = {
         "rata-ratanya ditarik ekor keuntungan: disiplin stop yang menentukan; "
         "(3) panel masih punya survivorship bias (emiten delisting tidak ada di cache), "
         "sehingga semua angka cenderung terlalu optimistis."),
+    # KONFLIK YANG PALING SERING DITANYAKAN: "Sinyal bilang HOLD tapi rekomendasi
+    # BELI KUAT — pakai yang mana?". Diukur dengan memanggil fungsi sinyal PRODUKSI
+    # (quick_signal) pada bar saat itu (df dipotong), sampel 4.500 baris, jadi bukan
+    # perbandingan dua kolom yang tidak pernah diuji.
+    "signal_split": {
+        "measured_on": "2026-09-16",
+        "script": "research/preclose_grade_study.py --part signal",
+        "sample": 4500,
+        "on_beli_kuat": {"BUY": 3.48, "HOLD": 3.04, "STRONG BUY": 2.27},
+        "on_beli_kuat_n": {"BUY": 667, "HOLD": 656, "STRONG BUY": 150},
+        "signal_alone": {"STRONG BUY": 2.24, "BUY": 1.88, "HOLD": 1.18, "SELL": -3.40},
+        "signal_alone_block_t": {"STRONG BUY": 3.31, "BUY": 6.41, "HOLD": 3.91, "SELL": -5.15},
+        "verdict": (
+            "Untuk memutuskan BELI, yang dipakai adalah kolom Rekomendasi: urutannya "
+            "terukur menurun (BELI KUAT +3,60% · BELI +2,29% · TUNGGU -0,44% net 5 hari), "
+            "sedangkan tangga sinyalnya sendiri TIDAK monoton (STRONG BUY +2,24% justru "
+            "di bawah BUY +1,88%, blok t +3,31 vs +6,41). Sinyal HOLD BUKAN pembatal: "
+            "pada baris BELI KUAT, yang bersinyal HOLD terukur +3,04% net 5 hari "
+            "(blok t +4,44) dibanding BUY +3,48% (blok t +7,26) — selisihnya hanya 0,22 "
+            "poin persen dan tidak cukup untuk membatalkan label. Pengecualian yang "
+            "NYATA adalah sinyal SELL: sendiri ia terukur -3,40% (blok t -5,15), jadi "
+            "SELL tetap jadi peringatan, bukan sekadar konteks."),
+    },
 }
 
 
@@ -4525,9 +4565,21 @@ def preclose_grade(criteria: str, *, buy_score: Optional[float] = None,
         caveats.append("Kelas KURANG LIKUID: alpha mentahnya paling besar, tetapi "
                        "eksekusinya paling sulit — ukuran posisi kecil dan siap "
                        "terjebak di harga beli.")
-    if str(signal or "").upper() in ("SELL", "STRONG SELL"):
-        caveats.append(f"Sinyal harian saat ini {signal} (momentum sedang koreksi) — "
-                       "kualitas setup tinggi + sinyal jual = pantau, bukan kejar.")
+    sig_up = str(signal or "").upper()
+    if sig_up in ("SELL", "STRONG SELL"):
+        caveats.append(f"Sinyal harian saat ini {signal} — dan ini satu-satunya sinyal "
+                       "yang TERUKUR buruk di mode ini: sinyal SELL sendiri -3,40% "
+                       "net 5 hari (blok t -5,15). Pertimbangkan pantau, bukan kejar.")
+    elif sig_up == "HOLD" and grade == "BELI KUAT":
+        # HANYA pada baris BELI KUAT: angkanya diukur tepat di situasi itu, dan di baris
+        # TUNGGU pesan ini menyesatkan (pembaca bisa menyangka labelnya sedang dibela
+        # padahal tidak). Versi pertama memasangnya di semua label; ketahuan saat uji
+        # produksi, karena baris TUNGGU ikut menampilkan kalimat "bukan pembatal ini".
+        caveats.append("Sinyal HOLD BUKAN pembatal label ini. Terukur: pada baris "
+                       "BELI KUAT, yang bersinyal HOLD tetap +3,04% net 5 hari "
+                       "(blok t +4,44) versus +3,48% untuk yang bersinyal BUY — selisih "
+                       "0,22 poin persen, di dalam derau. Sinyal menilai momentum saat "
+                       "ini; label menilai dasar kriteria + kualitas setup.")
     if breakout_20h is False and crit == "momentum":
         caveats.append("Momentum TANPA tembus high 20 hari: alpha 5 hari irisan itu "
                        "+3,58%, sedangkan momentum saja +0,13% — itulah alasan labelnya "

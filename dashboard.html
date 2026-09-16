@@ -1853,6 +1853,7 @@ function renderScan(d) {
       h += `<div class="mb-3 text-[11px] text-indigo-200/90 bg-indigo-500/10 border border-indigo-500/30 rounded-xl px-3.5 py-2.5">🧭 <b>REKOMENDASI PER BARIS (BELI KUAT / BELI / TUNGGU)</b> — kolom ini <b>bukan sinyal baru</b>: ia meringkas kriteria yang sedang dipindai + skor beli (kolom 🎯 Beli), yang keduanya sudah diukur. Kolom <b>Sinyal</b> tetap terpisah dan artinya berbeda (momentum saat ini).
         <div class="mt-1">Aturan: ${ruleTxt}</div>
         ${measTxt ? `<div class="mt-1.5 pt-1.5 border-t border-indigo-500/20">Bukti (${esc(gmeas.measured_on || "")}, ${esc(gmeas.universe || "")}): ${measTxt}. <span class="text-slate-400">${esc(gmeas.basis || "")}</span></div>` : ""}
+        ${(gmeas.signal_split || {}).verdict ? `<div class="mt-1.5 pt-1.5 border-t border-indigo-500/20"><b>Sinyal HOLD vs rekomendasi BELI KUAT?</b> ${esc(gmeas.signal_split.verdict)} <span class="text-slate-500">(${esc(gmeas.signal_split.script || "")}, sampel ${fmt(gmeas.signal_split.sample, 0)} baris)</span></div>` : ""}
         ${(gmeas.honest_notes || gr.note) ? `<div class="mt-1 text-amber-300/90">⚠ ${esc(gmeas.honest_notes || gr.note)}</div>` : ""}
       </div>`;
     }

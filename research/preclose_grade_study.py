@@ -22,16 +22,20 @@ Cara kerja
   Kalau ambangnya diubah di produksi, hasil di sini ikut berubah, jadi tidak mungkin
   laporan dan aplikasi berbeda diam-diam.
 
-Dua bagian
-----------
-  grid  : tabulasi mentah kriteria x skor beli x kerapuhan (untuk memilih ambang).
-  grade : hasil akhir per label rekomendasi + uji holdout dua paruh + per kriteria.
+Tiga bagian
+-----------
+  grid   : tabulasi mentah kriteria x skor beli x kerapuhan (untuk memilih ambang).
+  grade  : hasil akhir per label rekomendasi + uji holdout dua paruh + per kriteria.
+  signal : KONFLIK yang paling sering ditanyakan — "Sinyal bilang HOLD tapi rekomendasi
+           BELI KUAT, pakai yang mana?". Fungsi sinyal produksi (`quick_signal`) dipanggil
+           pada bar saat itu (df dipotong), lalu dibandingkan dengan label per baris.
 
 Jalankan
 --------
-  .venv/bin/python research/preclose_grade_study.py            # keduanya
+  .venv/bin/python research/preclose_grade_study.py              # ketiganya
   .venv/bin/python research/preclose_grade_study.py --part grid
   .venv/bin/python research/preclose_grade_study.py --part grade
+  .venv/bin/python research/preclose_grade_study.py --part signal --sample 1500
 """
 
 from __future__ import annotations
@@ -109,6 +113,10 @@ def build_rows(p: pd.DataFrame) -> pd.DataFrame:
             frame[f"fwd{h}"] = (close.shift(-h) / close - 1.0) * 100.0
         frame["code"] = code
         frame["date"] = df.index
+        # Posisi bar di dalam deret: dibutuhkan bagian "signal" di bawah, karena
+        # quick_signal() menilai BAR TERAKHIR dari df yang diberikan — jadi untuk
+        # menilai suatu tanggal, df HARUS dipotong sampai tanggal itu.
+        frame["pos"] = np.arange(len(df))
         keep = frame[list(CRITERIA)].any(axis=1)
         rows.append(frame[keep])
         if (i + 1) % 250 == 0:
@@ -163,6 +171,91 @@ def long_rows(S: pd.DataFrame) -> pd.DataFrame:
         sub["criteria"] = crit
         out.append(sub)
     return pd.concat(out, ignore_index=True)
+
+
+def report_signal_conflict(L: pd.DataFrame, p: pd.DataFrame, sample: int,
+                           seed: int = 7) -> None:
+    """Pertanyaan pemakaian: kalau SINYAL bilang HOLD tetapi REKOMENDASI bilang
+    BELI KUAT, yang mana yang benar?
+
+    Diukur dengan memanggil fungsi sinyal PRODUKSI (`quick_signal`, yang dipakai kolom
+    Sinyal di tabel) pada bar saat itu — jadi df dipotong sampai tanggal baris itu,
+    bukan memakai bar terakhir hari ini.
+
+    Diambil SAMPEL berstrata per label + rekomendasi, karena satu panggilan sinyal
+    memakan ~7 ms dan seluruh baris kandidat ada 290 ribu.
+    """
+    L = L.copy()
+    L["label"] = apply_grade(L)["label"]
+    rng = np.random.default_rng(seed)
+    picked = []
+    for lab in A.PRECLOSE_GRADE_ORDER:
+        sub = L[L["label"] == lab]
+        if not len(sub):
+            continue
+        n = min(sample, len(sub))
+        picked.append(sub.iloc[rng.choice(len(sub), size=n, replace=False)])
+    S = pd.concat(picked, ignore_index=True)
+    print(f"\n{'='*104}")
+    print(f"SAMPEL untuk pengukuran sinyal: {len(S):,} baris "
+          f"({', '.join(f'{k}={v}' for k, v in S['label'].value_counts().items())})")
+
+    sigs, costs = [], []
+    by_code = {c: P.to_ohlcv(g) for c, g in p.groupby("code") if len(g) >= 60}
+    for row in S.itertuples(index=False):
+        df = by_code.get(row.code)
+        if df is None:
+            sigs.append(None)
+            continue
+        pos = int(row.pos)
+        if pos < 59:
+            sigs.append(None)
+            continue
+        try:
+            sigs.append(A.quick_signal(df.iloc[:pos + 1]))
+        except Exception:
+            sigs.append(None)
+    S["signal"] = sigs
+    S = S[S["signal"].notna()]
+    net5 = S["exc5"] - COST_ROUND_TRIP * 100
+    S = S.assign(net5=net5)
+
+    print(f"\n-- A. REKOMENDASI x SINYAL (net 5 hari, kelas likuiditas sama, biaya 0,3% dipotong) --")
+    order = [g for g in A.PRECLOSE_GRADE_ORDER if g in set(S["label"])]
+    sigs_order = [s for s in ("STRONG BUY", "BUY", "HOLD", "SELL", "STRONG SELL", "N/A")
+                  if s in set(S["signal"])]
+    print(f"{'label':<12}" + "".join(f"{s:>15}" for s in sigs_order))
+    for lab in order:
+        cells = []
+        for s in sigs_order:
+            g = S[(S["label"] == lab) & (S["signal"] == s)]
+            cells.append(f"{g['net5'].mean():+.2f}({len(g)})" if len(g) >= 8 else "—")
+        print(f"{lab:<12}" + "".join(f"{c:>15}" for c in cells))
+
+    print(f"\n-- B. KHUSUS kasus yang ditanyakan: pada label BELI KUAT, apakah sinyal HOLD "
+          f"lebih buruk dari BUY? --")
+    kuat = S[S["label"] == "BELI KUAT"]
+    for s in sigs_order:
+        g = kuat[kuat["signal"] == s]
+        if len(g) >= 8:
+            print(f"   sinyal {s:<12} n={len(g):>5} · net5 {g['net5'].mean():+.2f}% "
+                  f"· blok t {block_t(g['exc5'], 5):+.2f} · untung {(g['net5'] > 0).mean()*100:.1f}%")
+    b = kuat[kuat["signal"].isin(["BUY", "STRONG BUY"])]["net5"]
+    h = kuat[kuat["signal"] == "HOLD"]["net5"]
+    if len(b) >= 8 and len(h) >= 8:
+        print(f"   selisih BUY - HOLD: {b.mean() - h.mean():+.2f} poin persen "
+              f"(BUY {b.mean():+.2f}% vs HOLD {h.mean():+.2f}%)")
+
+    print(f"\n-- C. sinyal saja (tanpa melihat label) --")
+    for s in sigs_order:
+        g = S[S["signal"] == s]
+        if len(g) >= 8:
+            print(f"   {s:<12} n={len(g):>5} · net5 {g['net5'].mean():+.2f}% "
+                  f"· blok t {block_t(g['exc5'], 5):+.2f}")
+
+    print(f"\nCATATAN: sinyal dinilai pada bar yang sama dengan keputusan (bukan memakai "
+          f"bar terakhir hari ini), dan sampelnya berstrata per label supaya tiap sel "
+          f"terisi. n kecil (<8) tidak dicetak.")
 
 
 def _fmt_cell(L: pd.DataFrame, col: str) -> str:
@@ -277,8 +370,10 @@ def report_grade(L: pd.DataFrame) -> None:
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--part", choices=["grid", "grade", "both"], default="both")
+    ap.add_argument("--part", choices=["grid", "grade", "signal", "both"], default="both")
     ap.add_argument("--years", type=float, default=None)
+    ap.add_argument("--sample", type=int, default=1500,
+                    help="baris per label yang dipakai bagian 'signal' (1 panggilan sinyal each)")
     args = ap.parse_args()
 
     p = P.load_panel()
@@ -299,6 +394,8 @@ def main() -> None:
         report_grid(L)
     if args.part in ("grade", "both"):
         report_grade(apply_grade(L))
+    if args.part in ("signal", "both"):
+        report_signal_conflict(L, p, args.sample)
 
 
 if __name__ == "__main__":
