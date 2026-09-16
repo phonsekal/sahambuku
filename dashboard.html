@@ -1586,7 +1586,10 @@ async function loadPrecloseHistory() {
     const d = await getJSON(`/api/preclose/history?days=7&include_archived=${precloseShowArchived ? "true" : "false"}`);
     const recs = d.records || [];
     if (!recs.length) {
-      box.innerHTML = `<div class="text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">🗂 <b>Riwayat pra-tutup (server):</b> ${esc(d.empty_reason || "belum ada catatan.")}</div>`;
+      const eaH0 = d.exec_advice || {};
+      box.innerHTML = `<div class="text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">🗂 <b>Riwayat pra-tutup (server):</b> ${esc(d.empty_reason || "belum ada catatan.")}`
+        + (eaH0.action ? `<div class="mt-1.5 pt-1.5 border-t border-slate-700/60 text-slate-300">🕐 <b>Jam eksekusi: ${esc(eaH0.best_label || "15:40")}–${esc(String(eaH0.deadline_wib || "15:49:59").slice(0, 5))} WIB</b> · ${esc(eaH0.action)}</div>` : "")
+        + `</div>`;
     } else {
       const hari = recs.slice().reverse().map(r => {
         const rows = (r.results || []).slice(0, 6);
@@ -1610,7 +1613,14 @@ async function loadPrecloseHistory() {
           ${rows.length ? `<div class="mt-1 text-slate-300">${rows.map(x => `<span class="inline-block mr-3 whitespace-nowrap">${esc(stripJK(x.ticker))} <b>${fmt(x.price, 0)}</b> <span class="${(x.day_return_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmt(x.day_return_pct, 1)}%</span>${x.breakout_20h ? " 💥" : ""}${x.fragile ? " ⚠" : ""}${x.stop_loss != null ? ` <span class="text-slate-500">SL ${fmt(x.stop_loss, 0)}/TP ${fmt(x.take_profit, 0)}</span>` : ""}</span>`).join("")}${more ? `<span class="text-slate-500">+${more} lagi</span>` : ""}</div>` : ""}
         </div>`;
       }).join("");
+      // Jam eksekusi ditampilkan juga di sini: panel ini yang dipakai di luar jam bursa,
+      // dan justru di situlah pertanyaan "kapan harus memindai" muncul.
+      const eaH = d.exec_advice || {};
+      const eaLine = eaH.action
+        ? `<div class="mb-1.5 pb-1.5 border-b border-slate-700/60">🕐 <b>Jam eksekusi: ${esc(eaH.best_label || "15:40")}–${esc(String(eaH.deadline_wib || "15:49:59").slice(0, 5))} WIB</b> <span class="text-slate-500">(dasar: ${eaH.basis === "praktik" ? "catatan praktik harian" : "hasil ukur per jam"})</span> · ${esc(eaH.action)}</div>`
+        : "";
       box.innerHTML = `<div class="text-[11px] text-slate-300 bg-slate-900/60 border border-slate-700 rounded-xl px-3.5 py-2.5">
+        ${eaLine}
         <div class="mb-1"><b>🗂 Riwayat pra-tutup dari SERVER</b> <span class="text-slate-500">(${recs.length} hari terakhir, retensi ${d.retention_days} hari · penyimpanan ${esc(d.storage)})</span></div>
         ${hari}
         <div class="mt-2 text-slate-500">Harga di sini adalah harga PASAR saat pemindaian pada hari itu (kolom pengambil keputusan saja). Lubang hari berarti pemindaian pra-tutup tidak dijalankan pada tanggal itu — bukan berarti tidak ada kandidat.
@@ -1697,6 +1707,39 @@ function rsChip(rs) {
   return `<span class="text-[10px] px-2 py-0.5 rounded-full border font-bold ${col}" title="${esc(rs.note || "")}">${rs.is_leader ? "🚀 LEADER" : esc(rs.label || "")} ${fmt(rs.score, 0)}</span>${a5}`;
 }
 
+// JAM EKSEKUSI — dirender SEBELUM tabel, karena pertanyaan "jam berapa" menentukan
+// apakah harga di tabel masih bisa dibayar (harga pra-tutup hanya bisa didapat sebelum
+// 15:49:59). Jam yang dianjurkan dan angka pengukurannya datang dari server
+// (preclose.exec_advice), jadi keduanya tidak bisa berbeda dari laporan riset tanpa
+// disadari. Dasar anjuran ditulis terang-terangan: "hasil ukur per jam" (riset) atau
+// "catatan praktik harian" bila perbandingan 15:00 vs 15:40 sudah cukup hari.
+function execAdviceBlock(ea) {
+  if (!ea || !ea.action) return "";
+  const tone = ea.status === "sekarang"
+    ? "text-emerald-200/90 bg-emerald-500/10 border-emerald-500/30"
+    : (ea.status === "tunggu" ? "text-sky-200/90 bg-sky-500/10 border-sky-500/30"
+       : "text-amber-200/90 bg-amber-500/10 border-amber-500/30");
+  const head = ea.status === "sekarang" ? "✅ inilah waktunya"
+    : (ea.status === "tunggu" ? "🕐 belum waktunya" : "⛔ bukan waktu eksekusi");
+  const cs = ea.cut_study || {}, cuts = cs.cuts || [], lc = ea.live_comparison || {};
+  // Ukuran per jam ditampilkan sebagai satu baris: yang dibaca pemakai adalah ARAHnya
+  // (selisih mengecil ke arah penutupan), bukan empat tabel terpisah.
+  const cutTxt = cuts.map(c => `<span class="whitespace-nowrap"><b>${esc(c.label)}</b> `
+    + `|selisih| ${fmt(c.mean_abs_drift_pct, 2)}%`
+    + (c.volume_share_pct != null ? ` · volume ${fmt(c.volume_share_pct, 0)}%` : "")
+    + (c.survival_pct != null ? ` · sinyal bertahan ${fmt(c.survival_pct, 0)}%` : "")
+    + `</span>`).join(" · ");
+  const deadline = ea.deadline_wib ? String(ea.deadline_wib).slice(0, 5) : "15:49";
+  return `<div class="mb-3 text-[11px] ${tone} border rounded-xl px-3.5 py-2.5">🕐 <b>JAM EKSEKUSI TERBAIK HARI INI: ${esc(ea.best_label || "15:40")}-${esc(deadline)} WIB</b> · <span class="px-1.5 py-0.5 rounded border border-slate-600/60">dasar: ${ea.basis === "praktik" ? "catatan praktik harian" : "hasil ukur per jam"}</span> · ${head}
+    <div class="mt-1">${esc(ea.action)}</div>
+    <div class="mt-1 text-slate-300">${esc(ea.reason || "")}</div>
+    ${cutTxt ? `<div class="mt-1.5 pt-1.5 border-t border-slate-600/40">Ukuran per jam potong (${esc(cs.sample || "")}${cs.script ? ` · ${esc(cs.script)}` : ""}): ${cutTxt}</div>` : ""}
+    ${cs.verdict ? `<div class="mt-1">${esc(cs.verdict)}</div>` : ""}
+    ${cs.caveat ? `<div class="mt-1 text-amber-300/90">⚠ ${esc(cs.caveat)}</div>` : ""}
+    ${lc.note ? `<div class="mt-1 text-slate-400">Perbandingan praktik (sinyal yang benar-benar dikirim): ${esc(lc.note)}</div>` : ""}
+  </div>`;
+}
+
 function renderScan(d) {
   lastScanData = d;
   const rg = d.market_regime || {};
@@ -1781,7 +1824,7 @@ function renderScan(d) {
           ? " <b class=\"text-emerald-300\">jendela TERUKUR (&le;10 menit ke tutup)</b>"
           : (ss.preclose_window_ok ? " <b class=\"text-emerald-300\">jendela kerja pra-tutup</b>"
              : (openNow ? " <b class=\"text-amber-300\">di luar jendela pra-tutup</b>" : ""))) : "";
-      pcExtra = `<div class="mt-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">⏱ Panel pra-tutup: fase sesi saat pemindaian <b>${esc(ss.phase || "belum dibaca")}</b>${ss.wib ? ` (jam server ${esc(ss.wib)} WIB)` : ""}${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}${winTxt}. Harga masuk mode ini adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari itu, bukan harga tutup yang sudah lewat. Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini).${d.passed_stage1 ? ` Lolos syarat awal: <b>${d.passed_stage1}</b>.` : ""}</div>`
+      pcExtra = execAdviceBlock(pc.exec_advice) + `<div class="mt-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">⏱ Panel pra-tutup: fase sesi saat pemindaian <b>${esc(ss.phase || "belum dibaca")}</b>${ss.wib ? ` (jam server ${esc(ss.wib)} WIB)` : ""}${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}${winTxt}. Harga masuk mode ini adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari itu, bukan harga tutup yang sudah lewat. Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini).${d.passed_stage1 ? ` Lolos syarat awal: <b>${d.passed_stage1}</b>.` : ""}</div>`
         + (ss.phase && !openNow ? `<div class="mt-2 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚠️ Sesi reguler sedang <b>TIDAK berjalan</b> (${esc(ss.phase)}): hasil ini membaca sesi terakhir yang selesai, jadi bukan pra-tutup. Jalankan pada 15:00-15:49 WIB untuk memakai harga yang bisa dibayar hari itu.</div>` : "");
     }
     $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : (d.accumulated ? "Belum ada saham yang lolos kriteria di halaman-halaman yang sudah dipindai." : "Tidak ada saham yang lolos kriteria pada halaman ini.")}</div>${pcExtra}`;
@@ -1832,6 +1875,7 @@ function renderScan(d) {
       : (ss.preclose_window_ok
         ? ` · <b class="text-emerald-300">jendela kerja pra-tutup (15:00-15:49)</b>`
         : (openNow ? ` · <b class="text-amber-300">DI LUAR jendela pra-tutup</b>` : ""));
+    h += execAdviceBlock(pc.exec_advice);
     h += `<div class="mb-3 text-[11px] ${tone} rounded-xl px-3.5 py-2.5">⏱ <b>PINDAI PRA-TUTUP</b> · kriteria <b>${esc(critLabel)}</b> · mesin <b>${esc(pc.engine || d.engine || "")}</b> · jam server <b>${esc(ss.wib || "")} WIB</b> · fase <b>${esc(ss.phase || "?")}</b>${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}${winChip}. Harga masuk di kolom Rencana Harian adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari ini, bukan harga tutup yang sudah lewat.</div>`;
     if (openNow && !ss.preclose_window_ok) h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">🕐 Sesi berjalan tetapi masih <b>${fmt(ss.minutes_left, 0)} menit</b> ke penutupan, jadi ini di luar jendela pra-tutup. Harga masuknya tetap bisa dibayar hari ini, tetapi klaim "harga pra-tutup &asymp; harga tutup" <b>hanya diukur pada 15:40-15:49</b> — makin jauh dari tutup, makin besar kemungkinan syarat sinyal batal sebelum penutupan. Untuk alpha penuh, jalankan lagi sekitar <b>15:40 WIB</b> (blok ini akan menandai <b>jendela TERUKUR</b>).</div>`;
     // Peringatan hanya bila fasenya MEMANG diketahui. Saat melanjutkan pemindaian yang

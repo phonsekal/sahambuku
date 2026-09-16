@@ -76,8 +76,15 @@ def bars_5m(A, ticker: str):
     return rows
 
 
+# Jam potong yang dibandingkan. Pertanyaan yang dijawab: bila memindai/membeli pada
+# jam ini, seberapa jauh harganya dari harga TUTUP RESMI, dan berapa banyak sinyal yang
+# masih memenuhi syaratnya saat penutupan? Semua dihitung dari bar yang SUDAH diambil,
+# jadi menambah jam potong tidak menambah satu pun permintaan ke sumber data.
+CUTS_DEFAULT = (15 * 60 + 0, 15 * 60 + 30, 15 * 60 + 40, 15 * 60 + 45)
+
+
 def analyse_one(A, code: str, panel: pd.DataFrame, cut_hm: int = 15 * 60 + 40,
-                trigger_pct: float = 8.0):
+                trigger_pct: float = 8.0, cuts=CUTS_DEFAULT):
     ticker = code if "." in code else f"{code}.JK"
     rows = bars_5m(A, ticker)
     if not rows:
@@ -119,6 +126,22 @@ def analyse_one(A, code: str, panel: pd.DataFrame, cut_hm: int = 15 * 60 + 40,
         ret_close = (official_close / prev_close - 1) * 100
         # apakah syarat "tembus high 20 hari" yang terlihat pra-tutup bertahan?
         h20 = float(prev_rows["high"].tail(20).max()) if len(prev_rows) >= 20 else None
+        # ---- harga, sinyal, dan volume pada SETIAP jam potong --------------------
+        per_cut = {}
+        for c in cuts:
+            sel = [r for r in rs if r["hm"] <= c]
+            if not sel:
+                continue
+            px_c = sel[-1]["price"]
+            if px_c <= 0:
+                continue
+            ret_c = (px_c / prev_close - 1) * 100
+            per_cut[c] = {
+                "px": px_c, "ret": ret_c, "flag": ret_c >= trigger_pct,
+                "drift": (official_close / px_c - 1) * 100,
+                "volshare": (sum(r["volume"] for r in sel) / official_vol * 100)
+                            if official_vol else None,
+            }
         out.append({
             "code": code, "date": str(d),
             "prev_close": prev_close, "official_close": official_close,
@@ -134,6 +157,7 @@ def analyse_one(A, code: str, panel: pd.DataFrame, cut_hm: int = 15 * 60 + 40,
             "brk_1540": (h20 is not None and px_pre >= h20),
             "brk_close": (h20 is not None and official_close >= h20),
             "brk_close_high": (h20 is not None and official_high >= h20),
+            "per_cut": per_cut,
         })
     return out
 
@@ -171,6 +195,34 @@ def main() -> None:
     df = pd.DataFrame(rows)
     print(f"\nsampel: {len(df):,} emiten-hari · {df['code'].nunique()} emiten · "
           f"sesi {df['date'].min()} -> {df['date'].max()}")
+
+    # --- 0. perbandingan JAM POTONG ------------------------------------------
+    # Inilah bagian yang menjawab "jam berapa sebaiknya memindai & membeli": pada tiap
+    # jam potong dipakai bar terakhir yang sudah tersedia pada jam itu (bar 5 menit),
+    # lalu dibandingkan dengan harga tutup RESMI dan diperiksa berapa sinyal >= 8% yang
+    # masih memenuhi syaratnya saat penutupan.
+    print("\n-- 0. PERBANDINGAN JAM POTONG (bar 5m vs TUTUP RESMI hari yang sama) --")
+    print(f"  {'jam':<6} {'n':>6} {'rata selisih':>13} {'median':>8} {'|selisih|':>10} "
+          f"{'>0,5%':>7} {'sinyal':>7} {'bertahan':>9} {'volume':>8}")
+    for c in sorted({k for row in rows for k in (row.get("per_cut") or {})}):
+        sel = [r["per_cut"][c] for r in rows if (r.get("per_cut") or {}).get(c)]
+        if not sel:
+            continue
+        dr = pd.Series([s["drift"] for s in sel])
+        flags = [s for s in sel if s["flag"]]
+        hours = f"{c // 60:02d}:{c % 60:02d}"
+        # "bertahan" = masih >= 8% pada harga TUTUP RESMI; diambil dari baris penuh
+        trig = df[df["per_cut"].map(lambda d, c=c: bool((d or {}).get(c, {}).get("flag")))]
+        keep = (trig["flag_close"].mean() * 100) if len(trig) else None
+        vs = pd.Series([s["volshare"] for s in sel if s["volshare"] is not None])
+        print(f"  {hours:<6} {len(sel):>6} {fmt(dr.mean(), 3, True):>13} "
+              f"{fmt(dr.median(), 3, True):>8} {fmt(dr.abs().mean(), 3):>10} "
+              f"{(dr.abs() > 0.5).mean() * 100:>6.1f}% {len(flags):>7} "
+              f"{(fmt(keep, 1) + '%') if keep is not None else '-':>9} "
+              f"{(fmt(vs.mean(), 1) + '%') if len(vs) else '-':>8}")
+    print("  bacaan: 'rata selisih' = harga tutup resmi dibagi harga pada jam itu (positif "
+          "= tutup lebih tinggi). '|selisih|' = besar penyimpangan tanpa arah. "
+          "'bertahan' = sinyal >= 8% pada jam itu yang MASIH >= 8% saat tutup resmi.")
 
     # --- 1. selisih harga pra-tutup vs harga tutup resmi ----------------------
     print("\n-- 1. HARGA: selisih pukul 15:40 (dan akhir sesi reguler) ke TUTUP RESMI --")
@@ -234,7 +286,9 @@ def main() -> None:
     print("jadi sampelnya kecil dan tidak mencakup semua rezim pasar; (c) sampel emiten")
     print("diambil merata dari daftar alfabetis, bukan acak berbobot.")
     if args.export:
-        df.to_csv(args.export, index=False)
+        # Kolom per_cut berisi dict (satu entri per jam potong) dan tidak masuk akal
+        # ditulis sebagai kolom CSV, jadi dikeluarkan dari ekspor.
+        df.drop(columns=["per_cut"], errors="ignore").to_csv(args.export, index=False)
         print(f"diekspor: {args.export}")
 
 

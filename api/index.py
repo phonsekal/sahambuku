@@ -4492,6 +4492,168 @@ PRECLOSE_GRADE_MEASURED = {
     },
 }
 
+# ---------------------------------------------------------------------------
+# JAM EKSEKUSI — KAPAN SEBAIKNYA MEMINDAI DAN MEMBELI
+# ---------------------------------------------------------------------------
+# Pertanyaan "jam berapa" tidak bisa dijawab dengan kebiasaan, jadi diukur PER JAM
+# POTONG: bar 5 menit dibandingkan dengan harga TUTUP RESMI hari yang sama, dan
+# diperiksa berapa sinyal yang masih memenuhi syaratnya saat penutupan. Semua jam potong
+# dihitung dari bar yang SUDAH diambil, jadi menambah jam tidak menambah permintaan ke
+# sumber data (itu sebabnya pengukuran ini tidak berbiaya).
+#
+# Diukur: research/preclose_study.py (223 emiten-hari, 112 emiten, 130 diperiksa, sesi
+# 2026-09-10 s/d 11). "|selisih|" = besar penyimpangan harga jam itu terhadap harga
+# tutup resmi tanpa memperhatikan arah; "bertahan" = sinyal >= 8% pada jam itu yang
+# MASIH >= 8% pada penutupan.
+#
+#   jam    | rata selisih | |selisih| | di luar +-0,5% | sinyal | bertahan | volume
+#   15:00  |     +0,018%  |   0,830% |     48,4%      |   11   |  90,9%   | 74,1%
+#   15:30  |     +0,184%  |   0,719% |     49,3%      |   10   | 100,0%   | 81,6%
+#   15:40  |     +0,070%  |   0,560% |     42,2%      |   10   | 100,0%   | 85,2%
+#   15:45  |     -0,006%  |   0,394% |     28,7%      |   10   | 100,0%   | 86,9%
+#
+# ARAHNYA MONOTON dan itu bagian yang paling bisa dipercaya: makin dekat penutupan,
+# makin dekat harganya ke harga tutup (15:00 dua kali lebih jauh dari 15:45: 0,83% vs
+# 0,39%). Volume yang sudah terkumpul pun baru 74% pada 15:00 vs 87% pada 15:45, dan itu
+# penting karena lantai nilai transaksi dihitung dari volume FINAL. Karena itu anjurannya
+# 15:40-15:49: harga sudah dekat tutup DAN masih ada waktu mengeksekusi. Pukul 15:00
+# tetap sah bila butuh waktu menyusun banyak pesanan — dengan risiko yang SUDAH DIUKUR
+# di atas, bukan risiko yang tidak diketahui.
+PRECLOSE_CUT_STUDY = {
+    "measured_on": "2026-09-16",
+    "sample": ("223 emiten-hari · 112 emiten (130 diperiksa) · sesi 2026-09-10 s/d 11; "
+               "bar 5 menit vs ringkasan harian IDX resmi"),
+    "script": "research/preclose_study.py --limit 130",
+    "cuts": [
+        {"label": "15:00", "mean_drift_pct": 0.018, "mean_abs_drift_pct": 0.830,
+         "out_of_half_pct": 48.4, "signals": 11, "survival_pct": 90.9,
+         "volume_share_pct": 74.1},
+        {"label": "15:30", "mean_drift_pct": 0.184, "mean_abs_drift_pct": 0.719,
+         "out_of_half_pct": 49.3, "signals": 10, "survival_pct": 100.0,
+         "volume_share_pct": 81.6},
+        {"label": "15:40", "mean_drift_pct": 0.070, "mean_abs_drift_pct": 0.560,
+         "out_of_half_pct": 42.2, "signals": 10, "survival_pct": 100.0,
+         "volume_share_pct": 85.2},
+        {"label": "15:45", "mean_drift_pct": -0.006, "mean_abs_drift_pct": 0.394,
+         "out_of_half_pct": 28.7, "signals": 10, "survival_pct": 100.0,
+         "volume_share_pct": 86.9},
+    ],
+    "best_label": "15:40",
+    "verdict": ("Pindai dan beli pada 15:40-15:49 WIB. Pada sampel ini 15:00 menyimpang "
+                "dua kali lebih jauh dari harga tutup (|selisih| 0,83% vs 0,39% pada "
+                "15:45) dan satu dari sebelas sinyalnya batal sebelum penutupan, "
+                "sedangkan 15:40 dan 15:45 tidak kehilangan sinyal sama sekali."),
+    "caveat": ("Sampel kecil: 2 sesi dan hanya 10-11 sinyal per jam, jadi yang kuat di "
+               "sini adalah POLA-nya (selisihnya mengecil secara monoton ke arah "
+               "penutupan), bukan angka persisnya. Perbandingan 15:00 vs 15:40 dari "
+               "sinyal yang benar-benar DIKIRIM diukur terpisah oleh cron verifikasi "
+               "20:00 dan ditampilkan sebagai catatan praktik."),
+}
+
+
+def preclose_exec_advice(sess: Optional[dict] = None,
+                         track: Optional[dict] = None) -> dict:
+    """Jam eksekusi yang dianjurkan HARI INI + alasannya + status pengukuran per jam.
+
+    Fungsi murni (tanpa jaringan, tanpa state) supaya jamnya bisa diuji pada setiap
+    fase sesi. Sumber anjuran ada dua, dan yang mana dipakai dinyatakan terang-terangan:
+      * "riset"  — hasil ukur per jam potong (PRECLOSE_CUT_STUDY), berlaku sejak awal;
+      * "praktik" — dipakai HANYA bila catatan akurasi harian sudah punya cukup hari
+        untuk DUA jam pengambilan. Kalau praktik berbicara, ia yang menang, karena ia
+        mengukur sinyal yang benar-benar dikirim — bukan simulasi.
+
+    Status yang dikembalikan bukan hiasan: ia membedakan "sekarang waktunya" dari
+    "tunggu" dan "sudah lewat", karena kesalahan yang paling mahal di mode ini adalah
+    membeli memakai harga sesi yang sudah selesai.
+    """
+    s = sess if isinstance(sess, dict) else preclose_session_info()
+    deadline = s.get("session_end_wib") or "15:49:59"
+    phase = s.get("phase")
+    open_now = bool(s.get("session_open"))
+    left = s.get("minutes_left")
+
+    cmp_ = (track or {}).get("comparison") if isinstance(track, dict) else None
+    cmp_ = cmp_ if isinstance(cmp_, dict) else {}
+    best_label = str(PRECLOSE_CUT_STUDY["best_label"])
+    basis = "riset"
+    raw = str(cmp_.get("best_by_mean_abs_drift") or "")
+    if cmp_.get("status") == "terukur" and len(raw) == 4 and raw.isdigit():
+        best_label = f"{raw[:2]}:{raw[2:]}"
+        basis = "praktik"
+
+    if phase == "AKHIR PEKAN":
+        status = "tutup"
+        action = ("Bursa tutup (akhir pekan). Pindai dan beli pada hari bursa berikutnya "
+                  f"pukul {best_label}-{deadline[:5]} WIB.")
+    elif not open_now and phase in ("SUDAH TUTUP", "DI LUAR SESI"):
+        status = "lewat"
+        action = (f"Sesi reguler hari ini sudah lewat (tutup {deadline} WIB). Hasil yang "
+                  "tampil membaca sesi terakhir yang SELESAI, jadi bukan harga yang bisa "
+                  "dibayar hari ini — jangan dipakai untuk entry. Pindai lagi pada hari "
+                  f"bursa berikutnya pukul {best_label}-{deadline[:5]} WIB.")
+    elif phase == "BELUM BUKA":
+        status = "tunggu"
+        action = (f"Sesi belum buka. Jam terbaik hari ini {best_label}-{deadline[:5]} WIB "
+                  "(setelah 15:00 harga berjalan sudah tersedia, tetapi yang paling dekat "
+                  "harga tutup adalah 15:40 ke atas).")
+    elif phase == "ISTIRAHAT":
+        status = "tunggu"
+        action = (f"Jeda siang. Sesi kedua berjalan sampai {deadline} WIB; pindai dan beli "
+                  f"pukul {best_label}-{deadline[:5]} WIB.")
+    elif open_now and s.get("measured_window_ok"):
+        status = "sekarang"
+        action = (f"JENDELA TERUKUR — eksekusi sebelum {deadline} WIB (sisa "
+                  f"{float(left or 0):.0f} menit). Harga masuk di tabel adalah harga pasar "
+                  "saat ini dan bisa dibayar hari ini.")
+    elif open_now and s.get("preclose_window_ok"):
+        status = "sekarang"
+        action = (f"Sudah masuk jendela pra-tutup, tetapi masih {float(left or 0):.0f} menit "
+                  "ke penutupan. Harga masuk di tabel sudah bisa dibayar hari ini; harga "
+                  "yang paling dekat harga tutup ada pada 15:40-15:49 (|selisih| terukur "
+                  "0,56% pada 15:40 vs 0,83% pada 15:00). Batas eksekusi "
+                  f"{deadline} WIB.")
+    elif open_now:
+        status = "tunggu"
+        action = (f"Terlalu awal: masih {float(left or 0):.0f} menit ke penutupan, jadi ini "
+                  "DI LUAR jendela pra-tutup. Harga yang tampil tetap bisa dibayar hari "
+                  "ini, tetapi klaim 'harga pra-tutup = harga tutup' hanya diukur pada "
+                  f"15:40-15:49. Jalankan lagi 15:40 WIB; batas eksekusi {deadline} WIB.")
+    else:
+        status = "tidak_jelas"
+        action = ("Fase sesi tidak bisa dipastikan dari jam saja (kemungkinan hari libur "
+                  "bursa: daftar libur tidak tersedia dari sumber data). Periksa apakah "
+                  "ada transaksi hari ini sebelum memakai harga di tabel.")
+
+    n_hari = cmp_.get("min_days_required") or 5
+    return {
+        "best_label": best_label,
+        "best_capture": best_label.replace(":", ""),
+        "deadline_wib": deadline,
+        "basis": basis,
+        "basis_note": ("Anjuran dari hasil ukur per jam potong (riset)." if basis == "riset"
+                       else ("Anjuran dari catatan akurasi HARIAN atas sinyal yang benar-"
+                             "benar dikirim (praktik) — ini yang dipakai karena lebih "
+                             "mengikat daripada simulasi.")),
+        "status": status,
+        "action": action,
+        "reason": (f"Makin dekat penutupan, makin dekat harganya ke harga tutup: "
+                   "|selisih| 0,83% (15:00) -> 0,72% (15:30) -> 0,56% (15:40) -> "
+                   "0,39% (15:45), dan volume yang sudah terkumpul 74% -> 87%. "
+                   f"Karena itu jam utama {best_label}, dengan batas akhir {deadline} WIB."),
+        "minutes_to_deadline": (round(float(left), 1) if open_now and left is not None
+                                else None),
+        "cut_study": PRECLOSE_CUT_STUDY,
+        "live_comparison": {
+            "status": cmp_.get("status") or "belum_ada",
+            "min_days_required": n_hari,
+            "note": cmp_.get("note") or ("Perbandingan praktik 15:00 vs 15:40 dihitung "
+                                         "oleh cron verifikasi 20:00 tiap hari bursa."),
+        },
+        "note": ("Jam di atas menyangkut HARGA MASUK, bukan kualitas sinyal: memindai "
+                 "lebih awal tidak membuat kandidatnya lebih baik, hanya memberi waktu "
+                 "eksekusi lebih longgar dengan harga yang lebih jauh dari harga tutup."),
+    }
+
 
 def preclose_grade(criteria: str, *, buy_score: Optional[float] = None,
                    day_return_pct: Optional[float] = None,
@@ -8296,6 +8458,10 @@ def preclose_track():
     tr = _preclose_track_record()
     return {
         "track_record": tr,
+        # Anjuran jam + status perbandingan praktik ikut di sini supaya panel riwayat bisa
+        # menampilkan "jam berapa sekarang" tanpa memanggil endpoint pemindaian (yang
+        # memakan satu permintaan kutipan per emiten).
+        "exec_advice": preclose_exec_advice(preclose_session_info(), tr),
         "note": ("Verifikasi dijalankan setelah data final tersedia (pukul 20:00 WIB). "
                  "Yang diukur: selisih harga masuk pra-tutup terhadap harga tutup "
                  "resmi, dan berapa banyak sinyal yang masih bertahan pada penutupan."),
@@ -8495,6 +8661,11 @@ def preclose_history(days: int = Query(7, ge=1, le=PRECLOSE_HIST_MAX_DAYS),
         "records": recs,
         "days": [r.get("date") for r in recs],
         "include_archived": include_archived,
+        # Jam eksekusi ikut dikirim di sini supaya panel riwayat bisa menjawab "kapan"
+        # tanpa permintaan kedua ke endpoint pemindaian (yang memakan satu kutipan per
+        # emiten). Isinya sama dengan yang dipakai panel hasil pemindaian.
+        "exec_advice": preclose_exec_advice(preclose_session_info(),
+                                            _preclose_track_record()),
         "storage": ("upstash" if SYNC_ENABLED else "tidak aktif"),
         "retention_days": int(PRECLOSE_HIST_TTL / 86400),
         "max_days": PRECLOSE_HIST_MAX_DAYS,
@@ -8636,6 +8807,10 @@ def screener_preclose(
     used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
                           period=period, workers=workers, criteria=used)
+    # Catatan akurasi dibaca SEKALI dan dipakai dua tempat (ditampilkan sebagai catatan
+    # + jadi dasar anjuran jam), supaya angkanya tidak bisa saling berbeda dalam satu
+    # respons dan tidak ada dua pembacaan penyimpanan yang tidak perlu.
+    _track = _preclose_track_record()
     resp = {
         # Kriteria yang BENAR-BENAR dipakai, supaya tabel di dashboard memilih kolom
         # yang tepat (mis. kolom Launch Pad saat kriteria launchpad).
@@ -8677,7 +8852,11 @@ def screener_preclose(
             "measured_risk": PRECLOSE_SURVIVAL_NOTE,
             "volume_share_assumed": PRECLOSE_VOLUME_SHARE,
             "engine": scan["engine"],
-            "track_record": _preclose_track_record(),
+            "track_record": _track,
+            # KAPAN SEBAIKNYA MEMINDAI & MEMBELI hari ini. Ditaruh di dalam blok
+            # preclose (bukan di akar respons) karena ia hanya bermakna di mode ini, dan
+            # dibaca bersama fase sesi yang jadi dasarnya.
+            "exec_advice": preclose_exec_advice(scan["session"], _track),
             "coverage_note": ("Emitten tanpa kutipan harga berjalan tidak diperiksa "
                               "(kolom quotes_failed). Cakupan bukan 100%."),
             "ticket_note": ("Penyaring ukuran tiket TIDAK aktif di mode ini karena "
@@ -8722,6 +8901,73 @@ def screener_preclose(
     # Riwayat server: kegagalan menyimpan TIDAK boleh menggagalkan pemindaian.
     resp["history_saved"] = _preclose_hist_merge(resp, source="api") if save else False
     return resp
+
+
+def _rp(v: Any) -> str:
+    """Harga untuk pesan Telegram: bulat dengan pemisah ribuan ala Indonesia ('2.650').
+
+    Sebelumnya notifikasi memakai num(x, 0) yang mengembalikan FLOAT, sehingga harga
+    tampil sebagai "2650.0" dan level rencana sebagai "2889.0". Di pesan yang dipakai
+    untuk menekan tombol beli, itu memperlambat pembacaan justru di baris terpenting.
+    Nilai kosong ditulis '-' alih-alih 'None'.
+    """
+    f = num(v, 0)
+    if f is None:
+        return "-"
+    return f"{f:,.0f}".replace(",", ".")
+
+
+def _preclose_exec_block(results: List[dict], sess: dict,
+                         max_kuat: int = 5, max_beli: int = 5) -> str:
+    """Blok SINGKAT "siap eksekusi" untuk notifikasi: batas waktu + harga masuk.
+
+    Kenapa dipisah dari badan pesan: daftar kandidat di bawahnya memuat konteks (kelas
+    likuiditas, SL/TP, jarak ke ambang) sehingga bagian yang BENAR-BENAR dipakai untuk
+    menekan tombol beli tenggelam di tengah pesan panjang — dan justru saat sesi berjalan,
+    yang dibutuhkan hanya dua hal: harganya dan sisa waktunya. Isinya karena itu dibatasi
+    (harga masuk saja, tanpa penjelasan), dan ia DIHITUNG sebagai fungsi murni supaya bisa
+    diuji tanpa mengirim pesan sungguhan.
+
+    Kosong bila sesi reguler tidak berjalan: di luar sesi tidak ada "batas eksekusi",
+    dan menuliskannya akan membuat penerima mengejar harga yang tidak bisa dibayar.
+    """
+    if not results or not (sess or {}).get("session_open"):
+        return ""
+    kuat: List[str] = []
+    beli: List[str] = []
+    for r in results:
+        if not isinstance(r, dict):
+            continue
+        grade = str(((r.get("rekomendasi") or {}).get("grade")) or "")
+        entry = r.get("entry_now") or r.get("price")
+        if entry is None or grade not in ("BELI KUAT", "BELI"):
+            continue
+        row = f"{strip_suffix(str(r.get('ticker') or ''))} ~{_rp(entry)}"
+        (kuat if grade == "BELI KUAT" else beli).append(row)
+    if not kuat and not beli:
+        return ("\n⏰ BATAS EKSEKUSI " + str(sess.get("session_end_wib") or "15:49:59") +
+                " WIB — tetapi TIDAK ada baris berlabel BELI KUAT/BELI pada pengambilan "
+                "ini (semuanya TUNGGU). Label TUNGGU bukan kandidat entry: tunggu sinyal "
+                "berikutnya alih-alih memaksakan yang ada.\n")
+    left = sess.get("minutes_left")
+    deadline = str(sess.get("session_end_wib") or "15:49:59")
+    head = (f"\n⏰ BATAS EKSEKUSI {deadline} WIB"
+            + (f" — sisa {float(left):.0f} menit" if left is not None else "")
+            + ". Lewat jam itu harga ini tidak bisa didapat lagi hari ini:\n")
+    lines = []
+    if kuat:
+        lines.append("🔥 BELI KUAT (beli di harga pasar berjalan): "
+                     + " · ".join(kuat[:max_kuat])
+                     + (f" · dan {len(kuat) - max_kuat} lagi" if len(kuat) > max_kuat else ""))
+    if beli:
+        lines.append("✅ BELI: " + " · ".join(beli[:max_beli])
+                     + (f" · dan {len(beli) - max_beli} lagi" if len(beli) > max_beli else ""))
+    # Jumlah "sisa kandidat" sengaja TIDAK ditulis: angka itu menghitung baris TUNGGU
+    # sebagai kandidat juga, dan baris TUNGGU bukan kandidat entry. Yang dibutuhkan
+    # penerima hanya keterangan harga dan letak daftar lengkapnya.
+    lines.append("Harga di atas = harga PASAR saat pesan ini dibuat, bukan harga tutup. "
+                 "Daftar lengkap per kriteria (termasuk yang TUNGGU) ada di bawah.")
+    return head + "\n".join(lines) + "\n"
 
 
 @app.get("/api/cron/preclose")
@@ -8850,7 +9096,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
                 ap = r.get("action_plan") or {}
                 entry = r.get("entry_now") or r.get("price") or p.get("entry")
                 parts = [f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
-                         f"{num(entry, 0)} ({num(r.get('day_return_pct'), 1)}%)"]
+                         f"{_rp(entry)} ({num(r.get('day_return_pct'), 1)}%)"]
                 # Label rekomendasi ikut di baris pertama notifikasi: tanpa itu, penerima
                 # Telegram harus membuka dashboard untuk tahu baris mana yang layak.
                 rec = r.get("rekomendasi") or {}
@@ -8861,8 +9107,8 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     parts.append(str(r["liquidity_grade"]))
                 out = " · ".join(parts)
                 if p.get("stop_loss") is not None:
-                    out += (f"\n     BELI SEKARANG ~{num(p.get('entry'), 0)} · "
-                            f"SL {num(p.get('stop_loss'), 0)} · TP {num(p.get('target'), 0)}"
+                    out += (f"\n     BELI SEKARANG ~{_rp(p.get('entry') or entry)} · "
+                            f"SL {_rp(p.get('stop_loss'))} · TP {_rp(p.get('target'))}"
                             f" · maks {p.get('max_hold_days', 5)} hari")
                 elif ap:
                     z = (ap.get("setup") or {}).get("zona_entry") or {}
@@ -8870,9 +9116,9 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     ref = ap.get("level_referensi") or lv.get("low") or z.get("low")
                     hi = lv.get("high") or z.get("high")
                     if ref:
-                        out += (f"\n     BELI SEKARANG ~{num(entry, 0)} · zona acuan "
-                                + num(ref, 0)
-                                + (f"-{num(hi, 0)}" if hi else ""))
+                        out += (f"\n     BELI SEKARANG ~{_rp(entry)} · zona acuan "
+                                + _rp(ref)
+                                + (f"-{_rp(hi)}" if hi else ""))
                 if mi.get("margin_to_threshold_pct") is not None:
                     out += (f"\n     jarak ke ambang {num(mi.get('margin_to_threshold_pct'), 1)}%"
                             + ("  ⚠ RAPUH (harga tinggal turun sedikit syaratnya batal)"
@@ -8918,6 +9164,10 @@ def cron_preclose(request: Request, secret: str = Query(""),
                        f"⚠️ SESI REGULER TIDAK BERJALAN (fase {sess['phase']}). Harga di "
                        f"bawah adalah harga sesi terakhir yang selesai, bukan harga "
                        f"berjalan yang bisa dibayar hari ini.\n"))
+            # Blok "siap eksekusi" ditaruh TEPAT di bawah kepala pesan, sebelum daftar
+            # lengkap: saat sesi berjalan, yang dibutuhkan hanya harga masuk dan sisa
+            # waktu, dan itu tidak boleh tenggelam di tengah pesan panjang.
+            exec_block = _preclose_exec_block(hasil, sess)
             body = []
             if used in ("momentum", "momentumkuat"):
                 if kuat:
@@ -8944,7 +9194,8 @@ def cron_preclose(request: Request, secret: str = Query(""),
                        f"mode pra-tutup; yang terukur adalah bahwa harga 15:45 hampir "
                        f"sama dengan harga tutup (median selisih 0,000%)."
                        if used in PRECLOSE_PATTERN_CRITERIA else ""))
-            if _telegram_send(head + "\n".join(body) + tail + "\n\n(dedesaputra_invst)"):
+            if _telegram_send(head + exec_block + "\n".join(body) + tail +
+                              "\n\n(dedesaputra_invst)"):
                 _upstash_set(dedupe, "1", ttl=86400)
                 sent = 1
 
@@ -8985,6 +9236,11 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     for r in scan["results"][:20]],
         "entry_price_meaning": ("harga pasar saat pemindaian (pra-tutup) — langsung "
                                 "bisa dibayar hari ini, bukan harga tutup"),
+        # Jam eksekusi + status pengukurannya ikut di respons cron, bukan hanya di
+        # dashboard: workflow 15:00/15:40 mencatatnya ke log, sehingga "jam mana yang
+        # dipakai hari itu" bisa ditelusuri dari log tanpa membuka aplikasi.
+        "exec_advice": preclose_exec_advice(sess, _preclose_track_record()),
+        "exec_block_sent": bool(sent) and bool(_preclose_exec_block(hasil, sess)),
         "entry_rule": PRECLOSE_ENTRY_RULE,
         "measured_risk": PRECLOSE_SURVIVAL_NOTE,
         "volume_share_assumed": PRECLOSE_VOLUME_SHARE,
