@@ -4323,6 +4323,17 @@ WIB_OFFSET = 7   # IDX memakai WIB (UTC+7)
 # ini menolak kandidat yang sebenarnya lolos. Angka ini juga dipakai di notifikasi.
 PRECLOSE_VOLUME_SHARE = 0.87
 
+# Batas atas `limit` mode pra-tutup. Mode ini memeriksa SETIAP emiten dengan satu
+# permintaan kutipan berjalan, jadi biayanya naik satu-satu — berbeda dari pemindaian
+# biasa yang membaca riwayat dari sumber yang sudah tersedia. Versi pertama membiarkan
+# limit sampai 951 (seluruh pasar) dalam SATU permintaan, dan itu memang bisa dipanggil
+# siapa saja lewat URL walau dashboard tidak pernah mengirimnya; pada 300 detik anggaran
+# satu permintaan, itu berisiko timeout dan pemakaian akan menerima galat alih-alih
+# halaman pertama. Karena itu dibatasi 300 — angka yang sama dengan batas /api/screener
+# dan pilihan terbesar di dashboard — dan sisanya diambil halaman demi halaman lewat
+# next_offset, yang sekarang sudah bekerja.
+PRECLOSE_MAX_LIMIT = 300
+
 # Diukur juga di berkas yang sama: harga pukul 15:45 hampir sama dengan harga tutup
 # resmi (median selisih 0,000%, rata-rata |selisih| 0,50%; untuk saham yang naik >=8%
 # rata-rata -0,54%), dan syarat bertahan di tutup pada 90,9% sinyal >=8% serta 94,7%
@@ -7990,7 +8001,9 @@ def screener_preclose(
     criteria: str = Query("momentumkuat",
                           pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$",
                           description="Kriteria yang dinilai pada keadaan sesi berjalan"),
-    limit: int = Query(250, ge=1, le=951, description="Jumlah emiten yang diperiksa harga berjalan"),
+    limit: int = Query(250, ge=1, le=PRECLOSE_MAX_LIMIT,
+                       description=(f"Jumlah emiten yang diperiksa harga berjalan (maks "
+                                    f"{PRECLOSE_MAX_LIMIT}; satu permintaan = satu kutipan per emiten)")),
     offset: int = Query(0, ge=0, description="Penghitung halaman (kelipatan limit); teruskan next_offset"),
     spread: Optional[bool] = Query(None, description="Sampel tersebar merata + berhalaman (default: aktif untuk universe=all)"),
     mom_min_pct: float = Query(8.0, ge=1.0, le=30.0, description="Ambang return harian berjalan (%)"),
@@ -8023,6 +8036,10 @@ def screener_preclose(
     kelompok berjarak seragam, dan gabungan semua halaman menutup seluruh emiten
     TEPAT SEKALI. Sebelumnya endpoint ini tidak menerima offset sama sekali,
     sehingga "Lanjut" tidak mungkin ada dan pemindaian pra-tutup mentok di sebesar limit.
+
+    BATAS: limit maksimum PRECLOSE_MAX_LIMIT (300), bukan seluruh 951 emiten, karena satu
+    emiten = satu permintaan kutipan berjalan. Permintaan di atas batas ditolak 422 dengan
+    pesan yang jelas; pakailah paginasi.
     """
     all_tickers = load_idx_tickers(universe)
     if spread is None:
@@ -8107,7 +8124,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
                   universe: str = Query("all", pattern="^(all|liquid)$"),
                   criteria: str = Query("momentumkuat",
                                         pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$"),
-                  limit: int = Query(250, ge=1, le=951),
+                  limit: int = Query(250, ge=1, le=PRECLOSE_MAX_LIMIT),
                   mom_min_pct: float = Query(8.0, ge=1.0, le=30.0),
                   min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0),
                   period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
