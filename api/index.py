@@ -1830,6 +1830,24 @@ def _upstash_set(key: str, value: str, ttl: int = 0) -> bool:
         return False
 
 
+def _upstash_del(key: str) -> bool:
+    """Hapus satu kunci (dipakai oleh purge riwayat pra-tutup)."""
+    if not SYNC_ENABLED:
+        return False
+    try:
+        req = urllib.request.Request(
+            UPSTASH_REST_URL,
+            data=json.dumps(["DEL", key]).encode("utf-8"),
+            headers={"Authorization": f"Bearer {UPSTASH_REST_TOKEN}",
+                     "Content-Type": "application/json"},
+            method="POST")
+        with urllib.request.urlopen(req, timeout=8) as resp:
+            j = json.loads(resp.read().decode("utf-8"))
+        return int((j or {}).get("result") or 0) >= 1
+    except Exception:
+        return False
+
+
 def _unwrap_json(raw: Optional[str], default):
     """Parse JSON string; buka pembungkus {"value": "..."} bila ada (kompatibilitas)."""
     if not raw:
@@ -8067,6 +8085,33 @@ def _preclose_hist_row(r: dict) -> dict:
     }
 
 
+def _capture_label(capture: str) -> str:
+    """"1500" -> "15:00". Label dipakai di notifikasi, riwayat, dan perbandingan."""
+    c = str(capture or "").strip()
+    return f"{c[:2]}:{c[2:]}" if len(c) == 4 and c.isdigit() else c
+
+
+def _hhmm_diff_min(a: str, b: str) -> Optional[int]:
+    """Selisih menit antara dua label jam "HHMM" (mis. "1500" vs "1043"), atau None."""
+    try:
+        ma = int(a[:2]) * 60 + int(a[2:])
+        mb = int(b[:2]) * 60 + int(b[2:])
+    except (TypeError, ValueError, IndexError):
+        return None
+    d = abs(ma - mb)
+    return min(d, 1440 - d)
+
+
+def _preclose_captures(day: str) -> List[str]:
+    """Label pengambilan yang tersimpan untuk satu tanggal (mis. ["1500", "1540"])."""
+    try:
+        raw = _upstash_get(f"ci:preclose:caps:{day}")
+        caps = [c for c in json.loads(raw or "[]") if isinstance(c, str)] if raw else []
+    except (TypeError, ValueError):
+        caps = []
+    return sorted(set(caps))
+
+
 def _preclose_hist_merge(payload: dict, *, source: str, telegram_sent: int = 0) -> bool:
     """Gabungkan satu hasil pemindaian pra-tutup ke catatan tanggal yang sama.
 
@@ -8109,6 +8154,10 @@ def _preclose_hist_merge(payload: dict, *, source: str, telegram_sent: int = 0) 
             "tuntas": payload.get("next_offset") is None,
             "scans": int(rec.get("scans") or 0) + 1,
             "sources": sorted(set((rec.get("sources") or []) + [source])),
+            # Jam pengambilan yang berkontribusi hari itu (mis. 15:00 dan 15:40). Dua
+            # pengambilan sengaja dijalankan supaya bisa DIBANDINGKAN akurasinya, bukan
+            # untuk menggandakan sinyal.
+            "captures": sorted(set((rec.get("captures") or []) + [str(payload.get("capture") or "")]).difference({""})),
             "telegram_sent": int(rec.get("telegram_sent") or 0) + int(telegram_sent or 0),
             "requested": max(int(rec.get("requested") or 0), int(payload.get("requested") or 0)),
             "quotes_today": payload.get("quotes_today"),
@@ -8137,8 +8186,8 @@ def _preclose_hist_merge(payload: dict, *, source: str, telegram_sent: int = 0) 
         return False
 
 
-def _preclose_hist_records(days: int = 7) -> List[dict]:
-    """Catatan harian terbaru (terlama dulu), lengkap dengan penanda yang hilang."""
+def _preclose_hist_records(days: int = 7, include_archived: bool = False) -> List[dict]:
+    """Catatan harian terbaru (terlama dulu). Arsip disembunyikan kecuali diminta."""
     if not SYNC_ENABLED:
         return []
     try:
@@ -8156,13 +8205,16 @@ def _preclose_hist_records(days: int = 7) -> List[dict]:
         except (TypeError, ValueError):
             continue
         if isinstance(rec, dict):
+            if rec.get("archived") and not include_archived:
+                continue
             out.append(rec)
     return out
 
 
 @app.get("/api/preclose/history")
 def preclose_history(days: int = Query(7, ge=1, le=PRECLOSE_HIST_MAX_DAYS),
-                     date: str = Query("", description="Satu tanggal saja (YYYY-MM-DD)")):
+                     date: str = Query("", description="Satu tanggal saja (YYYY-MM-DD)"),
+                     include_archived: bool = Query(False, description="Ikut sertakan catatan yang diarsipkan")):
     """Riwayat harian pindai pra-tutup dari SERVER (bukan localStorage satu perangkat).
 
     Kenapa di server: hasil pemindaian pra-tutup yang hanya disimpan di browser hilang
@@ -8180,10 +8232,11 @@ def preclose_history(days: int = Query(7, ge=1, le=PRECLOSE_HIST_MAX_DAYS),
             except (TypeError, ValueError):
                 recs = []
     else:
-        recs = _preclose_hist_records(days)
+        recs = _preclose_hist_records(days, include_archived=include_archived)
     return {
         "records": recs,
         "days": [r.get("date") for r in recs],
+        "include_archived": include_archived,
         "storage": ("upstash" if SYNC_ENABLED else "tidak aktif"),
         "retention_days": int(PRECLOSE_HIST_TTL / 86400),
         "max_days": PRECLOSE_HIST_MAX_DAYS,
@@ -8197,6 +8250,63 @@ def preclose_history(days: int = Query(7, ge=1, le=PRECLOSE_HIST_MAX_DAYS),
             "/api/screener/preclose atau /api/cron/preclose dijalankan.")),
         "disclaimer": DISCLAIMER,
     }
+
+
+
+@app.post("/api/preclose/history/flag")
+def preclose_history_flag(date: str = Query(..., description="Tanggal YYYY-MM-DD"),
+                          state: str = Query("archive", pattern="^(archive|restore|purge)$"),
+                          confirm: str = Query("", description="Untuk purge: tulis ulang tanggalnya di sini")):
+    """Arsipkan / kembalikan / hapus permanen SATU tanggal riwayat pra-tutup.
+
+    Kenapa tindakan bawaannya ARSIP, bukan hapus: catatan harian ini dipakai untuk
+    menelusuri kembali "apa yang muncul pada 15:40 di hari itu", jadi menghapusnya
+    menghilangkan bukti yang justru alasan fitur ini ada. Arsip bisa dibalik dan hanya
+    disembunyikan dari daftar. Hapus permanen tetap tersedia, tetapi harus dikonfirmasi
+    dengan menulis ulang tanggalnya supaya tidak ada satu klik yang menghabiskan riwayat.
+
+    CATATAN KEAMANAN: seperti endpoint tulis lain di aplikasi ini, tidak ada token
+    (dashboard tidak menyimpannya), jadi URL ini harus dianggap privat.
+    """
+    day = str(date or "").strip()
+    if len(day) != 10:
+        raise HTTPException(422, "Tanggal harus dalam format YYYY-MM-DD.")
+    if not SYNC_ENABLED:
+        raise HTTPException(503, "Penyimpanan cloud (Upstash) belum dikonfigurasi.")
+    key = f"ci:preclose:hist:{day}"
+    rec = None
+    raw = _upstash_get(key)
+    if raw:
+        try:
+            rec = json.loads(raw)
+        except (TypeError, ValueError):
+            rec = None
+    if state == "purge":
+        if confirm.strip() != day:
+            raise HTTPException(422, ("Hapus permanen butuh konfirmasi: isi `confirm` dengan "
+                                      f"tanggal yang sama ({day})."))
+        deleted = _upstash_del(key)
+        # Indeks tanggal ikut dibersihkan, kalau tidak /api/preclose/history akan
+        # mencoba membaca kunci yang sudah tidak ada setiap kali dibuka.
+        try:
+            days = [d for d in json.loads(_upstash_get("ci:preclose:days") or "[]")
+                    if isinstance(d, str) and d != day]
+            _upstash_set("ci:preclose:days", json.dumps(sorted(days)), ttl=PRECLOSE_HIST_TTL)
+        except (TypeError, ValueError):
+            pass
+        return {"ok": True, "date": day, "state": "purge", "deleted": bool(deleted),
+                "note": "Catatan tanggal ini dihapus permanen."}
+    if rec is None:
+        raise HTTPException(404, f"Tidak ada catatan riwayat pra-tutup untuk {day}.")
+    rec["archived"] = (state == "archive")
+    rec["archived_at_ts"] = int(time.time()) if rec["archived"] else None
+    ok = _upstash_set(key, json.dumps(rec, ensure_ascii=False, default=str),
+                      ttl=PRECLOSE_HIST_TTL)
+    if not ok:
+        raise HTTPException(502, "Gagal menulis ke penyimpanan cloud.")
+    return {"ok": True, "date": day, "state": state, "archived": rec["archived"],
+            "note": ("Catatan disembunyikan dari daftar (bisa dikembalikan)." if rec["archived"]
+                     else "Catatan dikembalikan ke daftar.")}
 
 
 @app.get("/api/screener/preclose")
@@ -8353,8 +8463,17 @@ def cron_preclose(request: Request, secret: str = Query(""),
                   mom_min_pct: float = Query(8.0, ge=1.0, le=30.0),
                   min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0),
                   period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
+                  capture: str = Query("1540", pattern="^[0-2][0-9][0-5][0-9]$",
+                                       description="Label jam pengambilan (1500/1540) — dipakai untuk membandingkan akurasi"),
                   send: bool = Query(True)):
     """Cron PINDAI PRA-TUTUP (jadwal 15:40 WIB, sebelum sesi reguler tutup 15:49:59).
+
+    DUA PENGAMBILAN: cron ini dijalankan juga pukul 15:00 dengan capture=1500. Tujuannya
+    BUKAN menggandakan sinyal, melainkan mengukur mana yang lebih akurat: pukul 15:00
+    memberi waktu eksekusi lebih longgar tetapi harganya masih 50 menit dari penutupan,
+    sedangkan 15:40 hanya 10 menit tetapi jendelanya sempit. Snapshot disimpan berlabel,
+    lalu /api/cron/preclose-verify menghitung selisih tiap label terhadap harga tutup
+    resmi, sehingga pilihannya berdasar angka — bukan kebiasaan.
 
     Bedanya dengan /api/cron/momentum (17:50 WIB): cron itu memindai data FINAL tetapi
     harga tutupnya sudah tidak bisa dibeli, sehingga rencananya hanya bisa dieksekusi
@@ -8367,6 +8486,21 @@ def cron_preclose(request: Request, secret: str = Query(""),
     bearer_ok = bool(CRON_SECRET) and auth == f"Bearer {CRON_SECRET}"
     if CRON_SECRET and secret != CRON_SECRET and not bearer_ok:
         raise HTTPException(403, "Forbidden")
+
+    # Label cap waktu HARUS mencerminkan jam sebenarnya. Tanpa penjaga ini, pemanggilan
+    # manual (workflow_dispatch) pukul 10:00 akan tersimpan sebagai "15:00" atau "15:40",
+    # dan SELURUH perbandingan jam jadi tidak sah — membandingkan jam yang salah lebih
+    # buruk daripada tidak membandingkan sama sekali. Jadi label yang dipakai adalah jam
+    # server saat itu, dan penyimpangan dilaporkan apa adanya.
+    capture_requested = capture
+    capture_actual = _wib_now().strftime("%H%M")
+    capture_note = None
+    diff_min = _hhmm_diff_min(capture_requested, capture_actual)
+    if diff_min is None or diff_min > 20:
+        capture_note = (f"Label yang diminta {_capture_label(capture_requested)} menyimpang "
+                        f"dari jam server {_capture_label(capture_actual)}; yang disimpan "
+                        "adalah jam sebenarnya supaya perbandingan antar-jam tetap sah.")
+        capture = capture_actual
 
     tickers = load_idx_tickers(universe)
     if universe == "all" and limit < len(tickers):
@@ -8395,6 +8529,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
         try:
             payload = {
                 "date_wib": sess["date_wib"], "captured_wib": sess["wib"],
+                "capture": capture, "capture_label": _capture_label(capture),
                 "criteria": used, "mom_min_pct": mom_min_pct,
                 "session": sess,
                 "signals": [{
@@ -8406,9 +8541,19 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     "breakout_20h": (r.get("momentum_info") or {}).get("breakout_20h"),
                 } for r in hasil],
             }
+            blob = json.dumps(payload, ensure_ascii=False, default=str)
             snapshot_saved = _upstash_set(
-                f"ci:preclose:sig:{sess['date_wib']}",
-                json.dumps(payload, ensure_ascii=False, default=str), ttl=30 * 86400)
+                f"ci:preclose:sig:{sess['date_wib']}:{capture}", blob, ttl=30 * 86400)
+            # Kompatibilitas: kunci lama (tanpa label) tetap ditulis untuk pengambilan
+            # 15:40, supaya pembaca lama maupun data yang sudah ada tidak putus.
+            if capture == "1540":
+                _upstash_set(f"ci:preclose:sig:{sess['date_wib']}", blob, ttl=30 * 86400)
+            try:
+                _upstash_set(f"ci:preclose:caps:{sess['date_wib']}",
+                             json.dumps(_preclose_captures(sess["date_wib"]) + [capture]),
+                             ttl=30 * 86400)
+            except (TypeError, ValueError):
+                pass
         except (TypeError, ValueError):
             snapshot_saved = False
     # Riwayat harian yang bisa dibaca dari perangkat mana pun (bukan localStorage). Cron
@@ -8417,7 +8562,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
     # yang otomatis terkirim.
     hist_saved = _preclose_hist_merge(
         {"universe": universe, "criteria": used, "limit": limit, "page": 1, "pages": 1,
-         "next_offset": None, "requested": len(tickers),
+         "next_offset": None, "requested": len(tickers), "capture": capture,
          "quotes_today": scan["quotes_today"], "quotes_failed": scan["quotes_failed"],
          "coverage_pct": scan["coverage_pct"], "results": hasil,
          "preclose": {"session": sess}},
@@ -8425,7 +8570,9 @@ def cron_preclose(request: Request, secret: str = Query(""),
 
     sent = 0
     if send and hasil and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
-        dedupe = f"ci:notif:preclose:{used}:{sess['date_wib']}"
+        # Cap waktu ikut di kunci: dua pengambilan sehari adalah dua pesan yang berbeda
+        # dan disengaja, jadi dedupe-nya tidak boleh saling menutup.
+        dedupe = f"ci:notif:preclose:{used}:{capture}:{sess['date_wib']}"
         if not _upstash_get(dedupe):
             def line(i: int, r: dict) -> str:
                 mi = r.get("momentum_info") or {}
@@ -8463,6 +8610,15 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     f"sisa sesi {sess['minutes_left']:.0f} menit\n"
                     "Harga masuk = harga PASAR SEKARANG (bisa dibayar hari ini).\n"
                     "Harga & volume belum final sampai lewat lelang penutupan.\n"
+                    # Pengambilan 15:00 dijelaskan apa adanya: waktu eksekusi lebih longgar,
+                    # tetapi jaraknya masih 50 menit ke penutupan sehingga lebih banyak
+                    # sinyal bisa batal. Akurasinya dibandingkan otomatis di 20:00.
+                    + (f"ℹ️ Pengambilan {_capture_label(capture)} lebih awal dari 15:40: "
+                       "waktu eksekusi lebih longgar, tetapi masih ~50 menit ke penutupan "
+                       "sehingga lebih banyak sinyal bisa batal sebelum tutup. Selisih "
+                       "akurasinya dibandingkan otomatis pada 20:00 (capture vs harga "
+                       "tutup resmi).\n" if capture != "1540" else "")
+                    + "\n",
                     # Kalau sesi reguler TIDAK berjalan (dijalankan manual di luar jam),
                     # itu dikatakan di depan: harga yang ditampilkan bukan harga berjalan
                     # yang bisa dibayar, melainkan harga sesi terakhir yang selesai.
@@ -8507,6 +8663,11 @@ def cron_preclose(request: Request, secret: str = Query(""),
         "engine": scan["engine"],
         "snapshot_saved": snapshot_saved,
         "history_saved": hist_saved,
+        "capture": capture,
+        "capture_label": _capture_label(capture),
+        "capture_requested": capture_requested,
+        "capture_note": capture_note,
+        "captures_today": _preclose_captures(sess["date_wib"]),
         "session": sess,
         "universe": universe,
         "requested": len(tickers),
@@ -8549,6 +8710,126 @@ PRECLOSE_SERIES_FUNCS = {
 }
 
 
+def _preclose_compare_verdict(by_capture: dict) -> dict:
+    """Simpulkan jam pengambilan mana yang lebih akurat — HANYA bila sampelnya cukup.
+
+    Kenapa harus berhati-hati: selisih antar-jam pada satu-dua hari adalah derau. Karena
+    itu ada syarat minimum hari sebelum kesimpulan apa pun diberikan, dan kesimpulan itu
+    ditulis sebagai pernyataan bersyarat ("sejauh yang terukur") supaya tidak dibaca
+    sebagai janji. Bila belum cukup, jawabannya adalah "belum bisa disimpulkan" beserta
+    berapa hari lagi yang dibutuhkan.
+    """
+    min_days = 5
+    labels = [k for k, v in (by_capture or {}).items() if v.get("n")]
+    if len(labels) < 2:
+        return {
+            "status": "perlu_dua_jam",
+            "labels": labels,
+            "note": ("Perbandingan 15:00 vs 15:40 butuh data dari dua jam pengambilan. "
+                     "Yang sudah ada: " + (", ".join(labels) if labels else "belum ada") + "."),
+        }
+    cukup = all((by_capture[l].get("days") or 0) >= min_days for l in labels)
+    ranked = sorted(labels, key=lambda l: (by_capture[l].get("mean_abs_drift_pct") or 999))
+    best = ranked[0]
+    out = {
+        "status": "terukur" if cukup else "sampel_kecil",
+        "min_days_required": min_days,
+        "labels": labels,
+        "best_by_mean_abs_drift": best,
+        "by_capture": {l: {"days": by_capture[l].get("days"),
+                           "mean_abs_drift_pct": by_capture[l].get("mean_abs_drift_pct"),
+                           "survival_pct": by_capture[l].get("survival_pct")} for l in ranked},
+        "note": (None if cukup else
+                 ("Jumlah harinya masih di bawah " + str(min_days) + " per jam, jadi "
+                  "selisih antar-jam di atas BELUM bisa dianggap kesimpulan — pada "
+                  "satu-dua sesi, selisih sekecil ini masih derau.")),
+    }
+    if cukup:
+        out["note"] = (f"Sejauh yang terukur ({by_capture[best].get('days')} hari, "
+                       f"{by_capture[best].get('n')} sinyal), pengambilan {best} punya "
+                       "selisih |harga masuk - harga tutup| terkecil. Angka ini bergerak "
+                       "mengikuti rezim pasar, jadi periksa ulang berkala — bukan "
+                       "patokan tetap.")
+    return out
+
+
+def _preclose_compare_snapshot(snap: dict, day: str) -> dict:
+    """Bandingkan sinyal SATU snapshot pra-tutup dengan bar FINAL hari yang sama.
+
+    Ditarik keluar sebagai fungsi karena sekarang ada DUA pengambilan per hari (15:00 dan
+    15:40) yang harus dibandingkan dengan cara yang sama persis — kalau logikanya
+    disalin, perbandingannya bisa berbeda diam-diam dan kesimpulannya tidak sah.
+    `rows` kosong berarti bar final belum ada (atau tidak ada sinyal yang bisa
+    dibandingkan); pemanggil TIDAK boleh mencatat apa pun dalam keadaan itu.
+    """
+    criteria = str(snap.get("criteria") or "momentumkuat")
+    mom_min_pct = float(snap.get("mom_min_pct") or 8.0)
+    rows: List[dict] = []
+    final_ready = 0
+    for s in snap.get("signals") or []:
+        tk = s.get("ticker")
+        if not tk:
+            continue
+        df, src = _get_ticker_data(tk, "6mo")
+        if df is None or len(df) < 25:
+            continue
+        try:
+            last_date = str(pd.Timestamp(df.index[-1]).date())
+        except (TypeError, ValueError):
+            last_date = None
+        entry = s.get("entry_now")
+        if last_date != day or entry in (None, 0):
+            continue
+        final_ready += 1
+        final_close = float(df["Close"].astype(float).iloc[-1])
+        drift = (final_close / float(entry) - 1) * 100
+        prev_close = (float(df["Close"].astype(float).iloc[-2]) if len(df) >= 2 else None)
+        ret_final = ((final_close / prev_close - 1) * 100 if prev_close else None)
+        if criteria in PRECLOSE_SERIES_FUNCS:
+            try:
+                fired_final = bool(PRECLOSE_SERIES_FUNCS[criteria](df).fillna(False).iloc[-1])
+            except Exception:
+                fired_final = None
+            survived = fired_final
+        else:
+            fired_final = None
+            survived = (ret_final is not None and ret_final >= mom_min_pct)
+        rows.append({
+            "ticker": tk,
+            # Namanya tidak lagi "entry_1540": dengan dua pengambilan, menyebut jamnya
+            # di dalam nama kolom justru menyesatkan.
+            "entry_capture": num(entry, 2),
+            "final_close": num(final_close, 2),
+            "drift_pct": num(drift, 3),
+            "final_day_return_pct": num(ret_final, 2),
+            "still_fires_at_close": survived,
+            "fired_on_final_pattern": fired_final,
+            "data_source": src,
+        })
+    return {"criteria": criteria, "rows": rows, "final_ready": final_ready}
+
+
+def _preclose_agg(rows: List[dict]) -> dict:
+    """Ringkasan satu kelompok baris: rata-rata selisih harga & berapa yang bertahan.
+
+    Menyimpan JUMLAH (sum) juga, bukan hanya rata-rata, supaya bisa dijumlahkan lintas
+    hari ketika catatan bergulir dihitung ulang per jam pengambilan.
+    """
+    drift_vals = [r["drift_pct"] for r in rows if r.get("drift_pct") is not None]
+    abs_vals = [abs(v) for v in drift_vals]
+    survived_n = sum(1 for r in rows if r.get("still_fires_at_close"))
+    n = len(drift_vals)
+    return {
+        "n": n,
+        "sum_drift_pct": round(sum(drift_vals), 4),
+        "sum_abs_drift_pct": round(sum(abs_vals), 4),
+        "survived": int(survived_n),
+        "mean_drift_pct": round(sum(drift_vals) / n, 3) if n else None,
+        "mean_abs_drift_pct": round(sum(abs_vals) / n, 3) if n else None,
+        "survival_pct": round(100.0 * survived_n / n, 1) if n else None,
+    }
+
+
 @app.get("/api/cron/preclose-verify")
 def cron_preclose_verify(request: Request, secret: str = Query(""),
                          date: str = Query("", description="Tanggal snapshot YYYY-MM-DD; kosong = hari ini WIB"),
@@ -8573,79 +8854,83 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
 
     sess = preclose_session_info()
     day = (date or sess["date_wib"]).strip()
-    raw = _upstash_get(f"ci:preclose:sig:{day}")
-    if not raw:
-        return {"ok": False, "date": day,
-                "reason": "Tidak ada snapshot pra-tutup tersimpan untuk tanggal ini.",
-                "note": ("Snapshot disimpan olek cron /api/cron/preclose; kalau cron "
-                         "belum pernah berjalan pada tanggal itu, tidak ada yang bisa "
-                         "diverifikasi.")}
-    try:
-        snap = json.loads(raw)
-    except (TypeError, ValueError):
-        return {"ok": False, "date": day, "reason": "Snapshot rusak / tidak dapat dibaca."}
-
-    criteria = str(snap.get("criteria") or "momentumkuat")
-    mom_min_pct = float(snap.get("mom_min_pct") or 8.0)
-    rows: List[dict] = []
-    final_ready = 0
-    for s in snap.get("signals") or []:
-        tk = s.get("ticker")
-        if not tk:
-            continue
-        df, src = _get_ticker_data(tk, "6mo")
-        if df is None or len(df) < 25:
+    # SEMUA pengambilan pada tanggal itu dibandingkan, bukan hanya satu: cron dijalankan
+    # pukul 15:00 dan 15:40 supaya "jam mana yang lebih akurat" bisa dijawab dengan angka
+    # dari sinyal yang benar-benar dikirim, bukan dengan kebiasaan.
+    captures = _preclose_captures(day)
+    snaps: List[tuple] = []
+    for cap in captures:
+        raw_cap = _upstash_get(f"ci:preclose:sig:{day}:{cap}")
+        if not raw_cap:
             continue
         try:
-            last_date = str(pd.Timestamp(df.index[-1]).date())
+            snaps.append((cap, json.loads(raw_cap)))
         except (TypeError, ValueError):
-            last_date = None
-        entry = s.get("entry_now")
-        if last_date != day or entry in (None, 0):
             continue
-        final_ready += 1
-        final_close = float(df["Close"].astype(float).iloc[-1])
-        drift = (final_close / float(entry) - 1) * 100
-        prev_close = (float(df["Close"].astype(float).iloc[-2])
-                      if len(df) >= 2 else None)
-        ret_final = ((final_close / prev_close - 1) * 100 if prev_close else None)
-        if criteria in PRECLOSE_SERIES_FUNCS:
+    if not snaps:
+        # Data lama (sebelum ada label cap waktu) hanya punya kunci tanpa label.
+        raw = _upstash_get(f"ci:preclose:sig:{day}")
+        if raw:
             try:
-                fired_final = bool(PRECLOSE_SERIES_FUNCS[criteria](df).fillna(False).iloc[-1])
-            except Exception:
-                fired_final = None
-            survived = fired_final
-        else:
-            fired_final = None
-            survived = (ret_final is not None and ret_final >= mom_min_pct)
-        rows.append({
-            "ticker": tk, "entry_1540": num(entry, 2),
-            "final_close": num(final_close, 2),
-            "drift_pct": num(drift, 3),
-            "final_day_return_pct": num(ret_final, 2),
-            "still_fires_at_close": survived,
-            "fired_on_final_pattern": fired_final,
-            "data_source": src,
-        })
+                snaps.append(("1540", json.loads(raw)))
+            except (TypeError, ValueError):
+                pass
+    if not snaps:
+        return {"ok": False, "date": day, "captures": captures,
+                "reason": "Tidak ada snapshot pra-tutup tersimpan untuk tanggal ini.",
+                "note": ("Snapshot disimpan oleh cron /api/cron/preclose; kalau cron "
+                         "belum pernah berjalan pada tanggal itu, tidak ada yang bisa "
+                         "diverifikasi.")}
 
-    if not rows:
-        return {"ok": False, "date": day, "criteria": criteria,
-                "signals_in_snapshot": len(snap.get("signals") or []),
-                "final_bars_ready": final_ready,
+    per_capture: List[dict] = []
+    for cap, s in snaps:
+        res = _preclose_compare_snapshot(s, day)
+        per_capture.append({
+            "capture": cap, "label": _capture_label(cap),
+            "criteria": res["criteria"],
+            "signals_in_snapshot": len(s.get("signals") or []),
+            "final_bars_ready": res["final_ready"],
+            "captured_wib": s.get("captured_wib"),
+            "rows": res["rows"],
+            "agg": _preclose_agg(res["rows"]) if res["rows"] else None,
+        })
+    ready = [p for p in per_capture if p["agg"]]
+    if not ready:
+        return {"ok": False, "date": day, "captures": captures,
+                "per_capture": [{k: v for k, v in p.items() if k != "rows"} for p in per_capture],
                 "reason": ("Data final untuk tanggal ini belum tersedia (bar final belum "
                            "ada), atau tidak ada sinyal yang bisa dibandingkan."),
                 "note": ("Jalankan lagi setelah pukul 19.30 WIB saat ringkasan harian "
                          "IDX sudah tersinkron. Tidak ada yang dicatat ke catatan akurasi.")}
+    # Pengambilan 15:40 dipakai untuk bagian lama respons (rows/criteria) supaya pembaca
+    # yang sudah ada tidak putus; perbandingan lengkapnya ada di by_capture.
+    prim = next((p for p in ready if p["capture"] == "1540"), ready[0])
+    primary_label = prim["capture"]
+    criteria = prim["criteria"]
+    rows = prim["rows"]
+    final_ready = sum(p["final_bars_ready"] for p in per_capture)
+    snap = next((s for cap, s in snaps if cap == prim["capture"]), snaps[0][1])
 
+    agg = prim["agg"]
     drift_vals = [r["drift_pct"] for r in rows if r.get("drift_pct") is not None]
     abs_vals = [abs(v) for v in drift_vals]
-    survived_n = sum(1 for r in rows if r.get("still_fires_at_close"))
+    survived_n = agg["survived"]
+    by_capture = {_capture_label(p["capture"]): dict(p["agg"], captured_wib=p["captured_wib"])
+                  for p in ready}
+    # Ringkasan per hari menyimpan angka per-cap, supaya catatan bergulir bisa dihitung
+    # ULANG per jam pengambilan — bukan hanya gabungannya. Tanpa ini, "jam mana yang
+    # lebih akurat" tidak bisa dijawab dari riwayat.
     day_summary = {
         "date": day, "criteria": criteria, "n": len(rows),
         "sum_drift_pct": round(sum(drift_vals), 4),
         "sum_abs_drift_pct": round(sum(abs_vals), 4),
         "survived": int(survived_n),
         "captured_wib": snap.get("captured_wib"),
+        "primary_capture": _capture_label(primary_label),
+        "by_capture": {label: {"n": a["n"], "sum_drift_pct": a["sum_drift_pct"],
+                               "sum_abs_drift_pct": a["sum_abs_drift_pct"],
+                               "survived": a["survived"]}
+                       for label, a in by_capture.items()},
     }
 
     track = _preclose_track_record() or {"history": []}
@@ -8656,6 +8941,28 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
     d_tot = sum(float(h.get("sum_drift_pct") or 0) for h in hist)
     a_tot = sum(float(h.get("sum_abs_drift_pct") or 0) for h in hist)
     s_tot = sum(int(h.get("survived") or 0) for h in hist)
+    # Akumulasi PER JAM PENGAMBILAN: "jam mana yang lebih akurat" hanya bisa dijawab dari
+    # jumlah lintas hari, bukan dari satu sesi. Hari-hari lama (sebelum ada label) tidak
+    # ikut dihitung di sini — tidak diketahui jamnya, dan menebak lebih buruk daripada
+    # mengaku kosong.
+    caps: dict = {}
+    for h in hist:
+        for label, s in (h.get("by_capture") or {}).items():
+            acc = caps.setdefault(label, {"days": 0, "n": 0, "d": 0.0, "a": 0.0, "s": 0})
+            acc["days"] += 1
+            acc["n"] += int(s.get("n") or 0)
+            acc["d"] += float(s.get("sum_drift_pct") or 0)
+            acc["a"] += float(s.get("sum_abs_drift_pct") or 0)
+            acc["s"] += int(s.get("survived") or 0)
+    by_capture = {}
+    for label, acc in sorted(caps.items()):
+        by_capture[label] = {
+            "days": acc["days"], "n": acc["n"],
+            "mean_drift_pct": round(acc["d"] / acc["n"], 3) if acc["n"] else None,
+            "mean_abs_drift_pct": round(acc["a"] / acc["n"], 3) if acc["n"] else None,
+            "survival_pct": round(100.0 * acc["s"] / acc["n"], 1) if acc["n"] else None,
+        }
+    comparison = _preclose_compare_verdict(by_capture)
     track = {
         "days": len(hist),
         "pairs": int(n_tot),
@@ -8664,10 +8971,12 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         "survival_pct": round(100.0 * s_tot / n_tot, 1) if n_tot else None,
         "last_date": day,
         "last_criteria": criteria,
+        "by_capture": by_capture,
+        "comparison": comparison,
         "history": hist,
-        "note": ("Dihitung dari sinyal yang benar-benar dikirim oleh cron pra-tutup, "
-                 "dibandingkan harga tutup resmi hari yang sama. Ini pengukuran atas "
-                 "PRAKTIK, bukan simulasi."),
+        "note": ("Dihitung dari sinyal yang benar-benar dikirim oleh cron pra-tutup "
+                 "(pukul 15:00 dan 15:40), dibandingkan harga tutup resmi hari yang sama. "
+                 "Ini pengukuran atas PRAKTIK, bukan simulasi."),
     }
     saved = _upstash_set("ci:preclose:track", json.dumps(track, ensure_ascii=False,
                                                          default=str), ttl=0)
@@ -8677,14 +8986,21 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         dedupe = f"ci:notif:preclose-verif:{day}:{criteria}"
         if not _upstash_get(dedupe):
             worst = sorted(rows, key=lambda r: (r.get("drift_pct") or 0))[:3]
+            per_jam = "\n".join(
+                f"  · {label}: |selisih| {num(a['mean_abs_drift_pct'], 3)}% · bertahan "
+                f"{num(a['survival_pct'], 1)}% ({a['n']} sinyal, {a['days']} hari)"
+                for label, a in sorted(by_capture.items()))
             msg = (f"✅ VERIFIKASI PRA-TUTUP · {day} · kriteria {criteria}\n"
-                   f"Sinyal dibandingkan: {len(rows)}\n"
-                   f"Selisih harga masuk (15:40) ke tutup resmi: rata-rata "
+                   f"Sinyal dibandingkan (pengambilan {_capture_label(primary_label)}): "
+                   f"{len(rows)}\n"
+                   f"Selisih harga masuk (pengambilan {_capture_label(primary_label)}) ke "
+                   f"tutup resmi: rata-rata "
                    f"{num(sum(drift_vals) / len(drift_vals), 3)}% · rata-rata |selisih| "
                    f"{num(sum(abs_vals) / len(abs_vals), 3)}%\n"
                    f"Sinyal yang MASIH berlaku pada penutupan: {survived_n}/{len(rows)} "
                    f"({num(100.0 * survived_n / len(rows), 1)}%)\n"
-                   f"Selisih terbesar: " + " · ".join(
+                   + (f"PER JAM PENGAMBILAN:\n{per_jam}\n" if len(by_capture) > 1 else "")
+                   + f"Selisih terbesar: " + " · ".join(
                        f"{strip_suffix(str(r['ticker']))} {num(r.get('drift_pct'), 2)}%"
                        for r in worst)
                    + f"\n\nCATATAN AKURASI BERGULIR ({track['days']} hari, {track['pairs']} "
@@ -8697,6 +9013,10 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
 
     return {
         "ok": True, "date": day, "criteria": criteria,
+        "primary_capture": _capture_label(primary_label),
+        "captures_compared": sorted(by_capture.keys()),
+        # Bagian utama respons mengikuti pengambilan 15:40 (bila ada) supaya pembaca lama
+        # tidak putus; perbandingan antar-jam ada di by_capture + comparison.
         "signals_in_snapshot": len(snap.get("signals") or []),
         "compared": len(rows),
         "captured_wib": snap.get("captured_wib"),
@@ -8704,13 +9024,17 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         "mean_abs_drift_pct": num(sum(abs_vals) / len(abs_vals), 3),
         "survival_pct": num(100.0 * survived_n / len(rows), 1),
         "survived": survived_n,
+        "by_capture": by_capture,
+        "comparison": comparison,
+        "per_capture": [{k: v for k, v in p.items() if k != "rows"} for p in per_capture],
         "track_record_saved": saved,
         "track_record": track,
         "telegram_sent": sent,
         "rows": rows,
         "note": ("Selisih negatif = harga tutup lebih rendah dari harga masuk pra-tutup "
                  "(Anda membayar lebih mahal); positif = harga tutup lebih tinggi. "
-                 "'Bertahan' berarti sinyal masih memenuhi syaratnya pada data final."),
+                 "'Bertahan' berarti sinyal masih memenuhi syaratnya pada data final. "
+                 "Kolom entry_capture = harga pasar saat pengambilan itu dilakukan."),
         "disclaimer": DISCLAIMER,
     }
 

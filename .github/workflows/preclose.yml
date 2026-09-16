@@ -16,23 +16,53 @@ name: Pindai Pra-Tutup (harga masuk bisa dibayar hari ini)
 #
 # BATASAN YANG DISEBUT DI NOTIFIKASI: harga & volume belum final sampai lewat lelang
 # penutupan (~16:00), dan penyaring ukuran tiket (Freq) belum tersedia intraday.
+# DUA JADWAL, dan itu disengaja:
+#   15:00 WIB (capture=1500) — waktu eksekusi lebih longgar, tetapi harganya masih ~50
+#     menit dari penutupan sehingga lebih banyak sinyal bisa batal sebelum tutup.
+#   15:40 WIB (capture=1540) — hanya 10 menit dari penutupan, jadi paling mirip harga
+#     tutup, tetapi jendela eksekusinya sempit.
+# Keduanya disimpan berlabel, lalu cron verifikasi 20:00 membandingkan MASING-MASING dengan
+# harga tutup resmi. Tujuannya supaya pilihan jam berdasar angka, bukan kebiasaan.
 on:
   schedule:
+    - cron: "0 8 * * 1-5"    # 08:00 UTC = 15:00 WIB, Senin-Jumat
     - cron: "40 8 * * 1-5"   # 08:40 UTC = 15:40 WIB, Senin-Jumat (10 menit sebelum tutup)
-  workflow_dispatch: {}
+  workflow_dispatch: {}      # manual: menjalankan KEDUANYA (berguna untuk membandingkan)
 
 jobs:
-  pindai-pra-tutup:
+  pindai-1500:
+    if: github.event.schedule == '0 8 * * 1-5' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Panggil endpoint /api/cron/preclose
+      - name: Panggil endpoint /api/cron/preclose (capture 1500)
+        run: |
+          set -euo pipefail
+          echo "Memindai pra-tutup 15:00 pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1500")
+          echo "HTTP $code"
+          cat resp_preclose.json
+          echo
+          if [ "$code" != "200" ]; then
+            echo "::error::Endpoint pra-tutup membalas HTTP $code"
+            exit 1
+          fi
+          echo "Selesai."
+
+  pindai-1540:
+    if: github.event.schedule == '40 8 * * 1-5' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Panggil endpoint /api/cron/preclose (capture 1540)
         run: |
           set -euo pipefail
           echo "Memindai pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
           code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8")
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1540")
           echo "HTTP $code"
           cat resp_preclose.json
           echo

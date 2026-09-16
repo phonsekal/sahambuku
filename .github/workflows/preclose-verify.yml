@@ -18,7 +18,18 @@ name: Verifikasi Pra-Tutup (harga masuk 15:40 vs harga tutup resmi)
 on:
   schedule:
     - cron: "0 13 * * 1-5"   # 13:00 UTC = 20:00 WIB, Senin-Jumat (setelah sinkronisasi IDX)
-  workflow_dispatch: {}
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Tanggal yang diverifikasi ulang (YYYY-MM-DD). Kosongkan = hari ini WIB."
+        required: false
+        default: ""
+      send:
+        description: "Kirim ringkasan verifikasi ke Telegram?"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
 
 jobs:
   verifikasi-pra-tutup:
@@ -28,10 +39,18 @@ jobs:
       - name: Panggil endpoint /api/cron/preclose-verify
         run: |
           set -euo pipefail
+          # Tanggal kosong = perilaku lama (hari ini WIB). Diisi = verifikasi ULANG tanggal
+          # lampau, yang berguna kalau bar final baru tersedia belakangan atau ada
+          # pengambilan yang terlewat verifikasinya.
+          DATE="${{ github.event.inputs.date || '' }}"
+          SEND="${{ github.event.inputs.send || 'true' }}"
+          URL="https://sahambuku.vercel.app/api/cron/preclose-verify?send=${SEND}"
+          if [ -n "$DATE" ]; then URL="${URL}&date=${DATE}"; fi
           echo "Verifikasi pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          echo "URL: $URL"
           code=$(curl -sS --max-time 280 -o resp_verify.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/preclose-verify")
+            "$URL")
           echo "HTTP $code"
           cat resp_verify.json
           echo

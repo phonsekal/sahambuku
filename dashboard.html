@@ -1534,6 +1534,32 @@ async function resumePreclose() {
 // ringkasan per tanggal — dan yang disimpan adalah kolom pengambil keputusan, bukan
 // seluruh payload. Endpoint-nya mengembalikan alasan bila kosong, jadi "belum ada"
 // dibedakan dari "penyimpanan belum dikonfigurasi".
+// Arsip: disembunyikan dari daftar, bukan dihapus — catatan harian ini justru dipakai
+// untuk menelusuri kembali apa yang muncul pada 15:40 di hari itu.
+let precloseShowArchived = false;
+
+async function flagPrecloseHistory(date, state) {
+  if (state === "purge" && !confirm(`Hapus PERMANEN catatan ${date}?\n\nArsipkan saja kalau hanya ingin menyembunyikannya — arsip bisa dikembalikan, hapus tidak.`)) return;
+  try {
+    const q = new URLSearchParams({ date: date, state: state });
+    if (state === "purge") q.set("confirm", date);
+    const d = await getJSON(`/api/preclose/history/flag?${q}`);
+    toast(d.note || "Selesai.", "success");
+    const box = $("#precloseHist");
+    box.dataset.loaded = "0";
+    await loadPrecloseHistory();
+  } catch (e) {
+    toast(`Gagal: ${e.message}`, "sl");
+  }
+}
+
+async function togglePrecloseArchived() {
+  precloseShowArchived = !precloseShowArchived;
+  const box = $("#precloseHist");
+  box.dataset.loaded = "0";
+  await loadPrecloseHistory();
+}
+
 async function loadPrecloseHistory() {
   const box = $("#precloseHist"), btn = $("#btnPrecloseHist");
   if (!box) return;
@@ -1541,7 +1567,7 @@ async function loadPrecloseHistory() {
   btn.disabled = true; const idle = btn.textContent; btn.textContent = "Memuat…";
   box.innerHTML = `<div class="text-[11px] text-slate-500 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">Mengambil riwayat dari server…</div>`;
   try {
-    const d = await getJSON("/api/preclose/history?days=7");
+    const d = await getJSON(`/api/preclose/history?days=7&include_archived=${precloseShowArchived ? "true" : "false"}`);
     const recs = d.records || [];
     if (!recs.length) {
       box.innerHTML = `<div class="text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">🗂 <b>Riwayat pra-tutup (server):</b> ${esc(d.empty_reason || "belum ada catatan.")}</div>`;
@@ -1558,7 +1584,12 @@ async function loadPrecloseHistory() {
             <span><b class="text-slate-200">${(r.results || []).length}</b> kandidat</span>
             <span>${r.tuntas ? "<span class=\"text-emerald-400\">tuntas</span>" : "<span class=\"text-amber-300\">belum tuntas" + (r.page ? ` (halaman ${r.page}/${r.pages})` : "") + "</span>"}</span>
             ${r.telegram_sent ? `<span class="text-sky-300">Telegram terkirim</span>` : ""}
-            <span class="text-slate-500">${esc((r.sources || []).join("+"))}${r.scans > 1 ? ` · ${r.scans} pengambilan` : ""}</span>
+            <span class="text-slate-500">${esc((r.sources || []).join("+"))}${r.scans > 1 ? ` · ${r.scans} pengambilan` : ""}${(r.captures || []).length > 1 ? ` · jam ${esc((r.captures || []).map(c => c.slice(0, 2) + ":" + c.slice(2)).join(" & "))}` : ""}</span>
+            ${r.archived ? `<span class="text-amber-300">🗄 diarsipkan</span>` : ""}
+            <span class="whitespace-nowrap">
+              <button onclick="flagPrecloseHistory('${esc(r.date)}', '${r.archived ? "restore" : "archive"}')" class="text-slate-400 hover:underline" title="${r.archived ? "Kembalikan ke daftar" : "Sembunyikan dari daftar (bisa dikembalikan); catatannya TIDAK dihapus"}">${r.archived ? "↩ kembalikan" : "🗄 arsipkan"}</button>
+              · <button onclick="flagPrecloseHistory('${esc(r.date)}', 'purge')" class="text-rose-400/80 hover:underline" title="Hapus permanen catatan tanggal ini (butuh konfirmasi)">✕ hapus</button>
+            </span>
           </div>
           ${rows.length ? `<div class="mt-1 text-slate-300">${rows.map(x => `<span class="inline-block mr-3 whitespace-nowrap">${esc(stripJK(x.ticker))} <b>${fmt(x.price, 0)}</b> <span class="${(x.day_return_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmt(x.day_return_pct, 1)}%</span>${x.breakout_20h ? " 💥" : ""}${x.fragile ? " ⚠" : ""}${x.stop_loss != null ? ` <span class="text-slate-500">SL ${fmt(x.stop_loss, 0)}/TP ${fmt(x.take_profit, 0)}</span>` : ""}</span>`).join("")}${more ? `<span class="text-slate-500">+${more} lagi</span>` : ""}</div>` : ""}
         </div>`;
@@ -1566,7 +1597,8 @@ async function loadPrecloseHistory() {
       box.innerHTML = `<div class="text-[11px] text-slate-300 bg-slate-900/60 border border-slate-700 rounded-xl px-3.5 py-2.5">
         <div class="mb-1"><b>🗂 Riwayat pra-tutup dari SERVER</b> <span class="text-slate-500">(${recs.length} hari terakhir, retensi ${d.retention_days} hari · penyimpanan ${esc(d.storage)})</span></div>
         ${hari}
-        <div class="mt-2 text-slate-500">Harga di sini adalah harga PASAR saat pemindaian pada hari itu (kolom pengambil keputusan saja). Lubang hari berarti pemindaian pra-tutup tidak dijalankan pada tanggal itu — bukan berarti tidak ada kandidat.</div>
+        <div class="mt-2 text-slate-500">Harga di sini adalah harga PASAR saat pemindaian pada hari itu (kolom pengambil keputusan saja). Lubang hari berarti pemindaian pra-tutup tidak dijalankan pada tanggal itu — bukan berarti tidak ada kandidat.
+          <button onclick="togglePrecloseArchived()" class="text-slate-400 hover:underline ml-1">${precloseShowArchived ? "sembunyikan arsip" : "tampilkan arsip"}</button></div>
       </div>`;
     }
     box.dataset.loaded = "1";
@@ -1794,6 +1826,23 @@ function renderScan(d) {
     const tr = pc.track_record;
     if (tr && tr.pairs) {
       h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">📊 <b>CATATAN AKURASI MODE INI</b> (dari sinyal yang benar-benar dikirim, bukan simulasi) · ${tr.days} hari · ${tr.pairs} sinyal: rata-rata selisih harga masuk ke harga tutup <b>${tr.mean_drift_pct >= 0 ? "+" : ""}${fmt(tr.mean_drift_pct, 3)}%</b> · rata-rata |selisih| <b>${fmt(tr.mean_abs_drift_pct, 3)}%</b> · sinyal yang masih berlaku saat penutupan <b>${fmt(tr.survival_pct, 1)}%</b>.${tr.last_date ? ` Terakhir diperiksa ${esc(tr.last_date)} (${esc(tr.last_criteria || "")}).` : ""}</div>`;
+    // PERBANDINGAN JAM PENGAMBILAN (15:00 vs 15:40): cron sengaja dijalankan dua kali,
+    // jadi pertanyaan "jam mana yang lebih akurat" harus dijawab dengan angka dari sinyal
+    // yang benar-benar dikirim. Kesimpulannya ditahan sampai sampelnya cukup, dan itu
+    // dikatakan apa adanya oleh server (status sampel_kecil) alih-alih dipaksakan.
+    const bc = (tr && tr.by_capture) || {};
+    const bcKeys = Object.keys(bc);
+    if (bcKeys.length) {
+      const cmp = tr.comparison || {};
+      h += `<div class="mb-3 text-[11px] text-violet-200/90 bg-violet-500/10 border border-violet-500/30 rounded-xl px-3.5 py-2.5">🕐 <b>PERBANDINGAN JAM PENGAMBILAN</b> (cron dijalankan dua kali sehari)${bcKeys.length > 1 ? "" : " — baru satu jam yang punya data"}:<div class="mt-1 flex flex-wrap gap-x-4 gap-y-1">`
+        + bcKeys.sort().map(k => {
+            const a = bc[k], best = cmp.best_by_mean_abs_drift === k && cmp.status === "terukur";
+            return `<span>${best ? "✅ " : ""}<b class="${best ? "text-emerald-300" : "text-slate-200"}">${esc(k)}</b>: rata-rata |selisih| <b>${fmt(a.mean_abs_drift_pct, 3)}%</b> · rata-rata ${fmt(a.mean_drift_pct, 3)}% · bertahan <b>${fmt(a.survival_pct, 1)}%</b> <span class="text-slate-500">(${a.n} sinyal, ${a.days} hari)</span></span>`;
+          }).join("")
+        + `</div>`
+        + (cmp.note ? `<div class="mt-1 ${cmp.status === "terukur" ? "text-emerald-200/90" : "text-amber-300/90"}">${cmp.status === "terukur" ? "✓ " : "⚠ "}${esc(cmp.note)}</div>` : "")
+        + `<div class="mt-1 text-slate-500">Kenapa dua kali: 15:40 hanya 10 menit dari penutupan (paling mirip harga tutup, tetapi jendela eksekusinya sempit), sedangkan 15:00 memberi waktu eksekusi lebih longgar tetapi harganya masih ~50 menit dari tutup sehingga lebih banyak sinyal bisa batal. Selisih inilah yang diukur, bukan dianggap.</div></div>`;
+    }
     } else if (pc.track_record !== undefined) {
       h += `<div class="mb-3 text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">📊 Belum ada catatan akurasi tersimpan. Verifikasi dibandingkan dengan harga tutup resmi setelah data final tersedia (pukul 20:00 WIB), jadi catatan ini terisi mulai hari pertama cron pra-tutup berjalan.</div>`;
     }
