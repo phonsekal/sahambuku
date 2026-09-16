@@ -8618,7 +8618,6 @@ def cron_preclose(request: Request, secret: str = Query(""),
                        "sehingga lebih banyak sinyal bisa batal sebelum tutup. Selisih "
                        "akurasinya dibandingkan otomatis pada 20:00 (capture vs harga "
                        "tutup resmi).\n" if capture != "1540" else "")
-                    + "\n",
                     # Kalau sesi reguler TIDAK berjalan (dijalankan manual di luar jam),
                     # itu dikatakan di depan: harga yang ditampilkan bukan harga berjalan
                     # yang bisa dibayar, melainkan harga sesi terakhir yang selesai.
@@ -8809,6 +8808,25 @@ def _preclose_compare_snapshot(snap: dict, day: str) -> dict:
     return {"criteria": criteria, "rows": rows, "final_ready": final_ready}
 
 
+def _capture_in_window(captured_wib: Optional[str]) -> Optional[bool]:
+    """Apakah snapshot diambil DI DALAM jendela pra-tutup (15:00-15:49:59 WIB)?
+
+    Kenapa ini penting dan bukan sekadar hiasan: pengambilan yang dilakukan SETELAH bursa
+    tutup memakai harga final, sehingga selisih terhadap harga tutup SELALU 0% — bukan
+    karena 15:40 akurat, melainkan karena yang dibandingkan adalah harga yang sama. Kalau
+    hari seperti itu ikut dirata-ratakan, catatan akurasi akan tampak sempurna padahal
+    tidak mengukur apa pun. Karena itu kejadian di luar jendela dipisahkan, bukan dicampur.
+    Mengembalikan None bila jamnya tidak bisa dibaca (data lama).
+    """
+    try:
+        t = str(captured_wib or "").split(" ")[1]
+        hh, mm = int(t[:2]), int(t[3:5])
+    except (IndexError, ValueError):
+        return None
+    m = hh * 60 + mm
+    return (15 * 60) <= m <= (15 * 60 + 49)
+
+
 def _preclose_agg(rows: List[dict]) -> dict:
     """Ringkasan satu kelompok baris: rata-rata selisih harga & berapa yang bertahan.
 
@@ -8891,6 +8909,7 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
             "signals_in_snapshot": len(s.get("signals") or []),
             "final_bars_ready": res["final_ready"],
             "captured_wib": s.get("captured_wib"),
+            "in_window": _capture_in_window(s.get("captured_wib")),
             "rows": res["rows"],
             "agg": _preclose_agg(res["rows"]) if res["rows"] else None,
         })
@@ -8927,27 +8946,52 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         "survived": int(survived_n),
         "captured_wib": snap.get("captured_wib"),
         "primary_capture": _capture_label(primary_label),
-        "by_capture": {label: {"n": a["n"], "sum_drift_pct": a["sum_drift_pct"],
-                               "sum_abs_drift_pct": a["sum_abs_drift_pct"],
-                               "survived": a["survived"]}
-                       for label, a in by_capture.items()},
+        "by_capture": {_capture_label(p["capture"]): {
+            "n": p["agg"]["n"], "sum_drift_pct": p["agg"]["sum_drift_pct"],
+            "sum_abs_drift_pct": p["agg"]["sum_abs_drift_pct"],
+            "survived": p["agg"]["survived"], "in_window": p["in_window"]}
+            for p in ready},
     }
 
     track = _preclose_track_record() or {"history": []}
     hist = [h for h in (track.get("history") or []) if h.get("date") != day]
     hist.append(day_summary)
     hist = hist[-60:]
-    n_tot = sum(int(h.get("n") or 0) for h in hist)
-    d_tot = sum(float(h.get("sum_drift_pct") or 0) for h in hist)
-    a_tot = sum(float(h.get("sum_abs_drift_pct") or 0) for h in hist)
-    s_tot = sum(int(h.get("survived") or 0) for h in hist)
+    # Judul besar (days/pairs/mean_*) juga harus mengikuti aturan yang sama dengan angka
+    # per jam: hari yang pengambilannya di luar jendela TIDAK dihitung. Kalau tidak,
+    # panelnya akan menampilkan "1 hari · 6 sinyal · bertahan 100%" tepat di sebelah
+    # tulisan bahwa hari itu tidak dipakai — dua angka yang saling bertentangan.
+    def _day_counts(h: dict) -> bool:
+        bc = h.get("by_capture") or {}
+        if bc:
+            return any(v.get("in_window") is not False for v in bc.values())
+        return _capture_in_window(h.get("captured_wib")) is not False
+
+    used = [h for h in hist if _day_counts(h)]
+    days_excluded = len(hist) - len(used)
+    n_tot = sum(int(h.get("n") or 0) for h in used)
+    d_tot = sum(float(h.get("sum_drift_pct") or 0) for h in used)
+    a_tot = sum(float(h.get("sum_abs_drift_pct") or 0) for h in used)
+    s_tot = sum(int(h.get("survived") or 0) for h in used)
     # Akumulasi PER JAM PENGAMBILAN: "jam mana yang lebih akurat" hanya bisa dijawab dari
     # jumlah lintas hari, bukan dari satu sesi. Hari-hari lama (sebelum ada label) tidak
     # ikut dihitung di sini — tidak diketahui jamnya, dan menebak lebih buruk daripada
     # mengaku kosong.
     caps: dict = {}
+    excluded: List[dict] = []
     for h in hist:
         for label, s in (h.get("by_capture") or {}).items():
+            # Pengambilan di luar jendela pra-tutup (mis. snapshot dari pemanggilan manual
+            # sore/malam) TIDAK ikut dirata-ratakan: harganya sudah final, jadi selisihnya
+            # 0% secara bawaan dan akan membuat catatan akurasi tampak sempurna tanpa
+            # mengukur apa pun. Tetap dilaporkan, tetapi terpisah.
+            if s.get("in_window") is False:
+                excluded.append({"date": h.get("date"), "capture": label,
+                                 "n": int(s.get("n") or 0),
+                                 "reason": ("Snapshot diambil di luar jendela pra-tutup "
+                                            "(15:00-15:49 WIB), jadi harganya sudah final: "
+                                            "selisih 0% itu wajar dan bukan bukti akurasi.")})
+                continue
             acc = caps.setdefault(label, {"days": 0, "n": 0, "d": 0.0, "a": 0.0, "s": 0})
             acc["days"] += 1
             acc["n"] += int(s.get("n") or 0)
@@ -8964,19 +9008,25 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         }
     comparison = _preclose_compare_verdict(by_capture)
     track = {
-        "days": len(hist),
+        # `days`/`pairs` hanya menghitung hari yang pengambilannya DI DALAM jendela, jadi
+        # angkanya sejalan dengan `by_capture`. Sisanya dilaporkan di days_excluded.
+        "days": len(used),
         "pairs": int(n_tot),
         "mean_drift_pct": round(d_tot / n_tot, 3) if n_tot else None,
         "mean_abs_drift_pct": round(a_tot / n_tot, 3) if n_tot else None,
         "survival_pct": round(100.0 * s_tot / n_tot, 1) if n_tot else None,
         "last_date": day,
         "last_criteria": criteria,
+        "days_used": len(used),
+        "days_excluded": days_excluded,
         "by_capture": by_capture,
         "comparison": comparison,
+        "excluded_out_of_window": excluded[-10:],
         "history": hist,
         "note": ("Dihitung dari sinyal yang benar-benar dikirim oleh cron pra-tutup "
                  "(pukul 15:00 dan 15:40), dibandingkan harga tutup resmi hari yang sama. "
-                 "Ini pengukuran atas PRAKTIK, bukan simulasi."),
+                 "Ini pengukuran atas PRAKTIK, bukan simulasi. Pengambilan di luar jendela "
+                 "15:00-15:49 WIB dipisahkan (lihat excluded_out_of_window)."),
     }
     saved = _upstash_set("ci:preclose:track", json.dumps(track, ensure_ascii=False,
                                                          default=str), ttl=0)
@@ -9000,6 +9050,13 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
                    f"Sinyal yang MASIH berlaku pada penutupan: {survived_n}/{len(rows)} "
                    f"({num(100.0 * survived_n / len(rows), 1)}%)\n"
                    + (f"PER JAM PENGAMBILAN:\n{per_jam}\n" if len(by_capture) > 1 else "")
+                   # Kalau snapshotnya diambil setelah bursa tutup, angkanya wajar 0% dan
+                   # itu BUKAN bukti akurasi. Dikatakan di notifikasi supaya tidak disangka
+                   # hasil sempurna.
+                   + (f"⚠ Snapshot diambil {snap.get('captured_wib')} WIB, DI LUAR jendela "
+                      "pra-tutup (15:00-15:49). Harganya sudah final, jadi selisih ~0% itu "
+                      "wajar dan TIDAK membuktikan akurasi 15:40.\n"
+                      if _capture_in_window(snap.get("captured_wib")) is False else "")
                    + f"Selisih terbesar: " + " · ".join(
                        f"{strip_suffix(str(r['ticker']))} {num(r.get('drift_pct'), 2)}%"
                        for r in worst)
@@ -9026,6 +9083,13 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         "survived": survived_n,
         "by_capture": by_capture,
         "comparison": comparison,
+        "in_window": next((p["in_window"] for p in per_capture if p["capture"] == prim["capture"]), None),
+        "window_warning": (None if _capture_in_window(snap.get("captured_wib")) is not False else
+                           (f"Snapshot diambil pukul {snap.get('captured_wib')} WIB — di luar "
+                            "jendela pra-tutup (15:00-15:49), jadi harganya sudah final dan "
+                            "selisih mendekati 0% itu wajar. Angka ini TIDAK membuktikan "
+                            "akurasi 15:40; hanya berlaku untuk hari yang diambil di dalam "
+                            "jendela.")),
         "per_capture": [{k: v for k, v in p.items() if k != "rows"} for p in per_capture],
         "track_record_saved": saved,
         "track_record": track,

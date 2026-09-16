@@ -27,7 +27,14 @@ on:
   schedule:
     - cron: "0 8 * * 1-5"    # 08:00 UTC = 15:00 WIB, Senin-Jumat
     - cron: "40 8 * * 1-5"   # 08:40 UTC = 15:40 WIB, Senin-Jumat (10 menit sebelum tutup)
-  workflow_dispatch: {}      # manual: menjalankan KEDUANYA (berguna untuk membandingkan)
+  workflow_dispatch:         # manual: menjalankan KEDUANYA (berguna untuk membandingkan)
+    inputs:
+      send:
+        description: "Kirim notifikasi Telegram?"
+        required: false
+        default: "true"
+        type: choice
+        options: ["true", "false"]
 
 jobs:
   pindai-1500:
@@ -38,10 +45,11 @@ jobs:
       - name: Panggil endpoint /api/cron/preclose (capture 1500)
         run: |
           set -euo pipefail
-          echo "Memindai pra-tutup 15:00 pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          SEND="${{ github.event.inputs.send || 'true' }}"
+          echo "Memindai pra-tutup 15:00 pada $(date -u '+%Y-%m-%d %H:%M:%S UTC') (send=$SEND)"
           code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1500")
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1500&send=${SEND}")
           echo "HTTP $code"
           cat resp_preclose.json
           echo
@@ -59,10 +67,11 @@ jobs:
       - name: Panggil endpoint /api/cron/preclose (capture 1540)
         run: |
           set -euo pipefail
-          echo "Memindai pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+          SEND="${{ github.event.inputs.send || 'true' }}"
+          echo "Memindai pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC') (send=$SEND)"
           code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1540")
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1540&send=${SEND}")
           echo "HTTP $code"
           cat resp_preclose.json
           echo

@@ -1825,7 +1825,7 @@ function renderScan(d) {
     if (pc.measured_risk) h += `<div class="mb-3 text-[11px] text-emerald-200/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">📐 <b>RISIKO MODE INI SUDAH DIUKUR, BUKAN DIANGGAP:</b> ${esc(pc.measured_risk)}</div>`;
     const tr = pc.track_record;
     if (tr && tr.pairs) {
-      h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">📊 <b>CATATAN AKURASI MODE INI</b> (dari sinyal yang benar-benar dikirim, bukan simulasi) · ${tr.days} hari · ${tr.pairs} sinyal: rata-rata selisih harga masuk ke harga tutup <b>${tr.mean_drift_pct >= 0 ? "+" : ""}${fmt(tr.mean_drift_pct, 3)}%</b> · rata-rata |selisih| <b>${fmt(tr.mean_abs_drift_pct, 3)}%</b> · sinyal yang masih berlaku saat penutupan <b>${fmt(tr.survival_pct, 1)}%</b>.${tr.last_date ? ` Terakhir diperiksa ${esc(tr.last_date)} (${esc(tr.last_criteria || "")}).` : ""}</div>`;
+      h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">📊 <b>CATATAN AKURASI MODE INI</b> (dari sinyal yang benar-benar dikirim, bukan simulasi) · ${tr.days} hari${tr.days_excluded ? ` (+${tr.days_excluded} hari di luar jendela, TIDAK dihitung)` : ""} · ${tr.pairs} sinyal: rata-rata selisih harga masuk ke harga tutup <b>${tr.mean_drift_pct >= 0 ? "+" : ""}${fmt(tr.mean_drift_pct, 3)}%</b> · rata-rata |selisih| <b>${fmt(tr.mean_abs_drift_pct, 3)}%</b> · sinyal yang masih berlaku saat penutupan <b>${fmt(tr.survival_pct, 1)}%</b>.${tr.last_date ? ` Terakhir diperiksa ${esc(tr.last_date)} (${esc(tr.last_criteria || "")}).` : ""}</div>`;
     // PERBANDINGAN JAM PENGAMBILAN (15:00 vs 15:40): cron sengaja dijalankan dua kali,
     // jadi pertanyaan "jam mana yang lebih akurat" harus dijawab dengan angka dari sinyal
     // yang benar-benar dikirim. Kesimpulannya ditahan sampai sampelnya cukup, dan itu
@@ -1841,10 +1841,18 @@ function renderScan(d) {
           }).join("")
         + `</div>`
         + (cmp.note ? `<div class="mt-1 ${cmp.status === "terukur" ? "text-emerald-200/90" : "text-amber-300/90"}">${cmp.status === "terukur" ? "✓ " : "⚠ "}${esc(cmp.note)}</div>` : "")
+        + ((tr.excluded_out_of_window || []).length
+            ? `<div class="mt-1 text-amber-300/90">⚠ ${(tr.excluded_out_of_window || []).length} pengambilan <b>di luar jendela pra-tutup</b> (mis. pemanggilan manual sore/malam) sengaja TIDAK dirata-ratakan: harganya sudah final, jadi selisihnya ~0% secara bawaan dan akan membuat catatan ini tampak sempurna tanpa mengukur apa pun.</div>` : "")
         + `<div class="mt-1 text-slate-500">Kenapa dua kali: 15:40 hanya 10 menit dari penutupan (paling mirip harga tutup, tetapi jendela eksekusinya sempit), sedangkan 15:00 memberi waktu eksekusi lebih longgar tetapi harganya masih ~50 menit dari tutup sehingga lebih banyak sinyal bisa batal. Selisih inilah yang diukur, bukan dianggap.</div></div>`;
     }
     } else if (pc.track_record !== undefined) {
-      h += `<div class="mb-3 text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">📊 Belum ada catatan akurasi tersimpan. Verifikasi dibandingkan dengan harga tutup resmi setelah data final tersedia (pukul 20:00 WIB), jadi catatan ini terisi mulai hari pertama cron pra-tutup berjalan.</div>`;
+      const trx = pc.track_record;
+      const adaTapiKosong = !!trx && (trx.days_used || 0) === 0 && (trx.days_excluded || 0) > 0;
+      h += `<div class="mb-3 text-[11] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">📊 `
+        + (adaTapiKosong
+            ? `Catatan akurasi <b>ada</b>, tetapi <b>belum ada satu hari pun yang dihitung</b>: ${trx.days_excluded} pengambilan terjadi di luar jendela 15:00-15:49 WIB sehingga harganya sudah final — selisih ~0% di situ wajar dan bukan bukti akurasi, jadi sengaja dipisahkan. Angka pertama muncul setelah pengambilan di dalam jendela dijalankan dan diverifikasi pukul 20:00 WIB.`
+            : `Belum ada catatan akurasi tersimpan. Verifikasi dibandingkan dengan harga tutup resmi setelah data final tersedia (pukul 20:00 WIB), jadi catatan ini terisi mulai hari pertama cron pra-tutup berjalan.`)
+        + `</div>`;
     }
     h += `<div class="mb-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">Batasan yang ikut ditanggung mode ini: <b>harga &amp; volume belum final</b> sampai lewat lelang penutupan (~16:00), sehingga syarat "naik &ge;8%" dan "tembus high 20 hari" bisa batal sebelum tutup — kandidat dengan jarak &le;2% dari ambang ditandai <b>RAPUH</b>. <b>Penyaring tiket tidak aktif</b> (jumlah transaksi baru ada setelah bursa tutup). Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini; sisanya tidak diperiksa).</div>`;
   }
