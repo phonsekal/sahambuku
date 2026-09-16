@@ -1610,7 +1610,7 @@ async function loadPrecloseHistory() {
               · <button onclick="flagPrecloseHistory('${esc(r.date)}', 'purge')" class="text-rose-400/80 hover:underline" title="Hapus permanen catatan tanggal ini (butuh konfirmasi)">✕ hapus</button>
             </span>
           </div>
-          ${rows.length ? `<div class="mt-1 text-slate-300">${rows.map(x => `<span class="inline-block mr-3 whitespace-nowrap">${esc(stripJK(x.ticker))} <b>${fmt(x.price, 0)}</b> <span class="${(x.day_return_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmt(x.day_return_pct, 1)}%</span>${x.breakout_20h ? " 💥" : ""}${x.fragile ? " ⚠" : ""}${x.stop_loss != null ? ` <span class="text-slate-500">SL ${fmt(x.stop_loss, 0)}/TP ${fmt(x.take_profit, 0)}</span>` : ""}</span>`).join("")}${more ? `<span class="text-slate-500">+${more} lagi</span>` : ""}</div>` : ""}
+          ${rows.length ? `<div class="mt-1 text-slate-300">${rows.map(x => `<span class="inline-block mr-3 whitespace-nowrap">${esc(stripJK(x.ticker))} <b>${fmt(x.price, 0)}</b> <span class="${(x.day_return_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmt(x.day_return_pct, 1)}%</span>${x.rekomendasi ? ` <span title="rekomendasi saat dipindai: ${esc(x.rekomendasi)}">${x.rekomendasi === "BELI KUAT" ? "🔥" : (x.rekomendasi === "BELI" ? "✅" : "⏳")}</span>` : ""}${x.breakout_20h ? " 💥" : ""}${x.fragile ? " ⚠" : ""}${x.stop_loss != null ? ` <span class="text-slate-500">SL ${fmt(x.stop_loss, 0)}/TP ${fmt(x.take_profit, 0)}</span>` : ""}</span>`).join("")}${more ? `<span class="text-slate-500">+${more} lagi</span>` : ""}</div>` : ""}
         </div>`;
       }).join("");
       // Jam eksekusi ditampilkan juga di sini: panel ini yang dipakai di luar jam bursa,

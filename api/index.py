@@ -8506,6 +8506,11 @@ def _preclose_hist_row(r: dict) -> dict:
         "take_profit": num(plan.get("take_profit"), 2),
         "entry_rule": plan.get("entry_rule"),
         "criteria_met": r.get("criteria_met"),
+        # Label rekomendasi ikut disimpan: blok "batas eksekusi" di notifikasi Telegram
+        # hanya memuat baris BELI KUAT/BELI, dan tanpa label tersimpan, pertanyaan "baris
+        # mana yang tadi dikirim untuk dieksekusi" tidak bisa diperiksa lagi keesokan
+        # hari dari riwayat.
+        "rekomendasi": str(((r.get("rekomendasi") or {}).get("grade")) or "") or None,
     }
 
 
