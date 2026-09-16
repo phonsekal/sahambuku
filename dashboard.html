@@ -471,6 +471,22 @@ function buyScoreChip(bs) {
     : "border-rose-500/40 bg-rose-500/10 text-rose-400";
   return `<span title="${esc(bs.label || "")} — skor komposit kualitas beli 0-100 (beda dari sinyal BUY/SELL/HOLD)" class="inline-block text-[11px] px-2 py-0.5 rounded-full border font-bold cursor-help ${cls}">${fmt(sc, 0)}</span>`;
 }
+// Rekomendasi baris pindai pra-tutup: BELI KUAT / BELI / TUNGGU.
+// Sumbernya `preclose_grade` di api/index.py (fungsi yang sama yang diuji
+// research/preclose_grade_study.py) — di sini hanya ditampilkan, tidak dihitung ulang,
+// supaya label di layar tidak pernah berbeda dari label yang diukur.
+function recChip(rec) {
+  if (!rec || !rec.grade) return '<span class="text-slate-600">—</span>';
+  const map = {
+    "BELI KUAT": "border-emerald-400/60 bg-emerald-500/20 text-emerald-300",
+    "BELI": "border-sky-500/40 bg-sky-500/10 text-sky-300",
+    "TUNGGU": "border-slate-600 bg-slate-800/80 text-slate-400",
+  };
+  const icon = rec.grade === "BELI KUAT" ? "🔥" : (rec.grade === "BELI" ? "✅" : "⏳");
+  const why = [].concat(rec.reasons || [])
+    .concat((rec.caveats || []).map(c => "⚠ " + c)).join(" · ");
+  return `<span title="${esc(why || rec.rule || "")}" class="inline-block text-[10px] px-2 py-0.5 rounded-full border font-bold whitespace-nowrap cursor-help ${map[rec.grade] || "border-slate-600 text-slate-400"}">${icon} ${esc(rec.grade)}</span>`;
+}
 function brkTag(t) {
   const k = (t.kekuatan || "").toLowerCase();
   if (k === "kuat") return `<span title="Broker kuat (bandar/institusi) per buku Bab 4 & 7: AK, BK, ZP, YU, BB, CC, dll." class="inline-block text-[9px] px-1.5 py-0.5 rounded-full border border-emerald-500/40 bg-emerald-500/10 text-emerald-400 font-bold align-middle cursor-help">🏦 BANDAR</span>`;
@@ -1785,7 +1801,7 @@ function renderScan(d) {
   // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
   // 16 kolom dasar (15 + kolom 🔔 Pantau yang kini SELALU ada); koreksi menambah 2
   // (Support + AVG Bandar) karena kolom 🔔-nya sudah dihitung di dasar.
-  const nCols = 16 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 2 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0) + (isMomoLike ? 1 : 0);
+  const nCols = 17 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 2 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0) + (isMomoLike ? 1 : 0);
   let h = isKoreksi
     ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
     : (isRS
@@ -1823,6 +1839,23 @@ function renderScan(d) {
     // "sesi tidak berjalan" padahal itu hanya belum diperiksa.
     if (ss.phase && !openNow) h += `<div class="mb-3 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚠️ Sesi reguler sedang <b>TIDAK berjalan</b> (${esc(ss.phase || "?")}). Hasil ini membaca sesi terakhir yang selesai, jadi bukan pra-tutup. Jalankan lagi pada 15:00-15:49 WIB untuk memakai harga yang bisa dibayar hari itu.</div>`;
     if (pc.measured_risk) h += `<div class="mb-3 text-[11px] text-emerald-200/90 bg-emerald-500/10 border border-emerald-500/30 rounded-xl px-3.5 py-2.5">📐 <b>RISIKO MODE INI SUDAH DIUKUR, BUKAN DIANGGAP:</b> ${esc(pc.measured_risk)}</div>`;
+    // Panel ATURAN rekomendasi: label tanpa penjelasan hanya menambah kolom baru.
+    // Angkanya datang dari server (preclose.grade.measured), jadi tidak bisa berbeda
+    // dari laporan pengukuran tanpa disadari.
+    const gr = pc.grade || {}, gmeas = gr.measured || {}, gp = gmeas.per_label || {};
+    if (gr.table) {
+      const ruleTxt = Object.keys(gr.table).map(k =>
+        `${esc(k)}: ` + gr.table[k].map(([a, l]) => `&ge;${fmt(a, 0)} ${esc(l)}`).join(" / ")).join(" · ");
+      const measTxt = Object.keys(gp).map(k => {
+        const v = gp[k];
+        return `<span class="whitespace-nowrap">${esc(k)}: <b class="${v.net5_pct > 0 ? "text-emerald-300" : "text-rose-300"}">${v.net5_pct >= 0 ? "+" : ""}${fmt(v.net5_pct, 2)}%</b> <span class="text-slate-500">(blok t ${v.block_t5 >= 0 ? "+" : ""}${fmt(v.block_t5, 1)} · ${fmt(v.win_pct, 1)}% untung · n=${fmt(v.n, 0)} · paruh ${(v.halves_pct || []).map(x => (x >= 0 ? "+" : "") + fmt(x, 2)).join("/")})</span></span>`;
+      }).join(" · ");
+      h += `<div class="mb-3 text-[11px] text-indigo-200/90 bg-indigo-500/10 border border-indigo-500/30 rounded-xl px-3.5 py-2.5">🧭 <b>REKOMENDASI PER BARIS (BELI KUAT / BELI / TUNGGU)</b> — kolom ini <b>bukan sinyal baru</b>: ia meringkas kriteria yang sedang dipindai + skor beli (kolom 🎯 Beli), yang keduanya sudah diukur. Kolom <b>Sinyal</b> tetap terpisah dan artinya berbeda (momentum saat ini).
+        <div class="mt-1">Aturan: ${ruleTxt}</div>
+        ${measTxt ? `<div class="mt-1.5 pt-1.5 border-t border-indigo-500/20">Bukti (${esc(gmeas.measured_on || "")}, ${esc(gmeas.universe || "")}): ${measTxt}. <span class="text-slate-400">${esc(gmeas.basis || "")}</span></div>` : ""}
+        ${(gmeas.honest_notes || gr.note) ? `<div class="mt-1 text-amber-300/90">⚠ ${esc(gmeas.honest_notes || gr.note)}</div>` : ""}
+      </div>`;
+    }
     const tr = pc.track_record;
     if (tr && tr.pairs) {
       h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">📊 <b>CATATAN AKURASI MODE INI</b> (dari sinyal yang benar-benar dikirim, bukan simulasi) · ${tr.days} hari${tr.days_excluded ? ` (+${tr.days_excluded} hari di luar jendela, TIDAK dihitung)` : ""} · ${tr.pairs} sinyal: rata-rata selisih harga masuk ke harga tutup <b>${tr.mean_drift_pct >= 0 ? "+" : ""}${fmt(tr.mean_drift_pct, 3)}%</b> · rata-rata |selisih| <b>${fmt(tr.mean_abs_drift_pct, 3)}%</b> · sinyal yang masih berlaku saat penutupan <b>${fmt(tr.survival_pct, 1)}%</b>.${tr.last_date ? ` Terakhir diperiksa ${esc(tr.last_date)} (${esc(tr.last_criteria || "")}).` : ""}</div>`;
@@ -1877,6 +1910,7 @@ function renderScan(d) {
     <thead><tr class="text-[11px] uppercase text-slate-500 border-b border-slate-700/60 bg-slate-800/30">
       <th class="text-left px-4 py-3">Saham</th><th class="text-right px-3">Harga</th><th class="text-right px-3">Perubahan</th>
       <th class="text-right px-3">Value</th><th class="text-right px-3">Vol/MA20</th><th class="text-left px-3">Sinyal</th>
+      <th class="text-center px-3" title="Rekomendasi mode pra-tutup: BELI KUAT / BELI / TUNGGU. Bukan sinyal baru — label ini meringkas kriteria yang sedang dipindai + skor beli 0-100, dan angka hasil ukurnya ada di panel aturan di atas tabel.">🧭 Rekomendasi</th>
       ${isRS ? `<th class="text-center px-3" title="Kekuatan relatif vs IHSG: RS line = harga saham ÷ IHSG. Rekor RS saat IHSG melemah = LEADER">RS</th>` : ""}
       ${isBreakout ? `<th class="text-right px-3" title="High tertinggi 20 hari sebelumnya — level yang baru ditembus, dan jarak harga di atasnya">High 20h</th>` : ""}
       ${isLaunchpad ? `<th class="text-right px-3" title="Syarat pola Launch Pad: kenaikan sebelum base, seberapa rapat base-nya (semakin kecil semakin baik, ≤0,80), harga breakout base, dan volume vs MA20">Launch Pad</th>` : ""}
@@ -1914,6 +1948,7 @@ function renderScan(d) {
       <td class="px-3 text-right tabular text-slate-400">${fmtIdr(r.estimated_value_idr)}</td>
       <td class="px-3 text-right tabular">${fmt(r.volume_ratio_to_ma20)}×</td>
       <td class="px-3">${r.signal ? sigBadge(r.signal, true) : '<span class="text-slate-600">—</span>'}</td>
+      <td class="px-3 text-center">${recChip(r.rekomendasi)}</td>
       ${isRS ? `<td class="px-3 text-center">${rsChip(r.relative_strength)}</td>` : ""}
       ${isBreakout ? `<td class="px-3 text-right tabular">${bi.high20 ? `${fmt(bi.high20)}<div class="text-[10px] text-emerald-400">${bi.above_pct != null ? "+" + fmt(bi.above_pct, 1) + "%" : ""}</div>` : "—"}</td>` : ""}
       ${isLaunchpad ? (() => { const li = r.launchpad_info || {}; return `<td class="px-3 text-right tabular">${li.breakout_price ? `${fmt(li.breakout_price)}<div class="text-[10px] text-orange-300">naik ${fmt(li.prior_gain_pct, 1)}% · rapat ${Number(li.contraction_ratio || 0).toFixed(2)} · vol ${fmt(li.volume_ratio, 1)}×</div>` : "—"}</td>`; })() : ""}

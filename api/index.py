@@ -4382,6 +4382,173 @@ PRECLOSE_SURVIVAL_NOTE = (
 )
 
 
+# ---------------------------------------------------------------------------
+# REKOMENDASI BARIS PRA-TUTUP (BELI KUAT / BELI / TUNGGU)
+# ---------------------------------------------------------------------------
+# Kenapa ada: tabel pindai pra-tutup menampilkan banyak angka (perubahan hari ini,
+# kelas likuiditas, skor beli, RRR, rencana) tetapi TIDAK menjawab pertanyaan yang
+# paling sering ditanyakan: "jadi ini boleh dibeli atau tidak?". Sebelumnya jawabannya
+# harus disimpulkan sendiri dari kolom-kolom itu — dan pada jalur momentum jawabannya
+# bahkan tidak bisa disimpulkan, karena kolom Sinyal dan skor Beli memang kosong di
+# jalur itu (dua kolom itu hanya dihitung jalur pola).
+#
+# CARA KERJANYA SENGAJA BUKAN MODEL BARU, DAN BUKAN SISTEM POIN KARANGAN: setiap
+# sel tabel di bawah adalah HASIL PENGUKURAN yang bisa dibaca di
+# research/preclose_grade_study.py (grid kriteria x skor beli atas panel ringkasan
+# harian IDX 2020-2026, 1,36 juta saham-hari, 0 kuota provider). Angka di komentar
+# adalah alpha 5 hari terhadap KELAS LIKUIDITAS YANG SAMA, sudah dipotong biaya
+# 0,3% round-trip ("net5"), pada harga masuk = harga tutup hari sinyal — yaitu harga
+# yang memang dibayar di mode pra-tutup, dan TIDAK bisa dibayar bila pemindaian
+# dilakukan setelah bursa tutup.
+#
+PRECLOSE_GRADE_ORDER = ("BELI KUAT", "BELI", "TUNGGU")
+PRECLOSE_GRADE_TABLE = {
+    # kriteria            ambang skor beli -> label          (net5 terukur + jumlah kejadian)
+    "momentumkuat": ((70.0, "BELI KUAT"), (0.0, "BELI")),   # +3,73% (n=15.117) · +4,46% (n=229)
+    "launchpad": ((70.0, "BELI KUAT"), (0.0, "BELI")),      # +1,78% (n=1.026, 0,6 kejadian/hari)
+    "momentum": ((70.0, "BELI"), (0.0, "TUNGGU")),          # +2,79% (n=20.252) vs +0,29% (50-69)
+    "breakout": ((50.0, "BELI"), (0.0, "TUNGGU")),          # +2,31-5,44% vs -0,75% (n=107.822)
+    "volsr": ((70.0, "BELI"), (0.0, "TUNGGU")),             # +0,66% (n=11.952) vs -0,31/-0,42%
+}
+PRECLOSE_GRADE_NOTE = (
+    "Rekomendasi meringkas bukti yang SUDAH diukur di aplikasi ini (audit 2020-2026), "
+    "bukan model baru dan bukan jaminan. Yang menentukan label: kriteria yang sedang "
+    "dipindai dan skor beli 0-100 (kolom '🎯 Beli'). Dua hal sengaja TIDAK mengubah "
+    "label: (1) KERAPUHAN — diukur justru BERKINERJA LEBIH BAIK pada 1-5 hari "
+    "(rapuh +6,03% vs jauh +2,51% untuk momentum+breakout), jadi ia menjadi peringatan, "
+    "bukan penurun label; yang berkurang pada kelompok rapuh adalah peluang syaratnya "
+    "bertahan sampai penutupan; (2) kelas likuiditas — semua angka di sini sudah "
+    "relatif terhadap kelas yang sama, jadi kelas tipis tidak otomatis lebih baik."
+)
+
+
+# Hasil pengukuran label itu sendiri. Disimpan sebagai konstanta (bukan dihitung ulang
+# saat permintaan) supaya panel bisa menyebut angkanya apa adanya, dan supaya angka di
+# layar tidak pernah berbeda dari angka di laporan tanpa disadari. Diperbarui HANYA
+# dengan menjalankan ulang: .venv/bin/python research/preclose_grade_study.py --part grade
+PRECLOSE_GRADE_MEASURED = {
+    "measured_on": "2026-09-16",
+    "script": "research/preclose_grade_study.py --part grade",
+    "universe": "989 emiten · 1.360.091 saham-hari · 1.610 tanggal · 2020-01-02 s/d 2026-09-11",
+    "basis": ("alpha 5 hari terhadap KELAS LIKUIDITAS yang sama pada tanggal yang sama, "
+              "harga masuk = harga tutup hari sinyal, dipotong biaya 0,3% round-trip"),
+    "per_label": {
+        "BELI KUAT": {"n": 16143, "per_day": 10.0, "net5_pct": 3.60,
+                      "block_t5": 34.86, "win_pct": 44.4, "halves_pct": (3.84, 3.97)},
+        "BELI": {"n": 74208, "per_day": 46.1, "net5_pct": 2.29,
+                 "block_t5": 38.99, "win_pct": 43.3, "halves_pct": (2.79, 2.39)},
+        "TUNGGU": {"n": 200572, "per_day": 124.7, "net5_pct": -0.44,
+                   "block_t5": -6.22, "win_pct": 34.5, "halves_pct": (-0.11, -0.17)},
+    },
+    "honest_notes": (
+        "Pemisahan label menurun MONOTON (BELI KUAT > BELI > TUNGGU) dan kedua paruh "
+        "waktu positif untuk dua label teratas, jadi labelnya bukan karangan. Tetapi "
+        "tiga hal harus dibaca apa adanya: (1) pemisahan pada kriteria 'momentum' "
+        "lemah (BELI +2,79% vs TUNGGU +1,57%) karena bucket skor<50 di kriteria itu "
+        "terukur +2,74% — tidak serapi kriteria lain, dan itu tidak disembunyikan; "
+        "(2) kejadian untung setelah biaya hanya 43-44% bahkan di label teratas, jadi "
+        "rata-ratanya ditarik ekor keuntungan: disiplin stop yang menentukan; "
+        "(3) panel masih punya survivorship bias (emiten delisting tidak ada di cache), "
+        "sehingga semua angka cenderung terlalu optimistis."),
+}
+
+
+def preclose_grade(criteria: str, *, buy_score: Optional[float] = None,
+                   day_return_pct: Optional[float] = None,
+                   fragile: Optional[bool] = None,
+                   breakout_20h: Optional[bool] = None,
+                   liquidity_grade: Optional[str] = None,
+                   ticket_small: Optional[bool] = None,
+                   signal: Optional[str] = None,
+                   session: Optional[dict] = None) -> dict:
+    """Rekomendasi BELI KUAT / BELI / TUNGGU + alasannya untuk SATU baris pra-tutup.
+
+    Fungsi murni: tanpa data pasar, tanpa jaringan, tanpa state — supaya ia bisa diuji
+    apa adanya (dan itulah yang diuji) terhadap panel ringkasan harian IDX.
+
+    Argumen mengikuti APA YANG SUDAH ADA di baris pindai, jadi rekomendasi tidak
+    pernah bergantung pada kolom yang tidak dikirim ke pemakaian:
+      buy_score       : skor komposit 0-100 (kualitas setup). None = tidak tersedia.
+      fragile         : jarak ke ambang <= 2% (hanya dihitung jalur momentum).
+      ticket_small    : None di mode pra-tutup (jumlah transaksi baru ada setelah tutup).
+    """
+    crit = str(criteria or "").strip().lower()
+    table = PRECLOSE_GRADE_TABLE.get(crit)
+    sc = None
+    if buy_score is not None:
+        try:
+            sc = float(buy_score)
+        except (TypeError, ValueError):
+            sc = None
+    reasons: List[str] = []
+    if table is None:
+        grade = "TUNGGU"
+        reasons.append(f"Kriteria '{crit}' belum diukur untuk mode ini: TUNGGU")
+    elif sc is None:
+        # Tanpa skor beli, satu-satunya label yang boleh diberikan adalah yang TIDAK
+        # memakainya — kalau tidak, baris tanpa data akan naik label karena kebetulan.
+        # max() di sini berarti label dengan PRIORITAS TERENDAH (indeks terbesar di
+        # PRECLOSE_GRADE_ORDER). Versi pertama memakai min() dan akibatnya baris yang
+        # skor belinya tidak bisa dihitung justru mendapat label TERBAIK ('BELI KUAT')
+        # — persis kebalikan dari yang dimaksud, dan hanya ketahuan karena fungsi ini
+        # diuji sebagai fungsi murni.
+        grade = max((lab for _, lab in table),
+                    key=lambda lab: PRECLOSE_GRADE_ORDER.index(lab))
+        reasons.append("Skor beli tidak tersedia, jadi dipakai label terendah "
+                       "yang tidak memerlukan skor")
+    else:
+        grade = table[-1][1]
+        for ambang, lab in table:
+            if sc >= ambang:
+                grade = lab
+                reasons.append(f"Kriteria {crit} + skor beli {sc:.0f} "
+                               f"(>= {ambang:.0f}) -> {lab}")
+                break
+
+    # --- konteks yang TIDAK mengubah label, tetapi mengubah cara membacanya ---
+    caveats: List[str] = []
+    sess = session or {}
+    if sess and sess.get("phase") and not sess.get("preclose_window_ok"):
+        caveats.append("Dipindai DI LUAR jendela pra-tutup (15:00-15:49 WIB): yang "
+                       "dibaca adalah sesi yang sudah selesai, jadi harga masuknya "
+                       "sudah lewat.")
+    if fragile:
+        caveats.append("RAPUH: jarak <= 2% dari ambang naik 8%, jadi syaratnya bisa "
+                       "batal sebelum penutupan. Terukur: kelompok ini justru "
+                       "berkinerja lebih baik pada 1-5 hari, tetapi lebih sering "
+                       "gagal bertahan sampai tutup (research/preclose_study.py).")
+    if ticket_small is None:
+        caveats.append("Penyaring ukuran tiket tidak aktif di mode ini (jumlah "
+                       "transaksi baru tersedia setelah bursa tutup) — jadi label ini "
+                       "TIDAK memuat filter tiket yang di audit menambah alpha.")
+    if str(liquidity_grade or "").upper() == "KURANG LIKUID":
+        caveats.append("Kelas KURANG LIKUID: alpha mentahnya paling besar, tetapi "
+                       "eksekusinya paling sulit — ukuran posisi kecil dan siap "
+                       "terjebak di harga beli.")
+    if str(signal or "").upper() in ("SELL", "STRONG SELL"):
+        caveats.append(f"Sinyal harian saat ini {signal} (momentum sedang koreksi) — "
+                       "kualitas setup tinggi + sinyal jual = pantau, bukan kejar.")
+    if breakout_20h is False and crit == "momentum":
+        caveats.append("Momentum TANPA tembus high 20 hari: alpha 5 hari irisan itu "
+                       "+3,58%, sedangkan momentum saja +0,13% — itulah alasan labelnya "
+                       "dibatasi 'BELI'.")
+
+    return {
+        "grade": grade,
+        "criteria": crit,
+        "buy_score": num(sc, 0) if sc is not None else None,
+        "fragile": bool(fragile) if fragile is not None else None,
+        "liquidity_grade": liquidity_grade,
+        "label_from_score": bool(sc is not None and table is not None),
+        "reasons": reasons,
+        "caveats": caveats,
+        "rule": ("per kriteria, minimal skor beli -> label: " + "; ".join(
+            f"{k} " + " / ".join(f">={a:.0f} {lab}" for a, lab in v)
+            for k, v in PRECLOSE_GRADE_TABLE.items())),
+        "note": PRECLOSE_GRADE_NOTE,
+    }
+
+
 def _wib_now():
     import datetime as _dt
     return _dt.datetime.now(_dt.timezone(_dt.timedelta(hours=WIB_OFFSET)))
@@ -4568,6 +4735,9 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
               if (s.get("day_ret_pct") or -999) >= mom_min_pct
               and (s.get("day_value_est_final_idr") or 0) >= min_value]
     results: List[dict] = []
+    # Dibaca SEKALI di luar loop: jawabannya sama untuk semua baris, dan pada pindai
+    # 300 emiten pemanggilan berulang hanya membuang waktu.
+    ses = preclose_session_info()
     for s in passed:
         tk = s["ticker"]
         df, src = _get_ticker_data(tk, period)
@@ -4600,7 +4770,28 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
             grade = None
         floor_price = ((s.get("prev_close") or 0) * (1 + mom_min_pct / 100.0))
         margin_pct = ((price / floor_price - 1) * 100 if floor_price > 0 else None)
+        fragile = bool(margin_pct is not None and margin_pct <= 2.0)
         plan = _momentum_trade_plan(df, entry_price=price, entry_mode="preclose")
+        # Skor beli + sinyal UNTUK KEADAAN SEKARANG. Jalur cepat ini sebelumnya tidak
+        # menghitung keduanya, sehingga kolom Sinyal dan skor Beli tampil kosong di
+        # mode pra-tutup walaupun kedua angka itu ada di jalur pola — dan tanpa skor,
+        # rekomendasi barisnya tidak bisa dinilai kualitasnya. Bar berjalan disuntikkan
+        # (cara yang sama dengan jalur pola) supaya skornya menilai HARI INI, bukan
+        # bar terakhir riwayat harian yang masih sesi kemarin.
+        buy = None
+        sig_now = None
+        try:
+            df_live = _inject_live_bar(df, s)
+            buy = compute_buy_score(df_live)
+            sig_now = quick_signal(df_live)
+        except Exception:
+            pass
+        grade_rec = preclose_grade(
+            "momentumkuat" if brk else "momentum",
+            buy_score=(buy or {}).get("score"),
+            day_return_pct=s.get("day_ret_pct"),
+            fragile=fragile, breakout_20h=brk, liquidity_grade=grade,
+            ticket_small=None, signal=sig_now, session=ses)
         item = {
             "ticker": tk,
             "price": num(price, 2),
@@ -4609,6 +4800,9 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
             "liquidity_grade": grade,
             "value_20d_avg_idr": num(v20, 0),
             "data_source": src,
+            "signal": sig_now,
+            "buy_score": buy,
+            "rekomendasi": grade_rec,
             "momentum_info": {
                 "day_return_pct": num(s.get("day_ret_pct"), 2),
                 "min_pct": float(mom_min_pct),
@@ -4625,10 +4819,10 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
                 # maka syaratnya batal sebelum tutup. Ini diberikan supaya pemakai
                 # tahu sinyal mana yang rapuh, bukan cuma "lolos".
                 "margin_to_threshold_pct": num(margin_pct, 2),
-                "fragile": bool(margin_pct is not None and margin_pct <= 2.0),
+                "fragile": fragile,
                 "preclose": True,
                 "bars_today": s.get("bars_today"),
-                "session": preclose_session_info(),
+                "session": ses,
                 "plan": plan,
                 "note": ("PRA-TUTUP (harga berjalan, belum final). " + PRECLOSE_ENTRY_RULE
                          + " " + PRECLOSE_SURVIVAL_NOTE),
@@ -4648,7 +4842,7 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
         "coverage_pct": num(100.0 * len(today_snaps) / len(tickers), 1) if tickers else None,
         "passed_stage1": len(passed),
         "results": results,
-        "session": preclose_session_info(),
+        "session": ses,
         "criteria": criteria,
         "engine": "price-stage2",
     }
@@ -4704,6 +4898,18 @@ def _preclose_pattern_scan(tickers: List[str], today_snaps: List[dict],
                      "pola/sinyal dinilai pada harga & volume SEKARANG. "
                      + PRECLOSE_ENTRY_RULE),
         }
+        # Rekomendasi baris. Di jalur ini skor beli SUDAH ada (bar berjalan disuntikkan,
+        # jadi skornya menilai hari ini), dan hanya jalur inilah yang punya skor itu —
+        # karena itu jalur momentum murni juga diberi skor yang sama di tempat lain.
+        # Kerapuhan sengaja TIDAK dipakai di sini: yang terukur khusus pra-tutup adalah
+        # jarak ke ambang "naik >= 8%" pada jalur momentum; untuk pola, jarak seperti
+        # itu belum pernah diukur, jadi lebih baik tidak diklaim.
+        r["rekomendasi"] = preclose_grade(
+            criteria, buy_score=(r.get("buy_score") or {}).get("score"),
+            day_return_pct=r.get("day_return_pct"), fragile=None,
+            breakout_20h=(r.get("breakout_info") or {}).get("is_breakout"),
+            liquidity_grade=r.get("liquidity_grade"), ticket_small=None,
+            signal=r.get("signal"), session=sess)
         if isinstance(r.get("criteria_met"), list):
             r["criteria_met"] = [f"{c} (pra-tutup)" for c in r["criteria_met"]]
         results.append(r)
@@ -8426,6 +8632,18 @@ def screener_preclose(
                             "jumlah transaksi (Freq) baru tersedia setelah bursa tutup."),
             "criteria_note": ("Kriteria yang didukung mode pra-tutup: momentum, "
                               "momentumkuat, breakout, launchpad, volsr."),
+            # Arti kolom rekomendasi + angka terukurnya. Dikirim bersama hasil, bukan
+            # ditulis di dashboard, supaya penjelasan dan angka selalu satu sumber.
+            "grade": {
+                "column": "Rekomendasi (BELI KUAT / BELI / TUNGGU)",
+                "table": {k: [[a, lab] for a, lab in v]
+                          for k, v in PRECLOSE_GRADE_TABLE.items()},
+                "rule": ("Label baris = kriteria yang dipindai + skor beli 0-100. "
+                         "'BELI KUAT' hanya untuk kriteria yang buktinya terkuat "
+                         "(momentum + breakout, Launch Pad) DAN skor belinya >= 70."),
+                "note": PRECLOSE_GRADE_NOTE,
+                "measured": PRECLOSE_GRADE_MEASURED,
+            },
         },
         "bandarmology_note": ("Bandarmology tidak diperiksa di mode pra-tutup: biayanya "
                               "satu permintaan API per saham dan hasilnya bukan penentu "
@@ -8581,6 +8799,12 @@ def cron_preclose(request: Request, secret: str = Query(""),
                 entry = r.get("entry_now") or r.get("price") or p.get("entry")
                 parts = [f"{i}. {strip_suffix(str(r.get('ticker') or ''))} "
                          f"{num(entry, 0)} ({num(r.get('day_return_pct'), 1)}%)"]
+                # Label rekomendasi ikut di baris pertama notifikasi: tanpa itu, penerima
+                # Telegram harus membuka dashboard untuk tahu baris mana yang layak.
+                rec = r.get("rekomendasi") or {}
+                if rec.get("grade"):
+                    parts.append({"BELI KUAT": "🔥 BELI KUAT",
+                                  "BELI": "✅ BELI"}.get(rec["grade"], "⏳ TUNGGU"))
                 if r.get("liquidity_grade"):
                     parts.append(str(r["liquidity_grade"]))
                 out = " · ".join(parts)
@@ -8610,6 +8834,10 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     f"sisa sesi {sess['minutes_left']:.0f} menit\n"
                     "Harga masuk = harga PASAR SEKARANG (bisa dibayar hari ini).\n"
                     "Harga & volume belum final sampai lewat lelang penutupan.\n"
+                    # Arti label dijelaskan di pesan, bukan hanya di dashboard: label ini
+                    # meringkas kriteria + skor beli, bukan sinyal teknikal.
+                    "Label baris: 🔥 BELI KUAT / ✅ BELI / ⏳ TUNGGU = kriteria yang "
+                    "dipindai + skor beli 0-100 (bukan sinyal BUY/SELL/HOLD).\n"
                     # Pengambilan 15:00 dijelaskan apa adanya: waktu eksekusi lebih longgar,
                     # tetapi jaraknya masih 50 menit ke penutupan sehingga lebih banyak
                     # sinyal bisa batal. Akurasinya dibandingkan otomatis di 20:00.
