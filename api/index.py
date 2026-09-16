@@ -8830,6 +8830,26 @@ def cron_preclose(request: Request, secret: str = Query(""),
             label = {"momentum": "MOMENTUM MURNI", "momentumkuat": "MOMENTUM + BREAKOUT 20 HARI",
                      "breakout": "BREAKOUT HIGH 20 HARI", "launchpad": "THE LAUNCH PAD",
                      "volsr": "S&R VOLUME"}.get(used, used.upper())
+            # Catatan pengambilan ditulis dari JAM SEBENARNYA, bukan dari label jadwal.
+            # Versi sebelumnya menulis "masih ~50 menit ke penutupan" untuk setiap
+            # pengambilan selain 15:40; pada pemanggilan manual pukul 10:39 itu keliru
+            # (sisanya 310 menit), dan pesan yang salah lebih buruk daripada pesan yang
+            # tidak ada. Kalau di luar jendela, hal itu dikatakan apa adanya berikut
+            # akibatnya: verifikasi otomatis memisahkan hari itu dari catatan akurasi.
+            if capture == "1540":
+                early_note = ""
+            elif sess.get("preclose_window_ok"):
+                early_note = (f"ℹ️ Pengambilan {_capture_label(capture)} lebih awal dari 15:40 "
+                              f"(sisa sesi {sess['minutes_left']:.0f} menit): waktu eksekusi "
+                              "lebih longgar, tetapi makin jauh dari penutupan makin banyak "
+                              "sinyal bisa batal. Selisih akurasinya dibandingkan otomatis "
+                              "pada 20:00 (capture vs harga tutup resmi).\n")
+            else:
+                early_note = (f"⚠️ DIJALANKAN DI LUAR JENDELA PRA-TUTUP "
+                              f"({_capture_label(capture)}; sisa sesi "
+                              f"{sess['minutes_left']:.0f} menit). Label pengambilan "
+                              "mengikuti jam server, bukan jadwal, dan hasil ini TIDAK "
+                              "dipakai sebagai pembanding akurasi 15:40.\n")
             head = (f"⏱ PINDAI PRA-TUTUP · {label} · {sess['wib'][11:16]} WIB · "
                     f"sisa sesi {sess['minutes_left']:.0f} menit\n"
                     "Harga masuk = harga PASAR SEKARANG (bisa dibayar hari ini).\n"
@@ -8838,14 +8858,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     # meringkas kriteria + skor beli, bukan sinyal teknikal.
                     "Label baris: 🔥 BELI KUAT / ✅ BELI / ⏳ TUNGGU = kriteria yang "
                     "dipindai + skor beli 0-100 (bukan sinyal BUY/SELL/HOLD).\n"
-                    # Pengambilan 15:00 dijelaskan apa adanya: waktu eksekusi lebih longgar,
-                    # tetapi jaraknya masih 50 menit ke penutupan sehingga lebih banyak
-                    # sinyal bisa batal. Akurasinya dibandingkan otomatis di 20:00.
-                    + (f"ℹ️ Pengambilan {_capture_label(capture)} lebih awal dari 15:40: "
-                       "waktu eksekusi lebih longgar, tetapi masih ~50 menit ke penutupan "
-                       "sehingga lebih banyak sinyal bisa batal sebelum tutup. Selisih "
-                       "akurasinya dibandingkan otomatis pada 20:00 (capture vs harga "
-                       "tutup resmi).\n" if capture != "1540" else "")
+                    + early_note
                     # Kalau sesi reguler TIDAK berjalan (dijalankan manual di luar jam),
                     # itu dikatakan di depan: harga yang ditampilkan bukan harga berjalan
                     # yang bisa dibayar, melainkan harga sesi terakhir yang selesai.
