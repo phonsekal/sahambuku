@@ -4334,6 +4334,22 @@ PRECLOSE_VOLUME_SHARE = 0.87
 # next_offset, yang sekarang sudah bekerja.
 PRECLOSE_MAX_LIMIT = 300
 
+# Ambang cakupan harga berjalan yang dianggap WADUH. Pada 15:40 pemindaian 250 emiten
+# biasanya menghasilkan cakupan ~83%, jadi angka di bawah 70% hampir selalu berarti
+# sumber harga membatasi laju (banyak permintaan beruntun), bukan kriteria yang salah.
+# Dipakai dua sisi: endpoint menambahkan source_note, dan dashboard memakainya untuk
+# menghentikan penyapuan bertahap sebelum makin banyak nama yang diperiksa sia-sia.
+PRECLOSE_LOW_COVERAGE_PCT = 70.0
+
+# Dua ambang jendela pra-tutup. Yang PERTAMA adalah jendela kerja yang dianjurkan (harga
+# berjalan masih alpha penuh + masih ada waktu mengeksekusi pesanan); yang KEDUA adalah
+# jendela yang benar-benar diukur di research/preclose_study.py (bar 15:40/15:45 vs harga
+# tutup resmi). Dulu hanya ada ambang 45 menit, sehingga flag-nya bilang "belum jendela"
+# pada pukul 15:00 padahal teks di aplikasi menyuruh memindai 15:00-15:49 — kode dan
+# anjuran saling bertentangan.
+PRECLOSE_WINDOW_MINUTES = 50
+PRECLOSE_MEASURED_WINDOW_MINUTES = 10
+
 # Diukur juga di berkas yang sama: harga pukul 15:45 hampir sama dengan harga tutup
 # resmi (median selisih 0,000%, rata-rata |selisih| 0,50%; untuk saham yang naik >=8%
 # rata-rata -0,54%), dan syarat bertahan di tutup pada 90,9% sinyal >=8% serta 94,7%
@@ -4359,7 +4375,19 @@ def preclose_session_info() -> dict:
     Jam sesi (WIB): Senin-Kamis 09:00-12:00 dan 13:30-15:49:59, sedangkan Jumat
     09:00-11:30 dan 14:00-15:49:59. Hari libur bursa TIDAK ikut dihitung di sini
     (daftar libur tidak tersedia dari sumber data), jadi pada hari libur statusnya
-    akan tampak 'sesi berjalan' padahal tidak ada transaksi.
+    akan tampak 'sesi berjalan' padahal tidak ada transaksi. AKHIR PEKAN tidak
+    termasuk keadaan itu: Sabtu-Minggu bisa dikenali tanpa daftar libur, dan dulu
+    keduanya justru melaporkan session_open=True (jam sesi terpenuhi) padahal fase
+    yang sama disebut "AKHIR PEKAN" — dua pernyataan yang saling bertentangan.
+
+    Dua ambang jendela, dan bedanya disengaja:
+      * preclose_window_ok  — <= 50 menit sebelum tutup, yaitu 15:00-15:49 WIB. Ini
+        jendela kerja yang dianjurkan: harga berjalan masih alpha penuh DAN masih ada
+        waktu untuk mengeksekusi pesanan.
+      * measured_window_ok  — <= 10 menit sebelum tutup, yaitu 15:40-15:49 WIB. Ini
+        jendela yang BENAR-BENAR diukur (research/preclose_study.py membandingkan bar
+        15:40/15:45 dengan harga tutup resmi), jadi klaim "harga pra-tutup ~ harga tutup"
+        berlaku paling kuat di sini, dan makin lemah makin jauh dari tutup.
     """
     import datetime as _dt
     now = _wib_now()
@@ -4372,7 +4400,8 @@ def preclose_session_info() -> dict:
     else:
         sessions = ((9, 0, 12, 0), (13, 30, 15, 50))
     t = now.hour * 60 + now.minute
-    in_session = any(a * 60 + b <= t < c * 60 + d for a, b, c, d in sessions)
+    # Akhir pekan BUKAN sesi, walau jam sesinya terpenuhi.
+    in_session = bool(is_weekday and any(a * 60 + b <= t < c * 60 + d for a, b, c, d in sessions))
     if not is_weekday:
         phase = "AKHIR PEKAN"
     elif in_session:
@@ -4393,9 +4422,17 @@ def preclose_session_info() -> dict:
         "session_open": bool(in_session),
         "minutes_left": round(minutes_left, 1),
         "session_end_wib": "15:49:59",
-        "preclose_window_ok": bool(in_session and 0 < minutes_left <= 45),
-        "note": ("Hari libur bursa tidak dikenali dari sini; bila pasar libur, "
-                 "mode pra-tutup akan tampak aktif tetapi tidak ada transaksi baru."),
+        "preclose_window_ok": bool(in_session and 0 < minutes_left <= PRECLOSE_WINDOW_MINUTES),
+        "measured_window_ok": bool(in_session and 0 < minutes_left <= PRECLOSE_MEASURED_WINDOW_MINUTES),
+        "window_note": (f"Jendela kerja pra-tutup: <= {PRECLOSE_WINDOW_MINUTES:g} menit "
+                        "sebelum tutup (15:00-15:49 WIB). Yang benar-benar DIUKUR adalah "
+                        f"<= {PRECLOSE_MEASURED_WINDOW_MINUTES:g} menit (15:40-15:49 WIB): "
+                        "di situ bar 15:40/15:45 dibandingkan dengan harga tutup resmi. "
+                        "Makin jauh dari tutup, makin lemah klaim itu — bukan karena "
+                        "rumusnya berbeda, tetapi karena harganya masih bergerak."),
+        "note": ("Hari libur bursa tidak dikenali dari sini (daftar libur tidak tersedia); "
+                 "bila pasar libur, mode pra-tutup akan tampak aktif tetapi tidak ada "
+                 "transaksi baru. Akhir pekan dikenali dan TIDAK dianggap sesi."),
     }
 
 
@@ -5712,6 +5749,7 @@ def api_info():
             "GET  /api/screener/tickers?universe=all|liquid",
             "GET  /api/screener?criteria=rs|breakout|launchpad|reversal|volsr|momentum|momentumkuat|buykuat|swing|scalping|bsjp|bandar|buy|koreksi|silent|all&universe=liquid|all&limit=20&offset=0&mom_min_pct=8",
             "GET  /api/screener/preclose  (PINDAI PRA-TUTUP: harga masuk = harga pasar SEKARANG sehingga bisa dibayar hari ini; jalankan 15:00-15:49 WIB)",
+            "GET  /api/preclose/history  (RIWAYAT HARIAN pindai pra-tutup di SERVER, jadi terbaca dari perangkat mana pun)",
             "GET  /api/cron/preclose  (cron 15:40 WIB: pindai pra-tutup + Telegram, sebelum sesi reguler tutup 15:49:59)",
             "GET  /api/cron/launchpad  (cron harian: pindai pola buku Bab 6.2 -> Telegram)",
             "GET  /api/pattern-sim  (simulasi portofolio tiga pola buku: launchpad/reversal/volsr)",
@@ -7995,6 +8033,172 @@ def preclose_track():
     }
 
 
+# ---------------------------------------------------------------------------
+# RIWAYAT HARIAN PINDAI PRA-TUTUP DI SERVER
+# localStorage hanya bisa dibaca dari perangkat yang sama, jadi hasil pindai pra-tutup
+# hilang begitu pemakai berpindah perangkat/browser. Riwayat ringkas di sini disimpan
+# per tanggal di Upstash supaya bisa dibaca dari mana saja, dan supaya "apa yang muncul
+# pada 15:40 kemarin" tetap bisa ditelusuri setelah hari berganti.
+# Ukurannya sengaja dibatasi: yang disimpan adalah kolom yang menentukan keputusan
+# (harga, perubahan, breakout, rencana SL/TP, kelas likuiditas), bukan seluruh payload.
+# ---------------------------------------------------------------------------
+PRECLOSE_HIST_TTL = 45 * 86400          # 45 hari
+PRECLOSE_HIST_MAX_DAYS = 20             # jumlah tanggal yang disimpan di indeks
+PRECLOSE_HIST_MAX_ROWS = 200            # baris per tanggal (yang terbaru dipertahankan)
+
+
+def _preclose_hist_row(r: dict) -> dict:
+    """Ringkas satu kandidat menjadi kolom yang dipakai untuk mengambil keputusan."""
+    mi = r.get("momentum_info") or {}
+    plan = mi.get("plan") or {}
+    return {
+        "ticker": r.get("ticker"),
+        "price": num(r.get("entry_now") if r.get("entry_now") is not None else r.get("price"), 2),
+        "day_return_pct": num(r.get("day_return_pct"), 2),
+        "breakout_20h": mi.get("breakout_20h"),
+        "above_high20_pct": num(mi.get("above_high20_pct"), 2),
+        "fragile": mi.get("fragile"),
+        "liquidity_grade": r.get("liquidity_grade"),
+        "entry": num(plan.get("entry"), 2),
+        "stop_loss": num(plan.get("stop_loss"), 2),
+        "take_profit": num(plan.get("take_profit"), 2),
+        "entry_rule": plan.get("entry_rule"),
+        "criteria_met": r.get("criteria_met"),
+    }
+
+
+def _preclose_hist_merge(payload: dict, *, source: str, telegram_sent: int = 0) -> bool:
+    """Gabungkan satu hasil pemindaian pra-tutup ke catatan tanggal yang sama.
+
+    Dipanggil setiap halaman (paling banyak beberapa kali sehari), jadi catatan tanggal
+    yang sama akan bertambah — dan itu memang yang diinginkan: pemakaian yang memindai
+    bertahap mendapat satu rekap harian, bukan berkas terpisah per halaman.
+    Selalu mengembalikan True/False dan TIDAK pernah melempar: riwayat adalah fitur
+    tambahan, dan kegagalan menyimpannya tidak boleh menggagalkan pemindaian itu sendiri.
+    """
+    if not SYNC_ENABLED:
+        return False
+    try:
+        sess = payload.get("preclose", {}).get("session") or {}
+        day = str(sess.get("date_wib") or _wib_now().strftime("%Y-%m-%d"))
+        key = f"ci:preclose:hist:{day}"
+        rec = {}
+        raw = _upstash_get(key)
+        if raw:
+            try:
+                rec = json.loads(raw) or {}
+            except (TypeError, ValueError):
+                rec = {}
+        rows = {str(x.get("ticker")): x for x in (rec.get("results") or []) if x.get("ticker")}
+        for r in payload.get("results") or []:
+            row = _preclose_hist_row(r)
+            if row.get("ticker"):
+                rows[str(row["ticker"])] = row
+        ordered = sorted(rows.values(), key=lambda x: -(x.get("day_return_pct") or -999))[:PRECLOSE_HIST_MAX_ROWS]
+        first = rec.get("first_wib") or sess.get("wib")
+        rec.update({
+            "date": day,
+            "first_wib": first,
+            "last_wib": sess.get("wib"),
+            "last_ts": int(time.time()),
+            "universe": payload.get("universe"),
+            "criteria": payload.get("criteria"),
+            "limit": payload.get("limit"),
+            "page": payload.get("page"),
+            "pages": payload.get("pages"),
+            "tuntas": payload.get("next_offset") is None,
+            "scans": int(rec.get("scans") or 0) + 1,
+            "sources": sorted(set((rec.get("sources") or []) + [source])),
+            "telegram_sent": int(rec.get("telegram_sent") or 0) + int(telegram_sent or 0),
+            "requested": max(int(rec.get("requested") or 0), int(payload.get("requested") or 0)),
+            "quotes_today": payload.get("quotes_today"),
+            "quotes_failed": payload.get("quotes_failed"),
+            "coverage_pct": payload.get("coverage_pct"),
+            # Cakupan terburuk yang pernah terlihat hari itu dipakai sebagai penanda laju
+            # sumber harga: bila turun tajam, penyebabnya pembatasan sumber, bukan kriteria.
+            "coverage_min_pct": min([v for v in [rec.get("coverage_min_pct"), payload.get("coverage_pct")] if v is not None] or [0]),
+            "results": ordered,
+        })
+        ok = _upstash_set(key, json.dumps(rec, ensure_ascii=False, default=str), ttl=PRECLOSE_HIST_TTL)
+        # Indeks tanggal: dibaca oleh /api/preclose/history supaya tidak perlu SCAN kunci.
+        days = []
+        raw_idx = _upstash_get("ci:preclose:days")
+        if raw_idx:
+            try:
+                days = [d for d in json.loads(raw_idx) if isinstance(d, str)]
+            except (TypeError, ValueError):
+                days = []
+        days = [d for d in days if d != day]
+        days.append(day)
+        days = sorted(days)[-PRECLOSE_HIST_MAX_DAYS:]
+        _upstash_set("ci:preclose:days", json.dumps(days), ttl=PRECLOSE_HIST_TTL)
+        return bool(ok)
+    except Exception:
+        return False
+
+
+def _preclose_hist_records(days: int = 7) -> List[dict]:
+    """Catatan harian terbaru (terlama dulu), lengkap dengan penanda yang hilang."""
+    if not SYNC_ENABLED:
+        return []
+    try:
+        raw_idx = _upstash_get("ci:preclose:days") or "[]"
+        all_days = [d for d in json.loads(raw_idx) if isinstance(d, str)]
+    except (TypeError, ValueError):
+        all_days = []
+    out: List[dict] = []
+    for day in sorted(all_days)[-max(1, days):]:
+        raw = _upstash_get(f"ci:preclose:hist:{day}")
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(rec, dict):
+            out.append(rec)
+    return out
+
+
+@app.get("/api/preclose/history")
+def preclose_history(days: int = Query(7, ge=1, le=PRECLOSE_HIST_MAX_DAYS),
+                     date: str = Query("", description="Satu tanggal saja (YYYY-MM-DD)")):
+    """Riwayat harian pindai pra-tutup dari SERVER (bukan localStorage satu perangkat).
+
+    Kenapa di server: hasil pemindaian pra-tutup yang hanya disimpan di browser hilang
+    begitu pemakai berpindah perangkat, dan tidak bisa ditelusuri keesokan harinya untuk
+    memeriksa "apa yang muncul pada 15:40 kemarin". Yang disimpan adalah kolom pengambil
+    keputusan (harga, perubahan, breakout, rencana SL/TP, kelas likuiditas) per tanggal.
+    """
+    if date:
+        raw = _upstash_get(f"ci:preclose:hist:{date}") if SYNC_ENABLED else None
+        recs = []
+        if raw:
+            try:
+                rec = json.loads(raw)
+                recs = [rec] if isinstance(rec, dict) else []
+            except (TypeError, ValueError):
+                recs = []
+    else:
+        recs = _preclose_hist_records(days)
+    return {
+        "records": recs,
+        "days": [r.get("date") for r in recs],
+        "storage": ("upstash" if SYNC_ENABLED else "tidak aktif"),
+        "retention_days": int(PRECLOSE_HIST_TTL / 86400),
+        "max_days": PRECLOSE_HIST_MAX_DAYS,
+        "note": ("Riwayat ringkas per tanggal, disimpan di server supaya bisa dibaca dari "
+                 "perangkat mana pun. Kolom yang disimpan adalah yang menentukan "
+                 "keputusan; penyaring tiket tidak aktif di mode pra-tutup."),
+        "empty_reason": (None if recs else (
+            "Penyimpanan cloud (Upstash) belum dikonfigurasi, jadi riwayat tidak bisa disimpan."
+            if not SYNC_ENABLED else
+            "Belum ada pemindaian pra-tutup yang tersimpan. Riwayat terisi saat "
+            "/api/screener/preclose atau /api/cron/preclose dijalankan.")),
+        "disclaimer": DISCLAIMER,
+    }
+
+
 @app.get("/api/screener/preclose")
 def screener_preclose(
     universe: str = Query("all", pattern="^(all|liquid)$"),
@@ -8010,6 +8214,7 @@ def screener_preclose(
     min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0, description="Lantai nilai transaksi berjalan (Rp)"),
     period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
     workers: int = Query(12, ge=1, le=24),
+    save: bool = Query(True, description="Simpan ringkasannya ke riwayat harian server"),
 ):
     """PINDAI PRA-TUTUP: saham yang SEDANG naik >= mom_min_pct%, dengan HARGA MASUK
     yang benar-benar bisa dibayar hari ini (harga pasar saat pemindaian).
@@ -8040,6 +8245,10 @@ def screener_preclose(
     BATAS: limit maksimum PRECLOSE_MAX_LIMIT (300), bukan seluruh 951 emiten, karena satu
     emiten = satu permintaan kutipan berjalan. Permintaan di atas batas ditolak 422 dengan
     pesan yang jelas; pakailah paginasi.
+
+    RIWAYAT: setiap halaman yang berhasil ikut digabungkan ke catatan harian di server
+    (bisa dimatikan dengan save=false) dan bisa dibaca lewat /api/preclose/history.
+    Ini melengkapi riwayat localStorage yang hanya terbaca dari satu perangkat.
     """
     all_tickers = load_idx_tickers(universe)
     if spread is None:
@@ -8059,7 +8268,7 @@ def screener_preclose(
     used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
                           period=period, workers=workers, criteria=used)
-    return {
+    resp = {
         # Kriteria yang BENAR-BENAR dipakai, supaya tabel di dashboard memilih kolom
         # yang tepat (mis. kolom Launch Pad saat kriteria launchpad).
         "criteria": used,
@@ -8112,11 +8321,27 @@ def screener_preclose(
                               "satu permintaan API per saham dan hasilnya bukan penentu "
                               "keputusan hari itu."),
         "results": scan["results"],
+        "low_coverage_threshold_pct": PRECLOSE_LOW_COVERAGE_PCT,
+        "history_saved": False,
         "note": ("Pindai pra-tutup memakai bar 5 menit Yahoo; harganya harga pasar "
                  "saat itu, bukan harga tutup. Bila fase sesi bukan SESI BERJALAN, "
                  "hasilnya membaca sesi terakhir yang selesai, bukan pra-tutup."),
         "disclaimer": DISCLAIMER,
     }
+    if scan["coverage_pct"] is not None and scan["coverage_pct"] < PRECLOSE_LOW_COVERAGE_PCT:
+        resp["source_note"] = (
+            f"Cakupan harga berjalan hanya {scan['coverage_pct']}% (di bawah "
+            f"{PRECLOSE_LOW_COVERAGE_PCT:g}%). Patokan normalnya ~80%: satu halaman 300 "
+            "emiten terukur 60 nama tanpa kutipan hari itu (emiten yang memang tidak "
+            "diperdagangkan hari itu). Jadi angka di bawah ambang ini biasanya berarti "
+            "SUMBER HARGANYA mulai membatasi laju setelah banyak permintaan beruntun — "
+            "gejalanya muncul di log sebagai YFRateLimitError, dan ia tercatat juga di "
+            "coverage_min_pct pada /api/preclose/history. Menyapu halaman berikutnya saat "
+            "itu justru menambah nama yang belum benar-benar diperiksa; lebih baik "
+            "berhenti beberapa menit lalu lanjutkan.")
+    # Riwayat server: kegagalan menyimpan TIDAK boleh menggagalkan pemindaian.
+    resp["history_saved"] = _preclose_hist_merge(resp, source="api") if save else False
+    return resp
 
 
 @app.get("/api/cron/preclose")
@@ -8186,6 +8411,17 @@ def cron_preclose(request: Request, secret: str = Query(""),
                 json.dumps(payload, ensure_ascii=False, default=str), ttl=30 * 86400)
         except (TypeError, ValueError):
             snapshot_saved = False
+    # Riwayat harian yang bisa dibaca dari perangkat mana pun (bukan localStorage). Cron
+    # 15:40 adalah pemindaian yang paling layak jadi catatan hari itu, jadi ia ditandai
+    # sumber "cron" — pemakaian bisa membedakan hasil yang dilihat pengguna dari hasil
+    # yang otomatis terkirim.
+    hist_saved = _preclose_hist_merge(
+        {"universe": universe, "criteria": used, "limit": limit, "page": 1, "pages": 1,
+         "next_offset": None, "requested": len(tickers),
+         "quotes_today": scan["quotes_today"], "quotes_failed": scan["quotes_failed"],
+         "coverage_pct": scan["coverage_pct"], "results": hasil,
+         "preclose": {"session": sess}},
+        source="cron")
 
     sent = 0
     if send and hasil and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
@@ -8270,6 +8506,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
         "criteria_requested": criteria,
         "engine": scan["engine"],
         "snapshot_saved": snapshot_saved,
+        "history_saved": hist_saved,
         "session": sess,
         "universe": universe,
         "requested": len(tickers),

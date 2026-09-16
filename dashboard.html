@@ -135,10 +135,12 @@
       <button id="btnScan" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-6 py-2.5 text-sm shadow-lg shadow-sky-500/25 transition disabled:opacity-50 disabled:cursor-wait">
         Scan
       </button>
+      <button id="btnPrecloseHist" onclick="loadPrecloseHistory()" title="Riwayat harian pindai pra-tutup yang disimpan di SERVER, jadi terbaca dari perangkat mana pun — bukan hanya localStorage browser ini." class="border border-slate-600 text-slate-300 hover:bg-slate-700/40 font-bold rounded-xl px-4 py-2.5 text-sm transition">🗂 Riwayat pra-tutup</button>
       <button id="btnPreclose" onclick="scanPreclose()" title="Pindai SAAT SESI MASIH BERJALAN (paling berguna 15:00-15:49 WIB). Harga masuknya adalah harga PASAR SEKARANG, jadi bisa dibayar hari ini juga — sedangkan pemindaian setelah bursa tutup kehilangan alpha momentum karena harga tutupnya sudah tidak bisa dibeli (membeli di celah buka sesi berikutnya = -1,60% relatif kelas)." class="border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">⏱ Pindai pra-tutup</button>
       <button id="btnKoreksiWatch" onclick="renderKoreksiWatch()" class="border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">🔔 Pantauan Telegram</button>
     </div>
     <div id="precloseResume" class="mb-3"></div>
+    <div id="precloseHist" class="mb-3"></div>
     <div id="scanInfo" class="text-xs text-slate-400 mb-3"></div>
     <div id="koreksiWatchPanel" class="mb-3"></div>
     <div id="screenerResult"></div>
@@ -1413,6 +1415,12 @@ function precloseParamQuery(offset) {
        bolak-balik diperiksa sementara nama lain belum pernah sama sekali).
 ----------------------------------------------------------------- */
 const PRECLOSE_PROGRESS_KEY = "ci_preclose_progress";
+// Jeda antar-halaman saat menyapu seluruh pasar di mode pra-tutup. Terukur pada sapuan
+// 4 halaman (951 emiten): cakupan halaman terakhir jatuh ke 69,5% karena sumber harga
+// membatasi laju setelah ~1.000 permintaan beruntun. Jeda ini memperlambat sapuan dan
+// menurunkan kemungkinan itu; penjaga cakupan di scanAll() yang menghentikannya bila
+// tetap terjadi.
+const PRECLOSE_PAGE_PAUSE_MS = 1200;
 
 // Tanggal WIB (UTC+7), bukan tanggal lokal komputer: yang dimaksud "hari yang sama"
 // adalah hari bursa, bukan zona waktu perangkat pemakai.
@@ -1519,6 +1527,54 @@ async function resumePreclose() {
     ? `Melanjutkan dari halaman ${p.last_page + 1}/${p.pages} (${fmt(p.covered, 0)} emiten sudah diperiksa).`
     : `Melanjutkan cakupan dari pemindaian ${p.date} — hasil lama dibuang.`, "info");
   await scanAll();
+}
+
+// RIWAYAT HARIAN DI SERVER. localStorage hanya terbaca dari satu perangkat, jadi hasil
+// pindai pra-tutup hilang begitu pemakai berpindah browser/HP. Server (Upstash) menyimpan
+// ringkasan per tanggal — dan yang disimpan adalah kolom pengambil keputusan, bukan
+// seluruh payload. Endpoint-nya mengembalikan alasan bila kosong, jadi "belum ada"
+// dibedakan dari "penyimpanan belum dikonfigurasi".
+async function loadPrecloseHistory() {
+  const box = $("#precloseHist"), btn = $("#btnPrecloseHist");
+  if (!box) return;
+  if (box.innerHTML && box.dataset.loaded === "1") { box.innerHTML = ""; box.dataset.loaded = "0"; return; }
+  btn.disabled = true; const idle = btn.textContent; btn.textContent = "Memuat…";
+  box.innerHTML = `<div class="text-[11px] text-slate-500 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">Mengambil riwayat dari server…</div>`;
+  try {
+    const d = await getJSON("/api/preclose/history?days=7");
+    const recs = d.records || [];
+    if (!recs.length) {
+      box.innerHTML = `<div class="text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">🗂 <b>Riwayat pra-tutup (server):</b> ${esc(d.empty_reason || "belum ada catatan.")}</div>`;
+    } else {
+      const hari = recs.slice().reverse().map(r => {
+        const rows = (r.results || []).slice(0, 6);
+        const more = Math.max(0, (r.results || []).length - rows.length);
+        return `<div class="border-t border-slate-700/60 pt-2 mt-2 first:border-0 first:mt-0 first:pt-0">
+          <div class="flex flex-wrap items-center gap-x-3 gap-y-1">
+            <b class="text-slate-200">${esc(r.date)}</b>
+            <span class="text-slate-500">${esc(String(r.first_wib || "").slice(11, 16))}${r.last_wib && r.last_wib !== r.first_wib ? "–" + esc(String(r.last_wib).slice(11, 16)) : ""} WIB</span>
+            <span>${esc(r.criteria || "-")} · ${esc(String(r.limit || "-"))}/halaman</span>
+            <span>cakupan <b class="${(Number(r.coverage_pct) || 0) < 70 ? "text-amber-300" : "text-slate-200"}">${fmt(r.coverage_pct, 1)}%</b>${r.coverage_min_pct != null && Number(r.coverage_min_pct) < (Number(r.coverage_pct) || 0) ? ` <span class="text-slate-500">(terendah ${fmt(r.coverage_min_pct, 1)}%)</span>` : ""}</span>
+            <span><b class="text-slate-200">${(r.results || []).length}</b> kandidat</span>
+            <span>${r.tuntas ? "<span class=\"text-emerald-400\">tuntas</span>" : "<span class=\"text-amber-300\">belum tuntas" + (r.page ? ` (halaman ${r.page}/${r.pages})` : "") + "</span>"}</span>
+            ${r.telegram_sent ? `<span class="text-sky-300">Telegram terkirim</span>` : ""}
+            <span class="text-slate-500">${esc((r.sources || []).join("+"))}${r.scans > 1 ? ` · ${r.scans} pengambilan` : ""}</span>
+          </div>
+          ${rows.length ? `<div class="mt-1 text-slate-300">${rows.map(x => `<span class="inline-block mr-3 whitespace-nowrap">${esc(stripJK(x.ticker))} <b>${fmt(x.price, 0)}</b> <span class="${(x.day_return_pct || 0) >= 0 ? "text-emerald-400" : "text-rose-400"}">${fmt(x.day_return_pct, 1)}%</span>${x.breakout_20h ? " 💥" : ""}${x.fragile ? " ⚠" : ""}${x.stop_loss != null ? ` <span class="text-slate-500">SL ${fmt(x.stop_loss, 0)}/TP ${fmt(x.take_profit, 0)}</span>` : ""}</span>`).join("")}${more ? `<span class="text-slate-500">+${more} lagi</span>` : ""}</div>` : ""}
+        </div>`;
+      }).join("");
+      box.innerHTML = `<div class="text-[11px] text-slate-300 bg-slate-900/60 border border-slate-700 rounded-xl px-3.5 py-2.5">
+        <div class="mb-1"><b>🗂 Riwayat pra-tutup dari SERVER</b> <span class="text-slate-500">(${recs.length} hari terakhir, retensi ${d.retention_days} hari · penyimpanan ${esc(d.storage)})</span></div>
+        ${hari}
+        <div class="mt-2 text-slate-500">Harga di sini adalah harga PASAR saat pemindaian pada hari itu (kolom pengambil keputusan saja). Lubang hari berarti pemindaian pra-tutup tidak dijalankan pada tanggal itu — bukan berarti tidak ada kandidat.</div>
+      </div>`;
+    }
+    box.dataset.loaded = "1";
+  } catch (e) {
+    box.innerHTML = `<div class="text-[11px] text-rose-300 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3.5 py-2.5">Riwayat server gagal dimuat: ${esc(e.message)}</div>`;
+  } finally {
+    btn.disabled = false; btn.textContent = idle;
+  }
 }
 
 async function scanPreclose() {
@@ -1673,7 +1729,11 @@ function renderScan(d) {
     if (d.mode === "preclose") {
       const pc = d.preclose || {}, ss = pc.session || {};
       const openNow = ss.phase === "SESI BERJALAN";
-      pcExtra = `<div class="mt-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">⏱ Panel pra-tutup: fase sesi saat pemindaian <b>${esc(ss.phase || "belum dibaca")}</b>${ss.wib ? ` (jam server ${esc(ss.wib)} WIB)` : ""}${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}. Harga masuk mode ini adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari itu, bukan harga tutup yang sudah lewat. Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini).${d.passed_stage1 ? ` Lolos syarat awal: <b>${d.passed_stage1}</b>.` : ""}</div>`
+      const winTxt = ss.phase ? (ss.measured_window_ok
+          ? " <b class=\"text-emerald-300\">jendela TERUKUR (&le;10 menit ke tutup)</b>"
+          : (ss.preclose_window_ok ? " <b class=\"text-emerald-300\">jendela kerja pra-tutup</b>"
+             : (openNow ? " <b class=\"text-amber-300\">di luar jendela pra-tutup</b>" : ""))) : "";
+      pcExtra = `<div class="mt-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">⏱ Panel pra-tutup: fase sesi saat pemindaian <b>${esc(ss.phase || "belum dibaca")}</b>${ss.wib ? ` (jam server ${esc(ss.wib)} WIB)` : ""}${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}${winTxt}. Harga masuk mode ini adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari itu, bukan harga tutup yang sudah lewat. Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini).${d.passed_stage1 ? ` Lolos syarat awal: <b>${d.passed_stage1}</b>.` : ""}</div>`
         + (ss.phase && !openNow ? `<div class="mt-2 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚠️ Sesi reguler sedang <b>TIDAK berjalan</b> (${esc(ss.phase)}): hasil ini membaca sesi terakhir yang selesai, jadi bukan pra-tutup. Jalankan pada 15:00-15:49 WIB untuk memakai harga yang bisa dibayar hari itu.</div>` : "");
     }
     $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : (d.accumulated ? "Belum ada saham yang lolos kriteria di halaman-halaman yang sudah dipindai." : "Tidak ada saham yang lolos kriteria pada halaman ini.")}</div>${pcExtra}`;
@@ -1716,7 +1776,16 @@ function renderScan(d) {
       breakout: "Breakout high 20 hari", launchpad: "The Launch Pad", volsr: "S&R Volume" };
     const critLabel = CRIT_LABEL[d.criteria] || d.criteria;
     const tone = openNow ? "text-rose-200/90 bg-rose-500/10 border-rose-500/30" : "text-amber-200/90 bg-amber-500/10 border-amber-500/30";
-    h += `<div class="mb-3 text-[11px] ${tone} rounded-xl px-3.5 py-2.5">⏱ <b>PINDAI PRA-TUTUP</b> · kriteria <b>${esc(critLabel)}</b> · mesin <b>${esc(pc.engine || d.engine || "")}</b> · jam server <b>${esc(ss.wib || "")} WIB</b> · fase <b>${esc(ss.phase || "?")}</b>${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}. Harga masuk di kolom Rencana Harian adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari ini, bukan harga tutup yang sudah lewat.</div>`;
+    // Dua jendela dibedakan, karena yang DIUKUR bukan seluruh jendela kerja: klaim
+    // "harga pra-tutup ~ harga tutup" berasal dari bar 15:40/15:45, sedangkan 15:00-15:39
+    // diperbolehkan demi waktu eksekusi — bukan karena sudah diukur.
+    const winChip = ss.measured_window_ok
+      ? ` · <b class="text-emerald-300">jendela TERUKUR (&le;10 menit ke tutup)</b>`
+      : (ss.preclose_window_ok
+        ? ` · <b class="text-emerald-300">jendela kerja pra-tutup (15:00-15:49)</b>`
+        : (openNow ? ` · <b class="text-amber-300">DI LUAR jendela pra-tutup</b>` : ""));
+    h += `<div class="mb-3 text-[11px] ${tone} rounded-xl px-3.5 py-2.5">⏱ <b>PINDAI PRA-TUTUP</b> · kriteria <b>${esc(critLabel)}</b> · mesin <b>${esc(pc.engine || d.engine || "")}</b> · jam server <b>${esc(ss.wib || "")} WIB</b> · fase <b>${esc(ss.phase || "?")}</b>${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}${winChip}. Harga masuk di kolom Rencana Harian adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari ini, bukan harga tutup yang sudah lewat.</div>`;
+    if (openNow && !ss.preclose_window_ok) h += `<div class="mb-3 text-[11px] text-sky-200/90 bg-sky-500/10 border border-sky-500/30 rounded-xl px-3.5 py-2.5">🕐 Sesi berjalan tetapi masih <b>${fmt(ss.minutes_left, 0)} menit</b> ke penutupan, jadi ini di luar jendela pra-tutup. Harga masuknya tetap bisa dibayar hari ini, tetapi klaim "harga pra-tutup &asymp; harga tutup" <b>hanya diukur pada 15:40-15:49</b> — makin jauh dari tutup, makin besar kemungkinan syarat sinyal batal sebelum penutupan. Untuk alpha penuh, jalankan lagi sekitar <b>15:40 WIB</b> (blok ini akan menandai <b>jendela TERUKUR</b>).</div>`;
     // Peringatan hanya bila fasenya MEMANG diketahui. Saat melanjutkan pemindaian yang
     // terhenti, fase sesi belum dibaca lagi — lebih baik diam daripada mengklaim
     // "sesi tidak berjalan" padahal itu hanya belum diperiksa.
@@ -2064,6 +2133,10 @@ async function scanMore(offset, accumulate) {
       // saja, jam sesi yang ditampilkan bisa berjam-jam lampau (pemindaian bertahap bisa
       // lama) dan "sesi berjalan" yang dipakai untuk menilai harga bisa salah.
       if (isPre && d.preclose) scanAccum.preclose = d.preclose;
+      // Cakupan HALAMAN ini disimpan terpisah dari cakupan kumulatif: penyapuan bertahap
+      // memakainya untuk mendeteksi sumber harga yang mulai membatasi laju (ia hanya
+      // terlihat di cakupan halaman terakhir, bukan di rata-rata seluruh pemindaian).
+      if (isPre) scanAccum.last_page_coverage_pct = d.coverage_pct;
       // Catatan dari server ikut disegarkan. Tanpa ini, hasil pemindaian yang DILANJUTKAN
       // (yang titik awalnya dibangun dari simpanan, bukan dari respons server) kehilangan
       // keterangan "bandarmology tidak diperiksa" — padahal itu tetap berlaku.
@@ -2100,6 +2173,7 @@ async function scanAll() {
   btn.disabled = true;
   const maxPages = Math.max(1, Number(scanAccum.pages || 1));
   let done = 0;
+  let stoppedForCoverage = false;
   try {
     while (scanWalk && scanAccum.next_offset && done < maxPages + 5) {
       done += 1;
@@ -2108,11 +2182,35 @@ async function scanAll() {
         + ` (terkumpul <b class="text-slate-200">${(scanAccum.results || []).length}</b> saham)`
         + ` <button onclick="stopScanWalk()" class="text-rose-400 hover:underline font-semibold ml-2">⏹ Hentikan</button>`;
       await scanMore(scanAccum.next_offset, true);
+      if (scanMode !== "preclose") continue;
+      // DUA penjaga khusus pra-tutup, karena mode ini memakai SATU permintaan kutipan per
+      // emiten: menyapu seluruh pasar berturut-turut bisa membuat sumber harga membatasi
+      // laju, dan halaman berikutnya lalu hampir kosong — nama yang "diperiksa" bertambah
+      // tanpa benar-benar diperiksa. Jadi: beri jeda, dan BERHENTI bila cakupan halaman
+      // jatuh di bawah ambang (angkanya dari server, PRECLOSE_LOW_COVERAGE_PCT).
+      const cov = Number(scanAccum.last_page_coverage_pct);
+      const thr = Number(scanAccum.low_coverage_threshold_pct || 70);
+      if (Number.isFinite(cov) && cov < thr) {
+        stoppedForCoverage = true;
+        scanWalk = false;
+        $("#scanInfo").innerHTML = `<div class="text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">`
+          + `⚠️ <b>Penyapuan dihentikan di halaman ${scanAccum.page}/${maxPages}</b> karena cakupan harga berjalan halaman terakhir hanya <b>${fmt(cov, 1)}%</b> (di bawah ${fmt(thr, 0)}%). `
+          + `Patokan normalnya ~80%; mode ini memakai satu permintaan kutipan per emiten, jadi penurunan seperti ini biasanya berarti sumber harganya yang membatasi laju — bukan kriteria yang salah. `
+          + `Melanjutkan sekarang hanya menambah nama yang <b>tidak benar-benar diperiksa</b>. Hasil yang sudah terkumpul tetap disimpan, dan sisanya bisa dilanjutkan dengan tombol <b>▶ Lanjutkan</b> setelah beberapa menit.</div>`
+          + `<div class="mt-1.5 text-slate-500">Sisa ${fmt(Math.max(0, (maxPages - Number(scanAccum.page || 1)) * Number(scanAccum.limit || 0)), 0)} emiten belum dipindai; sisa halaman disimpan sebagai riwayat untuk dilanjutkan.</div>`;
+        toast(`Dihentikan: cakupan halaman terakhir ${fmt(cov, 1)}% — sumber harga membatasi laju.`, "info");
+        break;
+      }
+      // Jeda antar-halaman: mengurangi kemungkinan sumber harga menutup akses setelah
+      // ratusan permintaan beruntun (terukur: sapuan 4 halaman membuat cakupan turun ke 69,5%).
+      await new Promise(r => setTimeout(r, PRECLOSE_PAGE_PAUSE_MS));
     }
     const tuntas = !scanAccum.next_offset;
-    toast(tuntas
-      ? `Selesai — seluruh ${scanAccum.total_tickers} emiten sudah dipindai (${(scanAccum.results || []).length} hasil terkumpul).`
-      : `Pemindaian bertahap dihentikan di halaman ${scanAccum.page}/${maxPages}.`, tuntas ? "success" : "info");
+    if (!stoppedForCoverage) {
+      toast(tuntas
+        ? `Selesai — seluruh ${scanAccum.total_tickers} emiten sudah dipindai (${(scanAccum.results || []).length} hasil terkumpul).`
+        : `Pemindaian bertahap dihentikan di halaman ${scanAccum.page}/${maxPages}.`, tuntas ? "success" : "info");
+    }
   } catch (e) {
     toast(`Pemindaian bertahap berhenti: ${e.message}`, "sl");
   } finally {
