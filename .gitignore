@@ -7,3 +7,8 @@ __pycache__/
 .cache/
 research/.cache/
 scripts/.cache/
+
+# Buku/referensi berhak cipta: dipakai lokal saja, jangan ikut ke repo publik.
+buku tambahan/
+
+.DS_Store

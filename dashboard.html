@@ -129,6 +129,12 @@
       <label class="flex items-center gap-2 text-xs text-slate-400" title="Buang saham yang ukuran tiketnya (nilai ÷ jumlah transaksi) ada di kuintil 20% terendah DI DALAM kelas likuiditasnya (SANGAT LIKUID / LIKUID / CUKUP) setelah dibersihkan dari ukuran. Uji 5 tahun (alpha 20 hari, pembanding kelas yang sama): RS Leader SANGAT LIKUID +1,04% → +1,49%, LIKUID +2,07% → +2,76%, CUKUP +2,90% → +3,44%; keempatnya membaik di KEDUA paruh holdout. Kontrol 'hanya tiket kecil' negatif di LIKUID dan CUKUP, jadi yang dibuang memang buruk. Ini penyaring kebersihan, BUKAN sinyal beli — kelas KURANG LIKUID tidak disentuh.">
         <input type="checkbox" id="scTicket" checked class="rounded bg-slate-800 border-slate-600 accent-amber-500"> Tiket wajar
       </label>
+      <label class="flex items-center gap-2 text-xs text-slate-400" title="Penyaring STAGE-2 (Trend Template buku: Mark Minervini, 'Think & Trade Like a Champion' hal 105-106 — 8 syarat tren: harga di atas MA150 & MA200, MA150 > MA200, MA200 naik >= 1 bulan, MA50 di atas keduanya, >= 25% di atas low 52 minggu, dalam 25% dari high 52 minggu, peringkat RS >= 70, harga di atas MA50). Terukur di 989 emiten x 1,6 juta saham-hari (research/book_rules_study.py): alpha 5 hari momentum+breakout +2,90% -> +6,51%, breakout 20 hari +0,35% -> +4,13%, momentum +1,60% -> +4,40%. Positif di kedua paruh waktu dan tetap sama setelah efek ukuran dikeluarkan. Konsekuensinya: hasil jauh lebih sedikit.">
+        <input type="checkbox" id="scStage2" class="rounded bg-slate-800 border-slate-600 accent-emerald-500"> 🧱 Stage-2
+      </label>
+      <label class="flex items-center gap-2 text-xs text-slate-400" title="Penyaring VOLUME KERING: volume hari sinyal DI BAWAH rata-rata 20 hari padahal harga sedang naik. Buku 'Ilmu Saham Biawak VVIP' hal 257 menyebut keadaan ini 'kenaikan lemah', tetapi pengukuran panel IDX menunjukkan sebaliknya: momentum+breakout alpha 5 hari +2,90% -> +12,24% (61,5% kejadian tetap untung setelah biaya 0,3%, positif di 7 dari 7 tahun). Hanya ~0,9 sinyal/hari se-pasar, jadi jangan dipakai sebagai satu-satunya sumber.">
+        <input type="checkbox" id="scDry" class="rounded bg-slate-800 border-slate-600 accent-cyan-500"> 🫗 Volume kering
+      </label>
       <label class="flex items-center gap-2 text-xs text-slate-400">
         <input type="checkbox" id="scBandar" checked class="rounded bg-slate-800 border-slate-600 accent-sky-500"> + Bandarmology
       </label>
@@ -138,6 +144,31 @@
       <button id="btnPrecloseHist" onclick="loadPrecloseHistory()" title="Riwayat harian pindai pra-tutup yang disimpan di SERVER, jadi terbaca dari perangkat mana pun — bukan hanya localStorage browser ini." class="border border-slate-600 text-slate-300 hover:bg-slate-700/40 font-bold rounded-xl px-4 py-2.5 text-sm transition">🗂 Riwayat pra-tutup</button>
       <button id="btnPreclose" onclick="scanPreclose()" title="Pindai SAAT SESI MASIH BERJALAN (paling berguna 15:00-15:49 WIB). Harga masuknya adalah harga PASAR SEKARANG, jadi bisa dibayar hari ini juga — sedangkan pemindaian setelah bursa tutup kehilangan alpha momentum karena harga tutupnya sudah tidak bisa dibeli (membeli di celah buka sesi berikutnya = -1,60% relatif kelas)." class="border border-rose-500/40 text-rose-300 hover:bg-rose-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">⏱ Pindai pra-tutup</button>
       <button id="btnKoreksiWatch" onclick="renderKoreksiWatch()" class="border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 font-bold rounded-xl px-4 py-2.5 text-sm transition">🔔 Pantauan Telegram</button>
+    </div>
+    <div id="psPanel" class="mb-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">
+      <b>💼 Kalkulator lot berbasis RISIKO</b> <span class="text-slate-500">— buku: Minervini hal 142-144 (risiko 1,25-2,5% ekuitas, stop maks 10%, posisi maks 50%), Tharp hal 56 &amp; 110 (jarak stop &times; ukuran posisi &le; 2% ekuitas — kalau tidak muat, lewati), Turtle hal 269-275 (1N = 1% ekuitas, notional dipotong 20% tiap drawdown 10%).</span>
+      <div class="flex flex-wrap items-center gap-3 mt-1.5">
+        <label class="flex items-center gap-1.5">Ekuitas (Rp)
+          <input id="psEquity" type="number" min="0" step="100000" placeholder="10000000" class="w-32 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 tabular">
+        </label>
+        <label class="flex items-center gap-1.5">Risiko/trade (%)
+          <input id="psRisk" type="number" min="0.1" max="10" step="0.25" value="1" class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 tabular">
+        </label>
+        <label class="flex items-center gap-1.5">Drawdown akun (%)
+          <input id="psDd" type="number" min="0" max="90" step="5" value="0" title="Aturan Turtle hal 269: setiap akun turun 10%, ukuran notional dipotong 20%." class="w-20 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 tabular">
+        </label>
+        <span class="text-slate-500">Lalu tekan <b>💼 Lot</b> di kolom Rencana Harian sebuah baris (atau isi manual di bawah).</span>
+      </div>
+      <div class="flex flex-wrap items-end gap-3 mt-1.5">
+        <label class="flex items-center gap-1.5">Harga masuk
+          <input id="psEntry" type="number" min="0" step="1" class="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 tabular">
+        </label>
+        <label class="flex items-center gap-1.5">Stop
+          <input id="psStop" type="number" min="0" step="1" class="w-24 bg-slate-900 border border-slate-700 rounded-lg px-2 py-1 text-slate-200 tabular">
+        </label>
+        <button onclick="calcLots()" class="border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 font-bold rounded-lg px-3 py-1.5">Hitung lot</button>
+      </div>
+      <div id="psResult" class="mt-1.5"></div>
     </div>
     <div id="precloseResume" class="mb-3"></div>
     <div id="precloseHist" class="mb-3"></div>
@@ -1374,7 +1405,12 @@ function scParamQuery(offset) {
     require_confirm: $("#scConfirm").checked,
     require_regime: noRegime ? "false" : String($("#scRegime").checked),
     rs_bypass: String($("#scRsBypass").checked),
-    skip_small_ticket: String($("#scTicket").checked) });
+    skip_small_ticket: String($("#scTicket").checked),
+    // Dua penyaring hasil pengukuran buku: Stage-2 (Minervini hal 105-106) dan volume
+    // kering (Biawak hal 257, hasil pengukurannya TERBALIK dari bukunya). Default mati
+    // supaya hasilnya bisa dibandingkan dengan/ tanpa penyaring.
+    stage2: String($("#scStage2").checked),
+    dry_volume: String($("#scDry").checked) });
   if (offset) q.set("offset", offset);
   return q;
 }
@@ -1411,7 +1447,11 @@ function precloseParamQuery(offset) {
     universe: p.universe || $("#scUniverse").value,
     criteria: p.criteria || "momentumkuat",
     limit: String(p.limit || 250),
-    mom_min_pct: String(p.mom_min_pct != null ? p.mom_min_pct : 8) });
+    mom_min_pct: String(p.mom_min_pct != null ? p.mom_min_pct : 8),
+    // Penyaring buku ikut di halaman lanjutan; kalau tidak, halaman 2+ diam-diam
+    // kembali ke hasil tanpa penyaring dan tabel bercampur dua aturan berbeda.
+    stage2: String((p.stage2 != null ? p.stage2 : $("#scStage2").checked)),
+    dry_volume: String((p.dry_volume != null ? p.dry_volume : $("#scDry").checked)) });
   if (p.min_value != null) q.set("min_value", String(p.min_value));
   if (p.spread != null) q.set("spread", String(p.spread));
   if (offset) q.set("offset", offset);
@@ -1635,6 +1675,52 @@ async function loadPrecloseHistory() {
   }
 }
 
+/* -— Kalkulator lot: satu tempat, dipakai tombol per baris maupun input manual.
+   Angka ekuitas/risiko disimpan di browser supaya tidak perlu diisi ulang tiap sesi,
+   tetapi TIDAK dipakai untuk apa pun selain perhitungan ini. */
+function psLoad() {
+  try {
+    const s = JSON.parse(localStorage.getItem("psCfg") || "{}");
+    if (s.equity) $("#psEquity").value = s.equity;
+    if (s.risk) $("#psRisk").value = s.risk;
+    if (s.dd) $("#psDd").value = s.dd;
+  } catch (e) { /* setelan lama yang rusak: pakai nilai bawaan */ }
+}
+function psSave() {
+  try { localStorage.setItem("psCfg", JSON.stringify({ equity: $("#psEquity").value,
+        risk: $("#psRisk").value, dd: $("#psDd").value })); } catch (e) {}
+}
+function psFill(entry, stop, tk) {
+  if (entry != null) $("#psEntry").value = entry;
+  if (stop != null) $("#psStop").value = stop;
+  calcLots(tk);
+}
+async function calcLots(tk) {
+  const eq = parseFloat($("#psEquity").value || "0");
+  const risk = parseFloat($("#psRisk").value || "1");
+  const dd = parseFloat($("#psDd").value || "0");
+  const entry = parseFloat($("#psEntry").value || "0");
+  const stop = parseFloat($("#psStop").value || "0");
+  const out = $("#psResult");
+  if (!eq || !entry || !stop) {
+    out.innerHTML = `<span class="text-amber-300">Isi ekuitas, harga masuk, dan stop dulu.</span>`;
+    return;
+  }
+  psSave();
+  const q = new URLSearchParams({ equity: String(eq), entry: String(entry),
+    stop: String(stop), risk_pct: String(risk), drawdown_pct: String(dd) });
+  out.innerHTML = `<span class="text-slate-500">Menghitung…</span>`;
+  try {
+    const d = await getJSON(`/api/position-size?${q}`);
+    out.innerHTML = `<span class="text-slate-400">${tk ? `<b class="text-slate-200">${esc(String(tk).toUpperCase())}</b> · ` : ""}stop ${fmt(d.stop_pct, 2)}% dari harga &rarr; risiko Rp ${fmtIdr(d.risk_idr)}</span> `
+      + `<b class="text-emerald-300 text-sm">${fmt(d.lots, 0)} lot</b> <span class="text-slate-400">(${fmt(d.shares, 0)} lembar · nilai Rp ${fmtIdr(d.position_value)} = ${fmt(d.position_pct, 1)}% ekuitas)</span>`
+      + (d.turtle_unit_lots != null ? ` <span class="text-slate-500">· unit Turtle 1N: ${fmt(d.turtle_unit_lots, 0)} lot</span>` : "")
+      + ((d.warnings || []).length ? `<div class="mt-1 text-amber-300/90">${d.warnings.map(w => "⚠ " + esc(w)).join("<br>")}</div>` : `<div class="mt-1 text-emerald-400/80">✓ Tidak ada batas buku yang dilewati.</div>`);
+  } catch (e) {
+    out.innerHTML = `<span class="text-rose-300">${esc(e.message)}</span>`;
+  }
+}
+
 async function scanPreclose() {
   const btn = $("#btnPreclose");
   const picked = $("#scCriteria").value;
@@ -1646,7 +1732,8 @@ async function scanPreclose() {
   // sedikit untuk mewakili pasar — dinaikkan tanpa mengubah pilihan pemakai.
   const lim = Number($("#scLimit").value) <= 50 ? 250 : Number($("#scLimit").value);
   precloseParams = { universe: $("#scUniverse").value, criteria: crit,
-                     limit: lim, mom_min_pct: 8 };
+                     limit: lim, mom_min_pct: 8,
+                     stage2: $("#scStage2").checked, dry_volume: $("#scDry").checked };
   const q = precloseParamQuery();
   scanMode = "preclose";
   btn.disabled = true; btn.textContent = "Memindai harga berjalan…";
@@ -1939,6 +2026,7 @@ function renderScan(d) {
   if (isMomentum) h += `<div class="mb-3 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚡ <b>Momentum murni</b> — kriteria hasil audit 2020-2026 (1,34 juta saham-hari): return harian &ge; 8% DAN nilai transaksi &ge; Rp100 juta/hari. Syarat ini dulu tersembunyi di dalam Scalping &amp; BSJP, dan audit menunjukkan syarat tambahan keduanya <b>tidak menambah alpha</b>. Lantai Rp100 juta dipasang karena alpha mentah terbesar ada di kelas KURANG LIKUID yang tidak bisa dieksekusi.
     <div class="mt-1.5 pt-1.5 border-t border-amber-500/20 text-amber-200"><b>HARGA MASUK (baca sebelum memakai angka di atas):</b> seluruh alpha itu dihitung dari harga TUTUP hari sinyal. Bila Anda memindai pukul 18.00, harga itu sudah lewat, dan yang tersisa hanya celah buka sesi berikutnya — menguji 15.259 sinyal momentumkuat 2020-2026, celah buka rata-rata <b>+3,24%</b> dan membelinya membuat alpha relatif kelas <b>NEGATIF</b> (1 hari −1,60%, blok t −7,46). Menunggu diskon pun tidak menolong: order limit di harga sinyal terisi 75,7% tetapi hasil 3 harinya −1,54%. Yang bertahan hanya <b>beli di harga TUTUP sesi berikutnya</b> (+1,55% dalam 3 hari, blok t +5,53, positif di 5 dari 7 tahun).</div>
     <div class="mt-1.5 pt-1.5 border-t border-amber-500/20 text-amber-300/90">⚠️ <b>INI BUKAN VERSI TERKUAT.</b> Uji gabungan menemukan keunggulan momentum datang dari subset yang JUGA menembus high 20 hari: momentum tanpa breakout hanya <b>+0,13%</b> (5 hari) sedangkan irisannya <b>+3,58%</b> — lihat kriteria <b>💥 Momentum + Breakout</b>. Bersih biaya 0,3% varian murni: +0,76% (1 hari) · +1,87% (3 hari) · +2,60% (5 hari), dengan kejadian untung cuma 41-42%.</div></div>`;
+  h += filterNote(d);
   if (isMomentumKuat) h += `<div class="mb-3 text-[11px] text-rose-200/90 bg-rose-500/10 border border-rose-500/30 rounded-xl px-3.5 py-2.5">💥 <b>Momentum + Breakout</b> — kriteria dengan bukti <b>TERKUAT untuk dipakai harian</b>: naik &ge; 8% HARI INI <b>dan</b> close menembus high tertinggi 20 bar sebelumnya, nilai &ge; Rp100 juta/hari. Yang membuat ini penting: <b>kedua sisinya lemah sendiri-sendiri</b> — momentum tanpa breakout cuma +0,13% (5 hari), breakout tanpa momentum −0,14%, tetapi irisannya <b>+3,58%</b> (blok t=+22,25, n=17.726, ~11 sinyal/hari) dengan dua paruh holdout positif (+2,64%/+4,52%). Artinya yang bekerja adalah momentum DI DALAM struktur naik, bukan bounce di tren turun.
     <div class="mt-1.5 pt-1.5 border-t border-rose-500/20 text-rose-200"><b>HARGA MASUK (baca sebelum memakai angka di atas):</b> alpha +3,58% itu dihitung dari harga TUTUP hari sinyal — bukan harga yang tersedia bila Anda memindai pukul 18.00. Uji 15.259 sinyal 2020-2026: celah buka sesi berikutnya rata-rata <b>+3,24%</b>, dan membelinya membuat alpha relatif kelas <b>NEGATIF</b> (1 hari −1,60% blok t −7,46 · 5 hari −0,15% blok t −2,62). Menunggu diskon juga gagal: limit di harga sinyal terisi 75,7% tapi hasil 3 harinya −1,54% (blok t −9,69), makin dalam diskonnya makin buruk (−3,67% / −5,69% / −8,21%). Yang bertahan: <b>beli di harga TUTUP sesi berikutnya</b> (+1,55% dalam 3 hari, blok t +5,53, net +1,73%, positif di 5 dari 7 tahun dan di kedua paruh). Kalau ingin alpha penuh, pindai <b>sebelum</b> bursa tutup.</div>
     <div class="mt-1.5 pt-1.5 border-t border-rose-500/20 text-amber-300/90">Positif di <b>ketujuh tahun</b> (2020-2026) dan di <b>semua kelas likuiditas</b> (SANGAT LIKUID +2,88%), membaik dengan penyaring tiket (+5,22% vs +1,62% untuk yang dibuang), dan rezim bull 5,71% vs bear 1,77%. ⚠️ Kejadian yang untung <b>setelah biaya 0,3% hanya 46-47%</b> — di bawah separuh: rata-rata ditarik ekor keuntungan, jadi stop-loss dan ukuran posisi yang menentukan, bukan tingkat keberhasilan. Kolom <b>Rencana Harian</b> memberi stop 1,5&times;ATR14 &amp; target 2&times; risiko dengan batas waktu 5 hari — batas waktu itu wajib, karena buktinya ada di 1-5 hari.</div></div>`;
@@ -2000,14 +2088,14 @@ function renderScan(d) {
       ${isReversal ? (() => { const ri = r.reversal_info || {}; return `<td class="px-3 text-right tabular">${ri.broken_resistance ? `${fmt(ri.broken_resistance)}<div class="text-[10px] text-cyan-300">${ri.distance_to_level_pct != null ? pct(ri.distance_to_level_pct) : ""} · retest hari ke-${ri.days_since_breakout}</div>` : "—"}</td>`; })() : ""}
       ${isVolSr ? (() => { const vi = r.volume_sr_info || {}; return `<td class="px-3 text-right tabular">${vi.volume_support ? `${fmt(vi.volume_support)}<div class="text-[10px] text-lime-300">${vi.distance_to_support_pct != null ? pct(vi.distance_to_support_pct) : ""} · R ${vi.volume_resistance != null ? fmt(vi.volume_resistance) : "—"}</div>` : "—"}</td>`; })() : ""}
       ${isSilent ? `<td class="px-3 text-xs">${si.broker ? `<b>${esc(si.broker)}</b><div class="text-[10px] text-slate-500">${si.days_buy}/${si.window} hari · <span class="tabular text-emerald-400">${fmtIdr(si.net)}</span> · net/gross ${Number(si.net_ratio || 0).toFixed(2)}</div>` : "—"}</td>` : ""}
-      ${isMomoLike ? (() => { const p = (r.momentum_info || {}).plan || {}; if (p.stop_loss == null) return `<td class="px-3 text-right text-[11px]">—</td>`; return `<td class="px-3 text-right tabular text-[11px]">${p.harga_sinyal != null ? `<div class="text-slate-400 text-[10px]">sinyal ${fmt(p.harga_sinyal)}</div>` : ""}<div class="text-amber-300 text-[10px] font-semibold">beli di tutup besok</div><span class="text-rose-400">SL ${fmt(p.stop_loss)}</span> <span class="text-slate-500">(${pct(p.risk_pct != null ? -Math.abs(p.risk_pct) : null)})</span><div class="text-emerald-400">TP ${fmt(p.target)} <span class="text-slate-500">(+${fmt(p.reward_pct, 1)}%)</span></div><div class="text-[10px] text-slate-500">maks ${p.max_hold_days || 5} hari</div></td>`; })() : ""}
+      ${isMomoLike ? (() => { const p = (r.momentum_info || {}).plan || {}; if (p.stop_loss == null) return `<td class="px-3 text-right text-[11px]">—</td>`; return `<td class="px-3 text-right tabular text-[11px]">${p.harga_sinyal != null ? `<div class="text-slate-400 text-[10px]">sinyal ${fmt(p.harga_sinyal)}</div>` : ""}<div class="text-amber-300 text-[10px] font-semibold">beli di tutup besok</div><span class="text-rose-400">SL ${fmt(p.stop_loss)}</span> <span class="text-slate-500">(${pct(p.risk_pct != null ? -Math.abs(p.risk_pct) : null)})</span><div class="text-emerald-400">TP ${fmt(p.target)} <span class="text-slate-500">(+${fmt(p.reward_pct, 1)}%)</span></div><div class="text-[10px] text-slate-500">maks ${p.max_hold_days || 5} hari</div><button onclick="psFill(${p.entry != null ? p.entry : p.stop_loss}, ${p.stop_loss}, '${esc(stripJK(r.ticker))}')" title="Hitung berapa LOT yang muat dalam batas risiko buku (Minervini/Tharp/Turtle) dari harga masuk & stop baris ini." class="mt-0.5 text-[10px] px-2 py-0.5 rounded-lg border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 font-bold">💼 Lot</button></td>`; })() : ""}
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
       <td class="px-3 text-center"><button onclick="toggleKoreksiWatch('${esc(r.ticker)}', this)" title="Pantau ${esc(stripJK(r.ticker))} di Telegram — notifikasi saat sinyal membaik atau harga masuk zona entry" class="text-[10px] px-2 py-1 rounded-lg border font-bold ${koreksiWatch.has(r.ticker.toUpperCase()) ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400" : "border-sky-500/40 bg-sky-500/10 text-sky-400"}">${koreksiWatch.has(r.ticker.toUpperCase()) ? "✓ Dipantau" : "➕ Pantau"}</button></td>
       <td class="px-3 text-center">${confirmChip(r.book_confirm)}</td>
       <td class="px-3 text-center">${buyScoreChip(r.buy_score)}</td>
       <td class="px-3">${liqChip(r.liquidity_grade)}</td>
       <td class="px-3 text-right tabular" title="${tiketTitle}">${r.avg_ticket_idr != null ? `${r.ticket_small ? '<span class="text-amber-300">⚠️ </span>' : ""}${fmtIdr(r.avg_ticket_idr)}` : '<span class="text-slate-600">—</span>'}</td>
-      <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}</td>
+      <td class="px-3">${r.criteria_met.map(c => `<span class="text-[10px] px-2 py-0.5 rounded-full border border-emerald-500/40 text-emerald-400 bg-emerald-500/10 mr-1">${esc(c)}</span>`).join("")}${stage2Chip(r.stage2)}${dryChip(r.dry_volume)}</td>
       <td class="px-3 text-xs text-violet-400">${esc(r.source || "—")}</td>
       <td class="px-3 text-xs">${r.bandarmology
         ? `<span class="${r.bandarmology.status.includes("ACC") ? "text-emerald-400" : r.bandarmology.status.includes("DIS") ? "text-rose-400" : "text-slate-400"}">${esc(r.bandarmology.status.split(" ")[0])}</span>`
@@ -2019,6 +2107,32 @@ function renderScan(d) {
   }
   h += `</tbody></table></div>`;
   $("#screenerResult").innerHTML = h;
+}
+
+// Stage-2 (Trend Template buku, Minervini hal 105-106) dan volume kering (Biawak hal 257).
+// Keduanya ditampilkan per baris WALAUPUN penyaringnya mati: status "7 dari 8 syarat"
+// menjelaskan MENGAPA sebuah saham lolos/gagal, dan itu tidak terlihat dari kolom lain.
+function stage2Chip(s2) {
+  if (!s2) return "";
+  const ok = !!s2.ok;
+  const rs = s2.rs_known ? `peringkat RS ${fmt(s2.rs_rank, 0)}` : "peringkat RS belum dinilai (butuh pembanding lintas saham)";
+  const gagal = (s2.failed || []).length ? `\n\nYang belum terpenuhi: ${(s2.failed || []).join("; ")}.` : "\n\nSemua syarat terpenuhi.";
+  const title = `STAGE-2 / Trend Template buku (Minervini hal 105-106): ${s2.passed || 0} dari ${s2.total || 8} syarat. ${rs}.${gagal}`;
+  return `<span title="${esc(title)}" class="text-[10px] px-2 py-0.5 rounded-full border ml-1 ${ok ? "border-emerald-500/40 text-emerald-300 bg-emerald-500/10" : "border-slate-600 text-slate-400 bg-slate-800/60"}">🧱 Stage-2 ${s2.passed || 0}/${s2.total || 8}</span>`;
+}
+
+function dryChip(v) {
+  if (!v) return "";
+  return `<span title="Volume hari sinyal DI BAWAH rata-rata 20 hari padahal harga naik. Buku Biawak hal 257 menyebut ini 'kenaikan lemah', tetapi pengukuran panel IDX menunjukkan sebaliknya: momentum+breakout alpha 5 hari +2,90% -> +12,24%." class="text-[10px] px-2 py-0.5 rounded-full border border-cyan-500/40 text-cyan-300 bg-cyan-500/10 ml-1">🫗 vol kering</span>`;
+}
+
+function filterNote(d) {
+  const fl = d.filters || {};
+  if (!fl.stage2 && !fl.dry_volume) return "";
+  const parts = [];
+  if (fl.stage2) parts.push(`<b>🧱 Stage-2</b>: ${d.stage2_filtered || 0} kandidat dibuang karena belum lolos 8 syarat tren. Terukur (989 emiten x 1,6 juta saham-hari): momentum+breakout +2,90% &rarr; <b>+6,51%</b>, breakout +0,35% &rarr; <b>+4,13%</b>, momentum +1,60% &rarr; <b>+4,40%</b> (alpha 5 hari vs kelas likuiditas yang sama).`);
+  if (fl.dry_volume) parts.push(`<b>🫗 Volume kering</b>: ${d.dry_volume_filtered || 0} kandidat dibuang karena volumenya di atas rata-rata. Terukur: momentum+breakout +2,90% &rarr; <b>+12,24%</b> (61,5% kejadian untung setelah biaya, positif di 7 dari 7 tahun) — kebalikan dari yang tertulis di bukunya, jadi ini hasil pengukuran kita sendiri, bukan kutipan.`);
+  return `<div class="mb-3 text-[11px] text-cyan-200/90 bg-cyan-500/10 border border-cyan-500/30 rounded-xl px-3.5 py-2.5">Penyaring buku sedang AKTIF:<div class="mt-1 flex flex-col gap-1">${parts.map(p => `<div>${p}</div>`).join("")}</div><div class="mt-1 text-slate-400">Konsekuensinya hasil jauh lebih sedikit. Matikan centangnya untuk membandingkan dengan tanpa penyaring.</div>${d.stage2_rs_scope ? `<div class="mt-1 text-amber-300/90">⚠ ${esc(d.stage2_rs_scope)}</div>` : ""}</div>`;
 }
 
 function toggleScanPlan(btn) {
@@ -3131,6 +3245,9 @@ loadKoreksiWatch();
 // yang terhenti kemarin/hari ini bisa dilanjut, bukan diulang dari halaman 1.
 renderPrecloseResume();
 renderWlChips();
+// Setelan kalkulator lot (ekuitas & batas risiko) dimuat sekali di awal supaya
+// tombol "💼 Lot" di tiap baris langsung bisa dipakai tanpa mengisi ulang.
+psLoad();
 renderPortfolio();
 renderAlertBox([]);
 analyze();

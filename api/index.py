@@ -28,6 +28,7 @@ from __future__ import annotations
 import io
 import json
 import math
+from bisect import bisect_left
 import os
 import threading
 import time
@@ -1054,6 +1055,311 @@ def breakout_20_series(df: pd.DataFrame) -> pd.Series:
     return (c > h.rolling(20).max().shift(1)).fillna(False)
 
 
+# ---------------------------------------------------------------------------
+# STAGE-2 / TREND TEMPLATE — Mark Minervini, "Think & Trade Like a Champion",
+# Bab 6 "Trend Template Criteria" (hal 105-106).
+#
+# Dipasang sebagai PENYARING (opsional) pada kriteria yang sudah ada, bukan sebagai
+# kriteria baru yang berdiri sendiri — karena begitu yang diukur di panel harian IDX
+# (`research/book_rules_study.py`, 989 emiten, 1,6 juta saham-hari, 2020-2026):
+#
+#   entri dasar            alpha5 vs kelas   setelah disaring 8 syarat
+#   momentum >=8%              +1,60%             +4,40%
+#   momentum + breakout20      +2,90%             +6,51%
+#   breakout 20 hari saja      +0,35%             +4,13%
+#   Stage-2 SENDIRI (tanpa entri lain)             +0,79%   <- lemah, jangan dipakai sendiri
+#
+# Stage-2 sendiri lemah karena 59 sinyal/hari: hampir separuh pasar lolos di rezim
+# naik. Nilainya muncul saat dipakai menyaring entri yang sudah punya alfa.
+STAGE2_LABELS = {
+    "c1_above_150_200": "Harga di atas MA150 dan MA200",
+    "c2_150_above_200": "MA150 di atas MA200",
+    "c3_200_rising": "MA200 naik minimal 1 bulan",
+    "c4_50_above_all": "MA50 di atas MA150 dan MA200",
+    "c5_25pct_off_low": "Harga minimal 25% di atas low 52 minggu",
+    "c6_within_25pct_high": "Harga dalam 25% dari high 52 minggu",
+    "c7_rs70": "Peringkat RS minimal 70 (persentil lintas saham)",
+    "c8_above_50": "Harga di atas MA50",
+}
+# Ambang peringkat RS. Dipakai hanya bila peringkat lintas saham benar-benar tersedia
+# (dihitung dari universe yang dipindai); kalau tidak, syarat ini TIDAK diklaim lolos.
+STAGE2_RS_MIN = 70.0
+# Jumlah emiten minimum agar peringkat RS (persentil) berarti. Di bawah ini peringkat
+# masih bisa dihitung secara matematis, tetapi nilainya menyesatkan karena pembandingnya
+# segelintir saham — jadi syarat RS dilaporkan "belum dinilai", bukan dipaksa lolos.
+STAGE2_RS_MIN_UNIVERSE = 8
+# Bar minimum agar Trend Template bisa dinilai (syarat 5-6 memakai jendela 252 bar).
+STAGE2_MIN_BARS = 252
+
+# Catatan yang dikirim ulang ke pemanggil saat penyaring dinyalakan: angka terukurnya
+# ikut disebut supaya keputusan "pakai atau tidak" tidak perlu menebak.
+STAGE2_FILTER_NOTE = (
+    "Penyaring Stage-2 aktif (8 syarat Trend Template Minervini hal 105-106). "
+    "Terukur di 989 emiten x 1,6 juta saham-hari (research/book_rules_study.py): "
+    "alpha5 momentum+breakout +2,90% -> +6,51%; breakout 20 hari +0,35% -> +4,13%; "
+    "momentum>=8% +1,60% -> +4,40%. Positif di kedua paruh waktu, dan tetap sama "
+    "setelah efek ukuran dikeluarkan. Konsekuensinya: hasil jauh lebih sedikit."
+)
+DRY_VOLUME_FILTER_NOTE = (
+    "Penyaring volume kering aktif: volume hari sinyal di bawah rata-rata 20 hari "
+    "padahal harga sedang naik. Buku Biawak hal 257 menyebut keadaan ini 'kenaikan "
+    "lemah'; diukur di panel IDX justru sebaliknya: momentum+breakout alpha5 +2,90% "
+    "-> +12,24% (61,5% kejadian untung setelah biaya, positif di 7 dari 7 tahun). "
+    "Hanya ~0,9 sinyal/hari se-pasar, jadi jangan dijadikan satu-satunya sumber."
+)
+
+
+def stage2_components(df: pd.DataFrame) -> pd.DataFrame:
+    """Delapan syarat Trend Template sebagai kolom boolean + bahan peringkat RS.
+
+    Syarat 7 (peringkat RS) TIDAK bisa dihitung di sini: ia butuh peringkat kinerja
+    12 bulan lintas saham pada tanggal yang sama. Kolom `ret252` disiapkan sebagai
+    bahannya, dan peringkatnya dipasang oleh pemanggil yang memang melihat seluruh
+    universe (`_scan`), bukan ditebak di dalam fungsi ini.
+    """
+    close = df["Close"].astype(float)
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    s50, s150, s200 = (sma(close, n) for n in (50, 150, 200))
+    out = pd.DataFrame(index=df.index)
+    out["c1_above_150_200"] = ((close > s150) & (close > s200)).fillna(False)
+    out["c2_150_above_200"] = (s150 > s200).fillna(False)
+    out["c3_200_rising"] = (s200 > s200.shift(22)).fillna(False)
+    out["c4_50_above_all"] = ((s50 > s150) & (s50 > s200)).fillna(False)
+    out["c5_25pct_off_low"] = (close >= 1.25 * low.rolling(252, min_periods=120).min()).fillna(False)
+    out["c6_within_25pct_high"] = (close >= 0.75 * high.rolling(252, min_periods=120).max()).fillna(False)
+    out["c8_above_50"] = (close > s50).fillna(False)
+    out["ret252"] = (close / close.shift(252) - 1.0) * 100.0
+    return out
+
+
+STAGE2_PRICE_COLS = ("c1_above_150_200", "c2_150_above_200", "c3_200_rising",
+                     "c4_50_above_all", "c5_25pct_off_low", "c6_within_25pct_high",
+                     "c8_above_50")
+
+
+def stage2_series(df: pd.DataFrame, rs_rank: Optional[pd.Series] = None) -> pd.Series:
+    """Deret True saat DELAPAN syarat lolos (atau 7 syarat harga bila RS tak tersedia)."""
+    comp = stage2_components(df)
+    ok = comp[list(STAGE2_PRICE_COLS)].all(axis=1)
+    if rs_rank is not None:
+        ok = ok & (rs_rank.reindex(df.index).fillna(-1.0) >= STAGE2_RS_MIN)
+    return ok.fillna(False)
+
+
+def stage2_data_note(df: pd.DataFrame) -> Optional[str]:
+    """Kembalikan alasan bila data terlalu pendek untuk menilai Trend Template.
+
+    Kenapa ini penting: syarat 5 & 6 memakai jendela 252 bar (52 minggu) dan peringkat RS
+    butuh kinerja 12 bulan. Dengan `period=3mo` (~63 bar) semuanya NaN → False, sehingga
+    penyaring Stage-2 membuang SEMUA saham seolah-olah tidak ada yang lolos — padahal
+    yang terjadi adalah datanya tidak cukup. Tanpa catatan ini, kegagalan itu tidak
+    kelihatan sama sekali dari luar.
+    """
+    try:
+        bars = int(len(df))
+    except Exception:
+        return None
+    if bars < STAGE2_MIN_BARS:
+        return (f"Data hanya {bars} bar, kurang dari {STAGE2_MIN_BARS} bar yang dibutuhkan "
+                "untuk menilai syarat 52 minggu (harga vs low/high 52 minggu) dan peringkat "
+                "RS. Stage-2 TIDAK bisa dinilai pada jendela ini.")
+    return None
+
+
+def stage2_info(df: pd.DataFrame, rs_rank: Optional[float] = None) -> dict:
+    """Keadaan Trend Template pada bar terakhir + daftar syarat yang gagal.
+
+    Sengaja mengembalikan syarat mana yang GAGAL, bukan cuma benar/salah: dari situ
+    pengguna bisa tahu apakah sahamnya hampir lolos (mis. hanya MA200 belum naik)
+    atau memang jauh. Tanpa ini, penyaring Stage-2 hanya jadi kotak hitam.
+    """
+    data_note = stage2_data_note(df)
+    if data_note:
+        return {"ok": False, "passed": 0, "total": len(STAGE2_PRICE_COLS) + 1,
+                "rs_rank": None, "rs_known": False, "rs_ok": False,
+                "failed": [data_note], "data_note": data_note, "ret252_pct": None,
+                "bars": int(len(df)),
+                "note": "Stage-2 tidak bisa dinilai: " + data_note}
+    try:
+        comp = stage2_components(df)
+        last = comp.iloc[-1]
+        price_ok = [c for c in STAGE2_PRICE_COLS if bool(last[c])]
+        failed = [STAGE2_LABELS[c] for c in STAGE2_PRICE_COLS if c not in price_ok]
+        rs_known = rs_rank is not None and np.isfinite(float(rs_rank))
+        rs_ok = bool(rs_known and float(rs_rank) >= STAGE2_RS_MIN)
+        if rs_known and not rs_ok:
+            failed.append(STAGE2_LABELS["c7_rs70"])
+        return {
+            "ok": bool(not failed),
+            "passed": len(price_ok) + (1 if rs_ok else 0),
+            "total": len(STAGE2_PRICE_COLS) + 1,
+            "rs_rank": (round(float(rs_rank), 1) if rs_known else None),
+            "rs_known": bool(rs_known),
+            "rs_ok": rs_ok,
+            "failed": failed,
+            "ret252_pct": num(last.get("ret252"), 2),
+            "data_note": None,
+            "bars": int(len(df)),
+            "note": ("Stage-2: 8 syarat Trend Template Minervini (hal 105-106). "
+                     + ("Peringkat RS sudah dinilai dari universe yang dipindai." if rs_known
+                        else "Peringkat RS BELUM dinilai (butuh pembanding lintas saham) — "
+                             "status yang dilaporkan adalah 7 syarat harga.")),
+        }
+    except Exception:
+        return {"ok": False, "all_ok": False, "passed": 0, "total": 8,
+                "rs_rank": None, "rs_known": False, "rs_ok": False, "failed": [],
+                "ret252_pct": None, "note": "Trend Template tidak dapat dihitung."}
+
+
+def position_size_plan(equity: float, entry: float, stop: float, risk_pct: float = 1.0,
+                       atr_value: Optional[float] = None, lot: int = 100,
+                       max_position_pct: float = 50.0, drawdown_pct: float = 0.0) -> dict:
+    """Ukuran posisi dari RISIKO, bukan dari "rasa" — lalu diterjemahkan ke LEMBAR/LOT.
+
+    Sumber, tiga buku berbeda yang aturannya bertemu di titik yang sama:
+      * Minervini, Think & Trade Like a Champion, Bab 8 (hal 142-144): risiko per
+        perdagangan 1,25-2,5% ekuitas; stop maksimum 10%; ukuran posisi = risiko /
+        jarak stop; posisi terbesar 50% "and never more"; 20-25% per nama untuk 4-5 nama.
+      * Tharp, The New Trading for a Living (hal 56 & 110): "jarak masuk ke stop
+        dikali ukuran posisi tidak boleh lebih dari 2% ekuitas" — kalau tidak muat,
+        LEWATI perdagangan itu; saat tren pakai posisi kecil dengan stop lebar.
+      * Turtle Trader (hal 269-275): 1N (=ATR) mewakili 1% ekuitas, sehingga unit =
+        1% ekuitas / N; stop 2N; dan bila akun turun 10%, ukuran notional dipotong 20%.
+
+    Kenapa perlu ada di aplikasi: seluruh audit kriteria menyimpulkan hal yang sama —
+    kejadian untung setelah biaya selalu di bawah 50%, jadi hasil akhir ditentukan
+    ukuran posisi dan stop, bukan tingkat keberhasilan. Tanpa angka ini, rencana
+    harian hanya memberi harga stop tanpa memberi tahu berapa lot yang boleh dibeli.
+
+    Semua nasihat dikembalikan sebagai `warnings` (bahasa manusia), bukan diam-diam
+    dipotong — supaya pengguna bisa memutuskan dan tahu batas mana yang dilewati.
+    """
+    try:
+        equity = float(equity)
+        entry = float(entry)
+        stop = float(stop)
+        risk_pct = float(risk_pct)
+    except (TypeError, ValueError):
+        return {"ok": False, "reason": "Angka ekuitas/harga/stop tidak terbaca."}
+    if equity <= 0 or entry <= 0:
+        return {"ok": False, "reason": "Ekuitas dan harga masuk harus lebih dari 0."}
+    if stop >= entry:
+        return {"ok": False, "reason": ("Stop harus DI BAWAH harga masuk untuk posisi beli "
+                                          f"(stop {num(stop, 2)} >= harga {num(entry, 2)}).")}
+
+    risk_per_share = entry - stop
+    stop_pct = risk_per_share / entry * 100.0
+    # Aturan Turtle: setelah akun turun 10%, ukuran notional dipotong 20%. Selisih
+    # drawdown dihitung berlapis (10% -> 20% -> 30% ...) seperti di buku.
+    layers = int(max(0.0, float(drawdown_pct)) // 10) if drawdown_pct else 0
+    equity_efektif = equity * (0.8 ** layers)
+    risk_idr = equity_efektif * risk_pct / 100.0
+    shares = int(risk_idr // risk_per_share) if risk_per_share > 0 else 0
+    shares = (shares // lot) * lot
+    lots = shares // lot
+    pos_value = shares * entry
+    pos_pct = pos_value / equity * 100.0 if equity else 0.0
+
+    warnings: List[str] = []
+    if risk_pct > 2.5:
+        warnings.append(f"Risiko {risk_pct:.2f}% ekuitas melebihi batas buku (Minervini 1,25-2,5%; "
+                        "Tharp maksimum 2%). Turunkan.")
+    if stop_pct > 10.0:
+        warnings.append(f"Jarak stop {stop_pct:.2f}% melebihi batas 10% (Minervini hal 144). "
+                        "Perlebar bukan berarti lebih aman: pakai risiko lebih kecil atau lewati.")
+    if pos_pct > max_position_pct:
+        warnings.append(f"Ukuran posisi {pos_pct:.1f}% ekuitas melebihi batas "
+                        f"{max_position_pct:.0f}% (Minervini hal 144: jangan lebih dari 50%).")
+    if lots == 0:
+        warnings.append("Dengan ekuitas dan batas risiko ini, 1 lot pun sudah melewati batas risiko "
+                        "— pilih stop lebih rapat, saham lebih murah, atau lewati perdagangan "
+                        "(Tharp hal 56: pass on that trade).")
+    if layers:
+        warnings.append(f"Drawdown {float(drawdown_pct):.0f}% -> ukuran posisi dipotong ke "
+                        f"{0.8 ** layers * 100:.0f}% dari ekuitas semula (aturan Turtle hal 269).")
+    if risk_idr < risk_per_share * lot:
+        warnings.append("Batas risiko lebih kecil dari nilai risiko 1 lot: hitung ulang dari "
+                        "harga isi sebenarnya.")
+
+    unit_shares = None
+    if atr_value and float(atr_value) > 0:
+        unit_shares = int((equity_efektif * 0.01) // float(atr_value))   # Turtle: 1N = 1% ekuitas
+        unit_shares = (unit_shares // lot) * lot
+
+    return {
+        "ok": True,
+        "equity": num(equity, 0),
+        "equity_efektif": num(equity_efektif, 0),
+        "risk_pct": round(risk_pct, 2),
+        "risk_idr": num(risk_idr, 0),
+        "risk_per_share": num(risk_per_share, 2),
+        "stop_pct": num(stop_pct, 2),
+        "shares": shares,
+        "lots": lots,
+        "lot_size": lot,
+        "position_value": num(pos_value, 0),
+        "position_pct": num(pos_pct, 2),
+        "turtle_unit_lots": (unit_shares // lot if unit_shares else None),
+        "turtle_unit_note": ("Unit Turtle (1N = 1% ekuitas, hal 269-275): "
+                             f"{unit_shares} lembar" if unit_shares else None),
+        "warnings": warnings,
+        "rules": ["Minervini hal 142-144: risiko 1,25-2,5% ekuitas, stop maks 10%, posisi maks 50%",
+                  "Tharp hal 56 & 110: jarak stop x ukuran posisi <= 2% ekuitas, kalau tidak muat dilewati",
+                  "Turtle hal 269-275: 1N = 1% ekuitas, stop 2N, notional dipotong 20% tiap drawdown 10%"],
+    }
+
+
+def stage2_info_from(info: Optional[dict], rs_rank: Optional[float]) -> dict:
+    """Lengkapi laporan Stage-2 dengan peringkat RS dari seluruh universe.
+
+    Dipisah dari `stage2_info()` karena peringkat RS baru bisa dihitung setelah semua
+    saham dipindai. Memakai fungsi yang sama untuk menilai syarat 1-6 & 8 (hasilnya
+    sudah ada di `info`) supaya tidak ada dua hitungan yang bisa berbeda.
+    """
+    info = dict(info or {})
+    known = rs_rank is not None and np.isfinite(float(rs_rank))
+    rs_ok = bool(known and float(rs_rank) >= STAGE2_RS_MIN)
+    failed = list(info.get("failed") or [])
+    label = STAGE2_LABELS["c7_rs70"]
+    if known and not rs_ok and label not in failed:
+        failed.append(label)
+    price_fail = len([f for f in failed if f != label])
+    info.update({
+        "failed": failed,
+        "ok": bool(not failed),
+        "rs_rank": (round(float(rs_rank), 1) if known else None),
+        "rs_known": bool(known),
+        "rs_ok": rs_ok,
+        "passed": len(STAGE2_PRICE_COLS) - price_fail + (1 if rs_ok else 0),
+        "note": ("Stage-2: 8 syarat Trend Template Minervini (hal 105-106). "
+                 + ("Peringkat RS sudah dinilai dari universe yang dipindai." if known
+                    else "Peringkat RS BELUM dinilai (pembanding lintas saham tidak "
+                         "tersedia) — status yang dilaporkan adalah 7 syarat harga.")),
+    })
+    return info
+
+
+def dry_volume_series(df: pd.DataFrame, look: int = 5) -> pd.Series:
+    """Volume hari sinyal DI BAWAH rata-rata 20 hari, sementara harga sedang naik.
+
+    Dari mana: tabel volume-harga buku "Ilmu Saham Biawak VVIP" (hal 257) menyatakan
+    harga naik + volume naik = kenaikan kuat, volume turun = lemah. Diukur di panel
+    IDX hasilnya TERBALIK untuk entri momentum, dan itu bukan efek tiket kecil:
+
+        momentum>=8% + volume NAIK      alpha5 +1,28%   (net +2,26%)
+        momentum>=8% + volume TURUN     alpha5 +6,73%   (net +8,49%)  <- 5x lebih besar
+        momentum+breakout + volume turun alpha5 +12,24% (net +14,93%, 61,5% untung)
+
+    Positif di KETUJUH tahun panel, dan tetap sama setelah efek ukuran dikeluarkan
+    (residu-ukuran +12,30% vs +12,24% relatif kelas). Yang diukur adalah definisi ini
+    apa adanya: `ret5 > 0` DAN volume < rata-rata 20 hari.
+    """
+    vol = df["Volume"].astype(float)
+    ret5 = df["Close"].astype(float).pct_change(look) * 100.0
+    return ((ret5 > 0) & (vol < sma(vol, 20))).fillna(False)
+
+
 def buy_score_components(df: pd.DataFrame) -> pd.DataFrame:
     """Rincian skor beli v2 PER KOMPONEN (vektor, per bar) + kolom 'total' 0-100.
 
@@ -1625,8 +1931,13 @@ def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> 
         sinyal tidak berubah tanpa data baru.
         """
         yf_err = None
+        # Jumlah bar mengikuti `period`. Sebelumnya kedua cabang di bawah SELALU minta
+        # 200 bar, jadi `period=1y` pun hanya ~9,5 bulan data — dan syarat yang butuh
+        # 252 bar (Stage-2 Minervini & peringkat RS) tidak pernah bisa dinilai. Kuota
+        # tidak bertambah: tetap satu permintaan.
+        edge_limit = IDX_EDGE_BARS_BY_PERIOD.get(period, 200)
         if prefer == "idx-edge-pro" and IDX_EDGE_API_KEYS:
-            df_edge = fetch_idx_history(tk)
+            df_edge = fetch_idx_history(tk, limit=edge_limit)
             if df_edge is not None and not df_edge.empty:
                 return df_edge, "idx-edge-pro", None
         try:
@@ -1644,7 +1955,7 @@ def fetch_data(ticker: str, period: str, yf_timeout: Optional[float] = None) -> 
         source = "yfinance"
         if df is None or df.empty:
             if IDX_EDGE_API_KEYS and prefer != "idx-edge-pro":
-                df = fetch_idx_history(tk)
+                df = fetch_idx_history(tk, limit=edge_limit)
                 if df is not None:
                     source = "idx-edge-pro" + (" (yfinance gagal)" if yf_err else "")
             if df is None or df.empty:
@@ -2554,12 +2865,16 @@ def fetch_idx_history(ticker: str, limit: int = 200) -> Optional[pd.DataFrame]:
     """OHLCV real-time IDX dari IDX Edge PRO (/api/history/{code}).
 
     Kolom tambahan: Value (nilai transaksi harian) dan n_foreign (net foreign).
+
+    `limit` masuk ke KUNCI CACHE, bukan cuma ke permintaan. Sebelumnya kuncinya hanya
+    `hist:{code}`, sehingga permintaan 1 tahun bisa dilayani data 200 bar yang sudah
+    tersimpan — dan pemakainya tidak punya cara mengetahui datanya terpotong.
     """
     if ".JK" not in ticker.upper():
         return None
     code = ticker.upper().replace(".JK", "")
     data = idx_edge_get(f"/api/history/{code}", {"frame": "daily", "limit": limit},
-                        cache_key=f"hist:{code}")
+                        cache_key=f"hist:{code}:{int(limit)}")
     if not data or not isinstance(data.get("rows"), list) or not data["rows"]:
         return None
     rows = []
@@ -2902,7 +3217,11 @@ def _get_ticker_data(tk: str, period: str):
 
 def _get_ticker_data_raw(tk: str, period: str):
     if ".JK" in tk.upper() and IDX_EDGE_API_KEYS:
-        df = fetch_idx_history(tk)
+        # Jumlah bar mengikuti `period`. Sebelumnya jalur ini SELALU minta 200 bar
+        # (bawaan `fetch_idx_history`), akibatnya jendela 1 tahun tidak benar-benar
+        # 1 tahun — dan syarat yang butuh 252 bar (Stage-2 Minervini, peringkat RS)
+        # tidak bisa dinilai sama sekali di produksi. Kuota tetap sama: satu permintaan.
+        df = fetch_idx_history(tk, limit=IDX_EDGE_BARS_BY_PERIOD.get(period, 200))
         if df is not None:
             return df, "idx-edge-pro"
     df = _download_batch([tk], period).get(tk)
@@ -4913,7 +5232,9 @@ PRECLOSE_PATTERN_CRITERIA = ("breakout", "launchpad", "volsr")
 
 def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
                    min_value: float = MOMENTUM_VALUE_FLOOR, period: str = "6mo",
-                   workers: int = 12, criteria: str = "momentumkuat") -> dict:
+                   workers: int = 12, criteria: str = "momentumkuat",
+                   require_stage2: bool = False,
+                   require_dry_volume: bool = False) -> dict:
     """Pindai keadaan SEKARANG se-pasar, dengan harga masuk yang bisa dibayar hari ini.
 
     Dua mesin, dipilih oleh `criteria`:
@@ -4938,7 +5259,9 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
 
     if criteria in PRECLOSE_PATTERN_CRITERIA:
         return _preclose_pattern_scan(tickers, today_snaps, criteria, period,
-                                      mom_min_pct, workers, snaps)
+                                      mom_min_pct, workers, snaps,
+                                      require_stage2=require_stage2,
+                                      require_dry_volume=require_dry_volume)
 
     for s in today_snaps:
         # Nilai transaksi FINAL yang diperkirakan: volume pra-tutup masih ~87% dari
@@ -4952,9 +5275,12 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
     # Dibaca SEKALI di luar loop: jawabannya sama untuk semua baris, dan pada pindai
     # 300 emiten pemanggilan berulang hanya membuang waktu.
     ses = preclose_session_info()
+    # Stage-2 butuh 252 bar (52 minggu + peringkat RS). Jalur ini menyaring LANGSUNG
+    # (bukan lewat `_scan`), jadi jendela datanya harus diperpanjang di sini juga.
+    hist_period = "1y" if (require_stage2 and period != "1y") else period
     for s in passed:
         tk = s["ticker"]
-        df, src = _get_ticker_data(tk, period)
+        df, src = _get_ticker_data(tk, hist_period)
         if df is None or len(df) < 25:
             continue
         hist = df
@@ -4996,10 +5322,17 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
         sig_now = None
         try:
             df_live = _inject_live_bar(df, s)
+        except Exception:
+            df_live = df
+        try:
             buy = compute_buy_score(df_live)
             sig_now = quick_signal(df_live)
         except Exception:
             pass
+        # Stage-2 & volume kering dinilai atas keadaan SEKARANG (bar berjalan sudah
+        # disuntikkan), karena penyaringnya baru berguna kalau menilai hari ini.
+        item_stage2 = stage2_info(df_live)
+        item_dry = bool(dry_volume_series(df_live).iloc[-1])
         grade_rec = preclose_grade(
             "momentumkuat" if brk else "momentum",
             buy_score=(buy or {}).get("score"),
@@ -5016,6 +5349,8 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
             "data_source": src,
             "signal": sig_now,
             "buy_score": buy,
+            "stage2": item_stage2,
+            "dry_volume": item_dry,
             "rekomendasi": grade_rec,
             "momentum_info": {
                 "day_return_pct": num(s.get("day_ret_pct"), 2),
@@ -5046,6 +5381,37 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
             "preclose": True,
         }
         results.append(item)
+    # Penyaring buku pada jalur momentum pra-tutup. Peringkat RS dihitung lintas
+    # kandidat yang LOLOS tahap 1 (bukan seluruh pasar) — batas ini disebut apa
+    # adanya di respons supaya angkanya tidak dibaca sebagai peringkat se-pasar.
+    dropped_stage2 = dropped_dry = 0
+    stage2_rs_scope = None
+    if require_stage2:
+        rets = {}
+        for r in results:
+            v = (r.get("stage2") or {}).get("ret252_pct")
+            if v is not None and np.isfinite(float(v)):
+                rets[r["ticker"]] = float(v)
+        ranks: Dict[str, float] = {}
+        if len(rets) >= STAGE2_RS_MIN_UNIVERSE:
+            vals = sorted(rets.values())
+            for tk, v in rets.items():
+                ranks[tk] = 100.0 * bisect_left(vals, v) / max(1, len(vals) - 1)
+            stage2_rs_scope = (f"Peringkat RS dihitung dari {len(rets)} kandidat yang lolos "
+                               "tahap 1 pada pemeriksaan ini (bukan se-pasar).")
+        else:
+            stage2_rs_scope = (f"Peringkat RS TIDAK dinilai: hanya {len(rets)} kandidat yang "
+                               f"lolos tahap 1, kurang dari {STAGE2_RS_MIN_UNIVERSE} yang "
+                               "dibutuhkan. Penyaring Stage-2 di sini memakai 7 syarat harga.")
+        for r in results:
+            r["stage2"] = stage2_info_from(r.get("stage2"), ranks.get(r["ticker"]))
+        before = len(results)
+        results = [r for r in results if (r.get("stage2") or {}).get("ok")]
+        dropped_stage2 = before - len(results)
+    if require_dry_volume:
+        before = len(results)
+        results = [r for r in results if r.get("dry_volume")]
+        dropped_dry = before - len(results)
     results.sort(key=lambda r: (GRADE_RANK.get(str(r.get("liquidity_grade")), 9),
                                  -(r.get("day_return_pct") or 0)))
     return {
@@ -5059,12 +5425,18 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
         "session": ses,
         "criteria": criteria,
         "engine": "price-stage2",
+        "filters": {"stage2": bool(require_stage2), "dry_volume": bool(require_dry_volume)},
+        "stage2_filtered": dropped_stage2,
+        "dry_volume_filtered": dropped_dry,
+        "stage2_rs_scope": stage2_rs_scope,
     }
 
 
 def _preclose_pattern_scan(tickers: List[str], today_snaps: List[dict],
                           criteria: str, period: str, mom_min_pct: float,
-                          workers: int, snaps: List[dict]) -> dict:
+                          workers: int, snaps: List[dict],
+                          require_stage2: bool = False,
+                          require_dry_volume: bool = False) -> dict:
     """Jalur kedua: bar berjalan disuntikkan, lalu fungsi sinyal PRODUKSI menilai.
 
     Caranya: LIVE_BAR_OVERRIDE diisi snapshot harga berjalan untuk tiap emiten, lalu
@@ -5085,7 +5457,7 @@ def _preclose_pattern_scan(tickers: List[str], today_snaps: List[dict],
     PRECLOSE_MODE_ACTIVE = True
     try:
         scan = _scan(tickers, criteria, period, True, False, False, False, False,
-                     2e9, False, mom_min_pct)
+                     2e9, False, mom_min_pct, require_stage2, require_dry_volume)
     finally:
         LIVE_BAR_OVERRIDE.clear()
         PRECLOSE_MODE_ACTIVE = False
@@ -5189,6 +5561,12 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         item["ticket_note"] = ticket["note"]
     if include_signal or criteria == "koreksi":
         item["signal"] = quick_signal(df)
+    # Stage-2 (Trend Template Minervini) & volume kering: dilaporkan SELALU, supaya
+    # barisnya bisa diperiksa walau penyaringnya tidak dinyalakan. Peringkat RS
+    # dipasang belakangan oleh `_scan` (butuh seluruh universe), jadi di sini
+    # dilaporkan apa adanya: belum dinilai.
+    item["stage2"] = stage2_info(df)
+    item["dry_volume"] = bool(dry_volume_series(df).iloc[-1])
 
     # Kekuatan relatif vs IHSG ("RS line"): dihitung untuk kriteria "rs" atau bila
     # pemanggil memintanya (rs_bypass). Menangkap saham yang NAIK saat indeks turun.
@@ -5534,9 +5912,34 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
           include_bandarmology: bool = True, require_confirm: bool = False,
           require_regime: bool = False, rs_bypass: bool = False,
           silent_min_net: float = 2e9, skip_small_ticket: bool = False,
-          mom_min_pct: float = 8.0) -> dict:
+          mom_min_pct: float = 8.0, require_stage2: bool = False,
+          require_dry_volume: bool = False) -> dict:
+    """Pindai satu universe lalu saring.
+
+    require_stage2 / require_dry_volume = dua penyaring hasil pengukuran buku
+    (`research/book_rules_study.py`), sengaja dinyalakan lewat parameter supaya
+    efeknya bisa dibandingkan dan dimatikan kembali — bukan dipaksa aktif:
+
+      penyaring Stage-2 (8 syarat Minervini hal 105-106)
+        momentum>=8%        +1,60% -> +4,40%    momentum+breakout  +2,90% -> +6,51%
+        breakout 20 hari    +0,35% -> +4,13%
+      penyaring volume kering (Biawak hal 257, TAPI hasilnya terbalik dari bukunya)
+        momentum>=8%        +1,60% -> +6,73%    momentum+breakout  +2,90% -> +12,24%
+
+    Peringkat RS (syarat 7 Stage-2) dihitung di sini, bukan di dalam pekerja:
+    ia butuh kinerja 12 bulan SELURUH saham yang dipindai pada hari yang sama.
+    """
+    # Stage-2 membutuhkan 252 bar (syarat 52 minggu + peringkat RS). Kalau jendela data
+    # yang diminta lebih pendek, DATA diambil dengan jendela lebih panjang sementara
+    # kriteria tetap dinilai pada bar terakhir (semua fungsinya point-in-time, jadi
+    # menarik data lebih panjang tidak mengubah sinyal). Tanpa ini penyaring Stage-2
+    # membuang SEMUA saham secara diam-diam pada period=1mo/3mo.
+    fetch_period = period
+    if require_stage2 and period in ("1mo", "3mo", "6mo"):
+        fetch_period = "1y"
     matched: List[dict] = []
     scanned = skipped = bandar_used = ticket_filtered = 0
+    stage2_filtered = dry_filtered = 0
     by_grade: Dict[str, tuple] = {}
     bars_seen: List[int] = []    # untuk melaporkan jendela data yang benar-benar dipakai
     # Filter kondisi pasar (IHSG vs MA200) — dihitung sekali, berlaku untuk semua saham.
@@ -5548,9 +5951,10 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     with_rs = bool(rs_bypass)
     workers = min(8, max(1, len(tickers)))
     with ThreadPoolExecutor(max_workers=workers) as ex:
-        futures = [ex.submit(_scan_worker, tk, criteria, period,
+        futures = [ex.submit(_scan_worker, tk, criteria, fetch_period,
                              include_signal, include_bandarmology, with_rs,
                              silent_min_net, mom_min_pct) for tk in tickers]
+        outs: List[dict] = []
         for f in futures:
             try:
                 out = f.result()
@@ -5564,6 +5968,43 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
             if out.get("item", {}).get("data_bars"):
                 bars_seen.append(int(out["item"]["data_bars"]))
             bandar_used += out.get("bandar_used", 0)
+            outs.append(out)
+
+        # Peringkat RS lintas universe, dihitung SEKALI setelah semua saham selesai.
+        # Ini syarat ke-7 Trend Template; tanpa langkah ini, Stage-2 hanya berarti
+        # "7 syarat harga" dan klaim "8 syarat" tidak boleh dipakai.
+        stage2_rs_scope = None
+        if require_stage2:
+            rets = {}
+            for out in outs:
+                it = out.get("item") or {}
+                r = ((it.get("stage2") or {}).get("ret252_pct"))
+                if r is not None and np.isfinite(float(r)):
+                    rets[it.get("ticker")] = float(r)
+            if len(rets) < STAGE2_RS_MIN_UNIVERSE:
+                # Universe terlalu kecil: peringkat persentil jadi tidak berarti, dan
+                # yang lebih berbahaya — kalau dibiarkan diam, syarat ke-7 seolah sudah
+                # dinilai padahal tidak. Karena itu alasannya dilaporkan.
+                stage2_rs_scope = (f"Peringkat RS TIDAK dinilai: hanya {len(rets)} emiten "
+                                   f"dipindai, kurang dari {STAGE2_RS_MIN_UNIVERSE} yang "
+                                   "dibutuhkan agar persentilnya berarti. Penyaring Stage-2 "
+                                   "di sini memakai 7 syarat harga.")
+            if len(rets) >= STAGE2_RS_MIN_UNIVERSE:
+                vals = sorted(rets.values())
+                for out in outs:
+                    it = out.get("item") or {}
+                    tk = it.get("ticker")
+                    if tk not in rets:
+                        continue
+                    # Persentil 0-100: berapa persen saham lain yang kinerjanya <= ini.
+                    below = bisect_left(vals, rets[tk])
+                    rank = 100.0 * below / max(1, len(vals) - 1)
+                    it["stage2"] = stage2_info_from(it.get("stage2"), rank)
+                stage2_rs_scope = (f"Peringkat RS dihitung dari {len(rets)} emiten yang "
+                                   "ikut dipindai pada halaman ini (bukan se-pasar), jadi "
+                                   "angkanya peringkat DI DALAM pemeriksaan ini.")
+
+        for out in outs:
             if out.get("eligible"):
                 if regime_blocked:
                     rs_leader = bool((out["item"].get("relative_strength") or {}).get("is_leader"))
@@ -5571,6 +6012,12 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
                         continue  # IHSG di bawah MA200: tahan sinyal beli
                     out["item"]["rs_bypass"] = True
                 if require_confirm and not (out["item"].get("book_confirm") or {}).get("ok"):
+                    continue
+                if require_stage2 and not (out["item"].get("stage2") or {}).get("ok"):
+                    stage2_filtered += 1
+                    continue
+                if require_dry_volume and not out["item"].get("dry_volume"):
+                    dry_filtered += 1
                     continue
                 # Penyaring ukuran tiket: berlaku untuk SANGAT LIKUID, LIKUID, dan
                 # CUKUP (ambang berbeda per kelas); KURANG LIKUID tidak disentuh.
@@ -5590,6 +6037,12 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
         "skipped": skipped,
         "data_bars_median": (int(np.median(bars_seen)) if bars_seen else None),
         "ticket_filtered": ticket_filtered,
+        "stage2_filtered": stage2_filtered,
+        "dry_volume_filtered": dry_filtered,
+        "filters": {"stage2": bool(require_stage2), "dry_volume": bool(require_dry_volume)},
+        "stage2_rs_scope": stage2_rs_scope,
+        "data_period_requested": period,
+        "data_period_effective": fetch_period,
         # Kandidat yang SAMPAI ke penyaring tiket (sudah lolos regime/konfirmasi)
         # dan berapa yang dibuang, dipecah per kelas likuiditas.
         "ticket_by_grade": {g: {"kandidat": s, "dibuang": d,
@@ -6155,6 +6608,43 @@ app.add_middleware(
 )
 
 
+@app.get("/api/position-size")
+def position_size_endpoint(
+    equity: float = Query(..., gt=0, description="Ukuran akun (Rp)"),
+    entry: float = Query(..., gt=0, description="Harga masuk rencana (Rp)"),
+    stop: float = Query(..., gt=0, description="Harga stop (Rp); wajib di bawah harga masuk"),
+    risk_pct: float = Query(1.0, gt=0, le=10, description=(
+        "Risiko per perdagangan dalam % ekuitas. Buku: Minervini 1,25-2,5%, Tharp maksimum 2%.")),
+    atr: Optional[float] = Query(None, gt=0, description="ATR14 (opsional) untuk menghitung unit Turtle"),
+    drawdown_pct: float = Query(0.0, ge=0, le=90, description=(
+        "Drawdown akun saat ini (%). Aturan Turtle hal 269: tiap turun 10%, ukuran notional dipotong 20%.")),
+):
+    """Berapa LOT yang boleh dibeli, dihitung dari RISIKO — bukan dari perasaan.
+
+    Semua audit kriteria di proyek ini menyimpulkan hal yang sama: kejadian untung
+    setelah biaya selalu di bawah 50%, jadi hasil akhir ditentukan stop dan ukuran
+    posisi. Sampai sekarang aplikasi hanya memberi harga stop tanpa memberi tahu
+    berapa lot yang muat dalam batas risiko buku.
+
+    Aturan yang dipakai (tiga buku, titik temunya sama):
+      * Minervini (hal 142-144): risiko 1,25-2,5% ekuitas, stop maksimum 10%,
+        posisi tidak lebih dari 50%, 20-25% per nama untuk 4-5 nama terbaik.
+      * Tharp (hal 56 & 110): jarak stop x ukuran posisi <= 2% ekuitas; kalau tidak
+        muat, LEWATI perdagangan itu; tren pakai posisi kecil dengan stop lebar.
+      * Turtle (hal 269-275): 1N = 1% ekuitas, stop 2N, notional dipotong 20% tiap
+        drawdown 10%.
+
+    Semua pelanggaran dilaporkan sebagai `warnings`, TIDAK dipotong diam-diam:
+    angka yang dipotong tanpa penjelasan justru menyembunyikan risikonya.
+    """
+    plan = position_size_plan(equity, entry, stop, risk_pct, atr,
+                              drawdown_pct=drawdown_pct)
+    plan["disclaimer"] = DISCLAIMER
+    if not plan.get("ok"):
+        raise HTTPException(422, str(plan.get("reason") or "Rencana tidak dapat dihitung."))
+    return plan
+
+
 @app.get("/")
 def root():
     """Alamat utama langsung membuka dashboard (tidak perlu /dashboard).
@@ -6195,6 +6685,7 @@ def api_info():
             "GET  /api/koreksi/watch  (pantauan Telegram: daftar + ringkasan jumlah, waktu cek terakhir, perubahan sinyal)",
             "POST /api/koreksi/watch",
             "POST /api/screener",
+            "GET  /api/position-size?equity=10000000&entry=1000&stop=950&risk_pct=1  (berapa LOT yang muat dalam batas risiko buku: Minervini/Tharp/Turtle)",
         ],
         "docs": "/docs",
     }
@@ -6639,6 +7130,10 @@ def build_action_plan(*, last_price: float, action: str, trend: dict, sr_zones: 
 # Edge selalu mengembalikan jendela tetap — sehingga period=1mo dan period=1y bisa
 # memberi sma200 & analisis yang PERSIS sama tanpa ada petunjuk apa pun.
 PERIOD_EXPECTED_BARS = {"1mo": 21, "3mo": 63, "6mo": 126, "1y": 250}
+# Berapa bar yang DIMINTA ke IDX Edge untuk tiap `period` (sedikit lebih banyak dari
+# PERIOD_EXPECTED_BARS karena hari libur). Dipakai `_get_ticker_data_raw`; tanpa ini
+# jendela data selalu 200 bar sehingga syarat 252 bar tidak pernah bisa dinilai.
+IDX_EDGE_BARS_BY_PERIOD = {"1mo": 40, "3mo": 100, "6mo": 200, "1y": 330, "2y": 500, "5y": 500}
 
 
 def _period_expected_bars(period: str) -> Optional[int]:
@@ -6990,6 +7485,13 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         "weekly": weekly,
         "market_regime": regime,
         "relative_strength": rs_vs_ihsg,
+        # Stage-2 / Trend Template buku (Minervini hal 105-106). Ditaruh di analisis
+        # per saham karena di sinilah "apakah saham ini sehat jangka panjang" paling
+        # sering ditanyakan — dan karena fungsi sinyalnya sama dengan yang dipakai di
+        # pemindaian, jawabannya tidak bisa berbeda antara dua tempat.
+        # Peringkat RS di sini TIDAK dihitung (butuh pembanding lintas saham); perhatikan
+        # `rs_known` dan `note`-nya, jangan dibaca sebagai "8 syarat lolos".
+        "stage2": stage2_info(df),
         "fundamentals": (None if fund_level == "off"
                          else fetch_fundamentals(ticker, last_price,
                                                  light=fund_level == "ringkas")),
@@ -8174,6 +8676,16 @@ def screener(
         "SETIAP kelas dan membaik di KEDUA paruh holdout. SANGAT LIKUID: RS "
         "Leader +1,04% -> +1,49%. LIKUID: +2,07% -> +2,76%. CUKUP: +2,90% -> "
         "+3,44%. Set false untuk mematikan.")),
+    stage2: bool = Query(False, description=(
+        "Penyaring Stage-2 / Trend Template buku (Minervini hal 105-106): 8 syarat "
+        "tren. Diukur di 989 emiten x 1,6 juta saham-hari (research/book_rules_study.py): "
+        "momentum+breakout alpha5 +2,90% -> +6,51%; breakout +0,35% -> +4,13%; "
+        "momentum +1,60% -> +4,40%. Default MATI supaya hasilnya bisa dibandingkan.")),
+    dry_volume: bool = Query(False, description=(
+        "Penyaring volume kering: volume hari sinyal DI BAWAH rata-rata 20 hari padahal "
+        "harga naik. Buku Biawak hal 257 menyebut ini 'kenaikan lemah', tetapi "
+        "pengukuran IDX menunjukkan sebaliknya: momentum+breakout alpha5 +2,90% -> "
+        "+12,24% (61,5% kejadian untung, positif di 7 tahun). Default MATI.")),
 ):
     """Scan saham dengan kriteria screener Coachinvestasi.
 
@@ -8385,7 +8897,7 @@ def screener(
 
     scan = _scan(window, criteria, period, include_signal, include_bandarmology,
                  require_confirm, require_regime, rs_bypass, silent_min_net,
-                 skip_small_ticket, mom_min_pct)
+                 skip_small_ticket, mom_min_pct, stage2, dry_volume)
     return {
         "criteria": criteria,
         "require_confirm": require_confirm,
@@ -8394,6 +8906,16 @@ def screener(
         "spread": spread,
         "silent_min_net": silent_min_net,
         "skip_small_ticket": skip_small_ticket,
+        # Kunci `filters` dipakai dashboard untuk panel "penyaring aktif"; tanpa kunci ini
+        # panelnya tidak pernah muncul walau penyaringnya benar-benar bekerja.
+        "filters": scan.get("filters"),
+        "stage2": stage2,
+        "dry_volume": dry_volume,
+        "stage2_filtered": scan.get("stage2_filtered", 0),
+        "dry_volume_filtered": scan.get("dry_volume_filtered", 0),
+        "stage2_rs_scope": scan.get("stage2_rs_scope"),
+        "stage2_note": (STAGE2_FILTER_NOTE if stage2 else None),
+        "dry_volume_note": (DRY_VOLUME_FILTER_NOTE if dry_volume else None),
         "ticket_filtered": scan.get("ticket_filtered", 0),
         "ticket_by_grade": scan.get("ticket_by_grade", {}),
         # Ambang yang SEDANG dipakai + asalnya, supaya keputusan penyaring bisa
@@ -8759,6 +9281,13 @@ def screener_preclose(
     period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
     workers: int = Query(12, ge=1, le=24),
     save: bool = Query(True, description="Simpan ringkasannya ke riwayat harian server"),
+    stage2: bool = Query(False, description=(
+        "Penyaring Stage-2 (Trend Template Minervini hal 105-106). Diukur di panel IDX "
+        "(research/book_rules_study.py): kandidat pra-tutup yang lolos 8 syarat tren "
+        "punya alpha5 jauh lebih besar. Default MATI.")),
+    dry_volume: bool = Query(False, description=(
+        "Penyaring volume kering (volume hari ini di bawah rata-rata 20 hari). Hasil "
+        "pengukuran IDX: alpha5 +2,90% -> +12,24% pada momentum+breakout. Default MATI.")),
 ):
     """PINDAI PRA-TUTUP: saham yang SEDANG naik >= mom_min_pct%, dengan HARGA MASUK
     yang benar-benar bisa dibayar hari ini (harga pasar saat pemindaian).
@@ -8811,7 +9340,8 @@ def screener_preclose(
         raise HTTPException(404, "Offset melebihi jumlah emiten.")
     used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
-                          period=period, workers=workers, criteria=used)
+                          period=period, workers=workers, criteria=used,
+                          require_stage2=stage2, require_dry_volume=dry_volume)
     # Catatan akurasi dibaca SEKALI dan dipakai dua tempat (ditampilkan sebagai catatan
     # + jadi dasar anjuran jam), supaya angkanya tidak bisa saling berbeda dalam satu
     # respons dan tidak ada dua pembacaan penyimpanan yang tidak perlu.
@@ -8849,6 +9379,16 @@ def screener_preclose(
         "coverage_pct": scan["coverage_pct"],
         "passed_stage1": scan["passed_stage1"],
         "engine": scan["engine"],
+        # Penyaring buku: diteruskan apa adanya supaya dashboard bisa menunjukkan berapa
+        # kandidat yang dibuang dan angka mana yang mendasarinya.
+        "filters": scan.get("filters"),
+        "stage2": bool(stage2),
+        "dry_volume": bool(dry_volume),
+        "stage2_filtered": scan.get("stage2_filtered", 0),
+        "dry_volume_filtered": scan.get("dry_volume_filtered", 0),
+        "stage2_rs_scope": scan.get("stage2_rs_scope"),
+        "stage2_note": (STAGE2_FILTER_NOTE if stage2 else None),
+        "dry_volume_note": (DRY_VOLUME_FILTER_NOTE if dry_volume else None),
         "preclose": {
             "session": scan["session"],
             "entry_price_meaning": ("harga pasar SAAT PEMINDAIAN (mode pra-tutup), "
@@ -8986,7 +9526,14 @@ def cron_preclose(request: Request, secret: str = Query(""),
                   period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
                   capture: str = Query("1540", pattern="^[0-2][0-9][0-5][0-9]$",
                                        description="Label jam pengambilan (1500/1540) — dipakai untuk membandingkan akurasi"),
-                  send: bool = Query(True)):
+                  send: bool = Query(True),
+                  stage2: bool = Query(False, description=(
+                      "Penyaring Stage-2 (Minervini hal 105-106) untuk notifikasi ini. "
+                      "Terukur: momentum+breakout alpha5 +2,90% -> +6,51%. Default MATI "
+                      "supaya notifikasi harian tetap bisa dibandingkan antar hari.")),
+                  dry_volume: bool = Query(False, description=(
+                      "Penyaring volume kering: volume hari ini di bawah rata-rata 20 hari. "
+                      "Terukur: alpha5 +2,90% -> +12,24%. Default MATI."))):
     """Cron PINDAI PRA-TUTUP (jadwal 15:40 WIB, sebelum sesi reguler tutup 15:49:59).
 
     DUA PENGAMBILAN: cron ini dijalankan juga pukul 15:00 dengan capture=1500. Tujuannya
@@ -9030,7 +9577,8 @@ def cron_preclose(request: Request, secret: str = Query(""),
         tickers = tickers[:limit]
     used = criteria if criteria in PRECLOSE_CRITERIA else "momentumkuat"
     scan = _preclose_scan(tickers, mom_min_pct=mom_min_pct, min_value=min_value,
-                          period=period, criteria=used)
+                          period=period, criteria=used,
+                          require_stage2=stage2, require_dry_volume=dry_volume)
     sess = scan["session"]
     hasil = scan["results"]
     # Pemisahan "momentum + breakout" vs "momentum saja" hanya bermakna untuk kriteria
