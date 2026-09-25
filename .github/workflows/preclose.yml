@@ -14,6 +14,15 @@ name: Pindai Pra-Tutup (harga masuk bisa dibayar hari ini)
 # dieksekusi hari itu juga, plus SL/TP dari rencana pra-tutup dan penanda RAPUH untuk
 # kandidat yang jaraknya <= 2% dari ambang (harga tinggal turun sedikit -> syarat batal).
 #
+# PENYARING BUKU: cron ini memanggil dengan stage2=true&dry_volume=true — penyaring
+# Stage-2 (Minervini hal 105-106) dan volume kering (Biawak hal 257) yang terukur
+# menaikkan alpha di panel riset. Parameternya ditulis EKSPLISIT di sini (bukan
+# mengandalkan default endpoint) supaya perubahan default tidak diam-diam mengubah apa
+# yang dikirim setiap hari. Hasilnya TIDAK disaring habis tanpa jejak: setiap respons
+# memuat `variants` (tanpa penyaring / Stage-2 / Stage-2+volume kering), snapshot harian
+# menyimpannya, dan /api/preclose/variants mengukur return 1 & 5 hari sesudahnya per
+# variasi — jadi "pakai penyaring atau tidak" dijawab oleh hari yang sudah lewat.
+#
 # BATASAN YANG DISEBUT DI NOTIFIKASI: harga & volume belum final sampai lewat lelang
 # penutupan (~16:00), dan penyaring ukuran tiket (Freq) belum tersedia intraday.
 # DUA JADWAL, dan itu disengaja:
@@ -49,7 +58,7 @@ jobs:
           echo "Memindai pra-tutup 15:00 pada $(date -u '+%Y-%m-%d %H:%M:%S UTC') (send=$SEND)"
           code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1500&send=${SEND}")
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1500&stage2=true&dry_volume=true&send=${SEND}")
           echo "HTTP $code"
           cat resp_preclose.json
           echo
@@ -71,7 +80,7 @@ jobs:
           echo "Memindai pra-tutup pada $(date -u '+%Y-%m-%d %H:%M:%S UTC') (send=$SEND)"
           code=$(curl -sS --max-time 280 -o resp_preclose.json -w '%{http_code}' \
             -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
-            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1540&send=${SEND}")
+            "https://sahambuku.vercel.app/api/cron/preclose?universe=all&limit=250&mom_min_pct=8&capture=1540&stage2=true&dry_volume=true&send=${SEND}")
           echo "HTTP $code"
           cat resp_preclose.json
           echo

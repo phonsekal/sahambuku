@@ -1360,6 +1360,289 @@ def dry_volume_series(df: pd.DataFrame, look: int = 5) -> pd.Series:
     return ((ret5 > 0) & (vol < sma(vol, 20))).fillna(False)
 
 
+# ---------------------------------------------------------------------------
+# POLA CHART KLASIK (buku: Edianto Ong, "Technical Analysis for Mega Profit", Bab 20-21)
+#
+# Kenapa ada: buku itu memuat daftar pola panjang (Head & Shoulders, Double/Triple
+# Top-Bottom, Triangle, Flag/Pennant, Wedge, Rectangle, Cup & Handle, Gaps) dan
+# aplikasi ini hanya memakai Launch Pad + Volume S&R. Semua pola di sini diukur dulu
+# di panel harian IDX (research/chart_pattern_study.py, 989 emiten x 1,36 juta
+# saham-hari, 0 kuota) dan hanya yang terukur yang dipakai:
+#
+#   LAYAK (alpha 5 hari vs kelas likuiditas yang sama, biaya 0,3% sudah dipotong)
+#     Symmetrical Triangle   +1,86%  blok t +3,63   paruh +1,95/+1,77   net +2,39%  n=2.030
+#     Falling Wedge          +1,85%  blok t +2,71   paruh +1,71/+1,99   net +1,60%  n=1.701
+#     Inverse H & S          +1,80%  blok t +5,63   paruh +1,63/+1,96   net +1,64%  n=1.465
+#     Ascending Triangle     +1,73%  blok t +4,53   paruh +1,41/+2,05   net +1,78%  n=3.485
+#     Flag / Pennant         +1,71%  blok t +4,92   paruh +1,19/+2,22   net +2,07%  n=594
+#     Cup & Handle           +0,97%  blok t +6,75   paruh +0,82/+1,12   net +1,59%  n=6.288
+#
+#   DITOLAK
+#     Double Bottom (W)      +0,45%  blok t +1,64   -> di bawah ambang t=+2 yang kami pakai
+#     Rectangle              +0,07%  blok t +0,35   -> praktis nol, paruh kedua negatif
+#     Gap naik (Bab 20)      +0,08%  blok t +0,16   -> klaim bab soal gap tidak terbukti
+#     Rising Wedge           -0,09%  blok t -0,34   -> tidak konsisten (paruh kedua positif)
+#
+# Dua pola bearish TERUKUR menurunkan hasil secara konsisten (dipakai sebagai PERINGATAN,
+# bukan sinyal — aplikasi ini tidak bisa short), keduanya negatif di 6 dari 7 tahun:
+#     Descending Triangle    -0,68%  blok t -7,15   paruh -1,06/-0,30
+#     Head & Shoulders       -1,27%  blok t -3,25   paruh -1,70/-0,85
+#
+# Batas kejujuran: ini GEOMETRI (puncak/dasar tiap sepertiga jendela + penembusan harga
+# penutupan seperti Bab 7 "penembusan sah = harga penutupan di luar garis"), BUKAN
+# pengenalan gambar. Jadi menjawab "apakah inti aturannya terukur", bukan "apakah
+# polanya identik dengan yang terlihat mata di grafik".
+# ---------------------------------------------------------------------------
+# Semua pola yang DIHITUNG (termasuk yang bearish & yang ditolak), supaya riset bisa
+# mengukur semuanya dari definisi yang sama dengan produksi.
+CHART_PATTERN_KEYS = ("double_bottom", "double_top", "head_shoulders",
+                      "inverse_head_shoulders", "ascending_triangle",
+                      "descending_triangle", "symmetrical_triangle", "rising_wedge",
+                      "falling_wedge", "rectangle_up", "rectangle_dn", "flag",
+                      "cup_handle", "gap_up")
+CHART_PATTERN_LABELS = {
+    "double_bottom": "Double Bottom (W)",
+    "double_top": "Double Top (M)",
+    "head_shoulders": "Head & Shoulders",
+    "inverse_head_shoulders": "Inverse Head & Shoulders",
+    "ascending_triangle": "Ascending Triangle",
+    "descending_triangle": "Descending Triangle",
+    "symmetrical_triangle": "Symmetrical Triangle",
+    "rising_wedge": "Rising Wedge",
+    "falling_wedge": "Falling Wedge",
+    "rectangle_up": "Rectangle (tembus atas)",
+    "rectangle_dn": "Rectangle (tembus bawah)",
+    "flag": "Flag / Pennant",
+    "cup_handle": "Cup & Handle",
+    "gap_up": "Gap naik",
+}
+# Pola yang TERUKUR menambah alpha -> boleh dijadikan pemicu beli.
+CHART_PATTERNS_LAYAK = ("symmetrical_triangle", "falling_wedge", "inverse_head_shoulders",
+                        "ascending_triangle", "flag", "cup_handle")
+# Terukur menurunkan hasil -> dipakai sebagai PERINGATAN, bukan sinyal.
+CHART_PATTERNS_AVOID = ("descending_triangle", "head_shoulders")
+# Angka terukurnya di bawa ke API supaya labelnya tidak pernah diklaim tanpa bukti.
+# Angka di bawah adalah hasil `research/chart_pattern_study.py` atas panel penuh
+# (989 emiten, 1,36 juta saham-hari) memakai FUNGSI DI ATAS apa adanya, sehingga angka
+# yang ditampilkan aplikasi tidak bisa menyimpang dari yang diukur.
+CHART_PATTERNS_MEASURED = {
+    "symmetrical_triangle": {"alpha5_pct": 1.86, "block_t": 3.63, "net5_pct": 2.39,
+                            "n": 2030, "years_pos": "6/7", "halves_pct": [1.95, 1.77]},
+    "falling_wedge": {"alpha5_pct": 1.85, "block_t": 2.71, "net5_pct": 1.60,
+                      "n": 1701, "years_pos": "5/7", "halves_pct": [1.71, 1.99]},
+    "inverse_head_shoulders": {"alpha5_pct": 1.80, "block_t": 5.63, "net5_pct": 1.64,
+                              "n": 1465, "years_pos": "6/7", "halves_pct": [1.63, 1.96]},
+    "ascending_triangle": {"alpha5_pct": 1.73, "block_t": 4.53, "net5_pct": 1.78,
+                          "n": 3485, "years_pos": "7/7", "halves_pct": [1.41, 2.05]},
+    "flag": {"alpha5_pct": 1.71, "block_t": 4.92, "net5_pct": 2.07,
+             "n": 594, "years_pos": "6/7", "halves_pct": [1.19, 2.22]},
+    "cup_handle": {"alpha5_pct": 0.97, "block_t": 6.75, "net5_pct": 1.59,
+                   "n": 6288, "years_pos": "6/7", "halves_pct": [0.82, 1.12]},
+    "head_shoulders": {"alpha5_pct": -1.27, "block_t": -3.25, "net5_pct": -0.59,
+                       "n": 1442, "years_pos": "1/7", "halves_pct": [-1.70, -0.85]},
+    "descending_triangle": {"alpha5_pct": -0.68, "block_t": -7.15, "net5_pct": -1.03,
+                            "n": 6444, "years_pos": "1/7", "halves_pct": [-1.06, -0.30]},
+    "double_bottom": {"alpha5_pct": 0.45, "block_t": 1.64, "net5_pct": 0.73,
+                      "n": 9489, "years_pos": "4/7", "halves_pct": [0.84, 0.06]},
+    "rectangle_up": {"alpha5_pct": 0.07, "block_t": 0.35, "net5_pct": 0.33,
+                     "n": 4087, "years_pos": "4/7", "halves_pct": [0.24, -0.09]},
+    "gap_up": {"alpha5_pct": 0.08, "block_t": 0.16, "net5_pct": 1.98,
+               "n": 2840, "years_pos": "5/7", "halves_pct": [0.13, 0.04]},
+}
+CHART_PATTERNS_NOTE = (
+    "Pola diukur di 989 emiten x 1,36 juta saham-hari memakai FUNGSI YANG SAMA dengan "
+    "yang dijalankan di sini (research/chart_pattern_study.py, 0 kuota): Symmetrical "
+    "Triangle alpha5 +1,86% (blok t +3,63), Falling Wedge +1,85% (t +2,71), Inverse H&S "
+    "+1,80% (t +5,63), Ascending Triangle +1,73% (t +4,53), Flag/Pennant +1,71% "
+    "(t +4,92), Cup & Handle +0,97% (t +6,75). Keenamnya positif di KEDUA paruh waktu "
+    "dan setelah biaya 0,3%. DITOLAK: Double Bottom (+0,45%, t +1,64 — di bawah ambang "
+    "t=+2 yang dipakai di seluruh proyek ini), Rectangle (+0,07%, t +0,35), gap naik "
+    "(+0,08%, t +0,16 — jadi bab gap buku itu tidak terbukti berguna di data harian). "
+    "PERINGATAN terukur (negatif di 6 dari 7 tahun, aplikasi ini tidak bisa short): "
+    "Descending Triangle -0,68% (t -7,15) dan Head & Shoulders -1,27% (t -3,25). "
+    "Pengukurannya geometris (puncak/dasar per sepertiga jendela + penembusan harga "
+    "penutupan), bukan pengenalan gambar.")
+
+
+def _pattern_thirds(df: pd.DataFrame, w: int) -> Dict[str, pd.Series]:
+    """Puncak & dasar tiap sepertiga jendela 3w bar (paling kanan = bar terakhir)."""
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    return {"h1": high.shift(2 * w).rolling(w).max(), "h2": high.shift(w).rolling(w).max(),
+            "h3": high.rolling(w).max(), "l1": low.shift(2 * w).rolling(w).min(),
+            "l2": low.shift(w).rolling(w).min(), "l3": low.rolling(w).min()}
+
+
+def _pattern_halves(df: pd.DataFrame, w: int) -> Dict[str, pd.Series]:
+    """Puncak & dasar dua paruh jendela 2w bar — untuk pola yang hanya butuh 2 titik."""
+    high = df["High"].astype(float)
+    low = df["Low"].astype(float)
+    return {"h1": high.shift(w).rolling(w).max(), "h2": high.rolling(w).max(),
+            "l1": low.shift(w).rolling(w).min(), "l2": low.rolling(w).min()}
+
+
+def _pat_rel(a: pd.Series, b: pd.Series) -> pd.Series:
+    """Selisih relatif a terhadap b dalam persen, aman terhadap nol."""
+    return ((a - b) / b.abs().replace(0, np.nan)) * 100.0
+
+
+def _pat_line(level: pd.Series) -> pd.Series:
+    """Garis pemicu TIDAK boleh memuat bar sinyalnya sendiri.
+
+    Puncak/dasar jendela yang berakhir di bar SEKARANG selalu memuat bar itu, sehingga
+    "close menembus puncak jendela" mustahil (close <= high, close >= low). Tanpa
+    penggeseran ini empat pola melaporkan NOL kejadian — tampak seperti "pola langka"
+    padahal syaratnya tidak mungkin terpenuhi. Ini ketahuan saat uji pertama, dan
+    itulah alasan penggeseran ini ada.
+    """
+    return level.shift(1)
+
+
+def _pat_cross_up(close: pd.Series, level: pd.Series) -> pd.Series:
+    """True HANYA pada bar penembusan, bukan selama harga di atas garis.
+
+    Penembusan sebagai PERISTIWA (bukan keadaan) adalah definisi buku Bab 7, dan juga
+    yang membuat satu pola tidak terhitung berkali-kali.
+    """
+    return ((close > level) & (close.shift(1) <= level)).fillna(False)
+
+
+def _pat_cross_dn(close: pd.Series, level: pd.Series) -> pd.Series:
+    return ((close < level) & (close.shift(1) >= level)).fillna(False)
+
+
+def _pat_prev(cond: pd.Series) -> pd.Series:
+    """Syarat BENTUK dinilai pada bar SEBELUM bar penembusan.
+
+    Kenapa harus: bar penembusan punya high/low/close yang liar (itu sebabnya ia
+    menembus), dan bar itu masuk ke jendela puncak/dasar yang dipakai menilai bentuk.
+    Akibatnya syarat "puncak menurun" bisa BERBALIK justru pada bar penembusannya —
+    pola yang jelas terlihat di grafik lalu tidak terdeteksi. Ini ketahuan dari uji
+    bentuk buatan (segitiga menguncup yang sempurna tidak menyala), dan perbaikannya
+    bukan melonggarkan ambang: bentuk memang harus sudah terbentuk SEBELUM ditembus.
+    """
+    return cond.fillna(False).astype(bool).shift(1, fill_value=False)
+
+
+def chart_pattern_components(df: pd.DataFrame) -> pd.DataFrame:
+    """Semua pola chart sebagai kolom boolean per bar (Bab 20-21 buku).
+
+    Dipakai oleh api/index.py DAN research/chart_pattern_study.py — satu definisi, jadi
+    angka yang diukur adalah angka yang dijalankan (bukan salinan yang bisa berbeda).
+    Butuh ~60 bar; pada data lebih pendek hasilnya False semua (bukan galat).
+    """
+    idx = df.index
+    empty = pd.DataFrame(False, index=idx, columns=list(CHART_PATTERN_KEYS))
+    if len(df) < 60:
+        return empty
+    c = df["Close"].astype(float)
+    out: Dict[str, pd.Series] = {}
+
+    # --- Double Bottom / Double Top (dua dasar atau dua puncak sejajar) ---
+    t = _pattern_thirds(df, 15)
+    base = pd.concat([t["l1"], t["l3"]], axis=1).min(axis=1)
+    top = pd.concat([t["h1"], t["h3"]], axis=1).max(axis=1)
+    out["double_bottom"] = (_pat_cross_up(c, t["h2"])
+                            & _pat_prev((_pat_rel(t["l1"], t["l3"]).abs() <= 6.0))
+                            & _pat_prev((_pat_rel(t["h2"], base) >= 4.0)))
+    out["double_top"] = (_pat_cross_dn(c, t["l2"])
+                         & _pat_prev((_pat_rel(t["h1"], t["h3"]).abs() <= 6.0))
+                         & _pat_prev((_pat_rel(top, t["l2"]) >= 4.0)))
+
+    # --- Head & Shoulders (tiga puncak, tengah tertinggi) + versi terbalik ---
+    t12 = _pattern_thirds(df, 12)
+    h3s, l3s = _pat_line(t12["h3"]), _pat_line(t12["l3"])
+    out["head_shoulders"] = (
+        _pat_cross_dn(c, _pat_line(pd.concat([t12["l1"], t12["l3"]], axis=1).min(axis=1)))
+        & _pat_prev((_pat_rel(t12["h2"], t12["h1"]) >= 5.0)
+                    & (_pat_rel(t12["h2"], h3s) >= 5.0))
+        & _pat_prev((_pat_rel(t12["h1"], h3s).abs() <= 8.0)))
+    out["inverse_head_shoulders"] = (
+        _pat_cross_up(c, _pat_line(pd.concat([t12["h1"], t12["h3"]], axis=1).min(axis=1)))
+        & _pat_prev((_pat_rel(t12["l1"], t12["l2"]) >= 5.0)
+                    & (_pat_rel(l3s, t12["l2"]) >= 5.0))
+        & _pat_prev((_pat_rel(t12["l1"], l3s).abs() <= 8.0)))
+
+    # --- Segitiga: puncak/dasar mendatar vs menaik/menurun ---
+    hh = _pattern_halves(df, 15)
+    flat_top = _pat_prev(_pat_rel(hh["h2"], hh["h1"]).abs() <= 4.0)
+    flat_bot = _pat_prev(_pat_rel(hh["l2"], hh["l1"]).abs() <= 4.0)
+    rise_bot = _pat_prev(_pat_rel(hh["l2"], hh["l1"]) >= 4.0)
+    fall_top = _pat_prev(_pat_rel(hh["h2"], hh["h1"]) <= -4.0)
+    res, sup = _pat_line(hh["h2"]), _pat_line(hh["l2"])
+    out["ascending_triangle"] = _pat_cross_up(c, res) & flat_top & rise_bot
+    out["descending_triangle"] = _pat_cross_dn(c, sup) & flat_bot & fall_top
+    out["symmetrical_triangle"] = _pat_cross_up(c, res) & fall_top & rise_bot
+
+    # --- Wedge: puncak & dasar searah tapi MENGUNCUP ---
+    top_up = _pat_rel(hh["h2"], hh["h1"])
+    bot_up = _pat_rel(hh["l2"], hh["l1"])
+    rising = _pat_prev((top_up >= 4.0) & (bot_up >= 4.0) & ((bot_up - top_up) >= 3.0))
+    falling = _pat_prev((top_up <= -4.0) & (bot_up <= -4.0) & ((bot_up - top_up) >= 3.0))
+    out["rising_wedge"] = _pat_cross_dn(c, sup) & rising
+    out["falling_wedge"] = _pat_cross_up(c, res) & falling
+
+    # --- Rectangle / kotak: pita sempit, lebar mirip paruh sebelumnya ---
+    band = _pat_rel(hh["h2"], hh["l2"])
+    boxed = _pat_prev((band <= 10.0) & (band > 0))
+    similar = _pat_prev(_pat_rel(band, _pat_rel(hh["h1"], hh["l1"])).abs() <= 40)
+    out["rectangle_up"] = _pat_cross_up(c, res) & boxed & similar
+    out["rectangle_dn"] = _pat_cross_dn(c, sup) & boxed & similar
+
+    # --- Flag / Pennant: tiang naik tajam lalu konsolidasi rapat, lalu tembus ---
+    high, low = df["High"].astype(float), df["Low"].astype(float)
+    pole_gain = (c.shift(10) / c.shift(30) - 1.0) * 100.0
+    cons_high = _pat_line(high.rolling(10).max())
+    cons_rng = _pat_rel(high.rolling(10).max(), low.rolling(10).min())
+    out["flag"] = (_pat_cross_up(c, cons_high)
+                   & _pat_prev((pole_gain >= 15.0) & (cons_rng <= 9.0)))
+
+    # --- Cup & Handle: dasar dalam, sudah pulih, dengan pegangan dangkal ---
+    cup_high = high.shift(10).rolling(60).max()
+    depth = _pat_rel(cup_high, low.shift(10).rolling(60).min())
+    near_high = _pat_prev(_pat_rel(cup_high, c) <= 12.0)
+    handle_ok = _pat_prev(_pat_rel(cup_high, low.rolling(10).min()) <= (0.5 * depth))
+    out["cup_handle"] = (_pat_cross_up(c, _pat_line(cup_high))
+                         & _pat_prev(depth >= 12.0) & near_high & handle_ok)
+
+    # --- Gap naik (Bab 20) ---
+    op, piv = df["Open"].astype(float), high.shift(1)
+    ok = (op > 0) & (op < c * 5)
+    out["gap_up"] = ((((op / piv - 1.0) * 100.0) >= 2.0) & (c > piv) & ok).fillna(False)
+
+    return pd.DataFrame({k: out.get(k, pd.Series(False, index=idx)).reindex(idx)
+                         .fillna(False).to_numpy(bool) for k in CHART_PATTERN_KEYS}, index=idx)
+
+
+def chart_pattern_info(df: pd.DataFrame) -> dict:
+    """Pola chart pada bar TERAKHIR + angka terukurnya (untuk baris hasil & analisis).
+
+    Sengaja melaporkan pola yang TIDAK layak juga (mis. Rectangle) supaya "tidak ada
+    sinyal" bisa dibedakan dari "tidak diperiksa", dan supaya peringatan Head &
+    Shoulders bisa dipakai walau tidak ada pola beli yang muncul.
+    """
+    try:
+        comp = chart_pattern_components(df)
+        last = comp.iloc[-1]
+    except Exception:
+        return {"detected": False, "patterns": [], "avoid": [], "measured": {},
+                "bars": int(len(df)) if hasattr(df, "__len__") else 0,
+                "note": "Pola chart tidak dapat dihitung."}
+    hit = [k for k in CHART_PATTERN_KEYS if bool(last.get(k))]
+    return {
+        "detected": any(k in CHART_PATTERNS_LAYAK for k in hit),
+        "patterns": [{"key": k, "label": CHART_PATTERN_LABELS[k],
+                      "layak": k in CHART_PATTERNS_LAYAK,
+                      "measured": CHART_PATTERNS_MEASURED.get(k)} for k in hit],
+        "avoid": [{"key": k, "label": CHART_PATTERN_LABELS[k],
+                   "measured": CHART_PATTERNS_MEASURED.get(k)}
+                  for k in hit if k in CHART_PATTERNS_AVOID],
+        "measured": CHART_PATTERNS_MEASURED,
+        "bars": int(len(df)),
+        "note": CHART_PATTERNS_NOTE,
+    }
+
+
 def buy_score_components(df: pd.DataFrame) -> pd.DataFrame:
     """Rincian skor beli v2 PER KOMPONEN (vektor, per bar) + kolom 'total' 0-100.
 
@@ -5226,8 +5509,107 @@ def _preclose_snapshot(ticker: str) -> Optional[dict]:
 #     LIVE_BAR_OVERRIDE) sehingga fungsi sinyal PRODUKSI apa adanya yang menilai,
 #     bukan salinannya. Bedanya penting: jalur ini memerlukan riwayat harian per
 #     emiten, jadi ia memakai kuota penyedia riwayat (IDX Edge) seperti pemindaian biasa.
-PRECLOSE_CRITERIA = ("momentum", "momentumkuat", "breakout", "launchpad", "volsr")
-PRECLOSE_PATTERN_CRITERIA = ("breakout", "launchpad", "volsr")
+PRECLOSE_CRITERIA = ("momentum", "momentumkuat", "breakout", "launchpad", "volsr", "pola")
+PRECLOSE_PATTERN_CRITERIA = ("breakout", "launchpad", "volsr", "pola")
+
+
+# ---------------------------------------------------------------------------
+# VARIASI PENYARING: pembanding yang dihasilkan pemeriksaan yang SAMA
+#
+# Kenapa ada: dua penyaring buku (Stage-2 dan volume kering) terukur menaikkan alpha di
+# panel riset, tetapi angka riset bukan bukti bahwa ia bekerja pada hari-hari yang benar-
+# benar dipindai. Karena itu SETIAP pemeriksaan pra-tutup menghitung hasilnya sendiri
+# dalam tiga versi sekaligus, dari baris yang sudah dinilai — jadi perbandingannya
+# berbiaya NOL permintaan. Hasil nyatanya (return 1 & 5 hari sesudahnya) dikumpulkan oleh
+# /api/cron/preclose-verify, sehingga keputusan "pakai penyaring atau tidak" bisa dijawab
+# dengan hari yang sudah lewat, bukan dengan keyakinan.
+# ---------------------------------------------------------------------------
+PRECLOSE_VARIANTS = ("none", "stage2", "stage2_dry")
+PRECLOSE_VARIANT_LABELS = {
+    "none": "tanpa penyaring (semua kandidat)",
+    "stage2": "Stage-2 (Minervini hal 105-106)",
+    "stage2_dry": "Stage-2 + volume kering (Biawak hal 257)",
+}
+PRECLOSE_VARIANTS_NOTE = (
+    "Tiga variasi penyaring dihitung pada SETIAP pemeriksaan dari baris yang sudah "
+    "dinilai (0 permintaan tambahan): tanpa penyaring, Stage-2, dan Stage-2 + volume "
+    "kering. Return 1 & 5 hari sesudahnya dikumpulkan tiap malam, jadi pilihan penyaring "
+    "bisa diuji dari hari yang sudah lewat.")
+
+
+def preclose_variants_summary(variants: Optional[dict]) -> Optional[str]:
+    """Satu baris ringkas: berapa kandidat yang tersisa di tiap variasi penyaring.
+
+    Dipakai di notifikasi Telegram. Gunanya bukan hiasan: penyaring volume kering hanya
+    menyisakan ~0,9 sinyal/hari se-pasar, jadi tanpa angka pembanding, "0 kandidat"
+    terlihat sama dengan "pasar memang tidak ada yang naik".
+    """
+    if not variants:
+        return None
+    parts = []
+    for name in PRECLOSE_VARIANTS:
+        v = variants.get(name) or {}
+        label = v.get("label") or PRECLOSE_VARIANT_LABELS.get(name, name)
+        parts.append(f"{label}: {int(v.get('count') or 0)}")
+    if not any((variants.get(n) or {}) for n in PRECLOSE_VARIANTS):
+        return None
+    return "🔎 Penyaring pada pemeriksaan ini → " + " | ".join(parts)
+
+
+def preclose_variant_alert(variants: Optional[dict]) -> Optional[str]:
+    """Peringatan saat penyaring terketat menghabiskan SEMUA kandidat (bukan pasar sepi)."""
+    if not variants:
+        return None
+    none_n = int(((variants.get("none") or {}).get("count")) or 0)
+    strict_n = int(((variants.get("stage2_dry") or {}).get("count")) or 0)
+    stage_n = int(((variants.get("stage2") or {}).get("count")) or 0)
+    if none_n and not strict_n:
+        return (f"⚠️ Penyaring terketat (Stage-2 + volume kering) menyisakan 0 dari "
+                f"{none_n} kandidat; Stage-2 saja menyisakan {stage_n}. Itu wajar untuk "
+                "penyaring tersempit — bukan berarti tidak ada saham yang naik.")
+    return None
+
+
+def preclose_variant_of(row: dict) -> str:
+    """Nama variasi TERKETAT yang masih memuat baris ini."""
+    s2 = bool((row.get("stage2") or {}).get("ok"))
+    dry = bool(row.get("dry_volume"))
+    if s2 and dry:
+        return "stage2_dry"
+    return "stage2" if s2 else "none"
+
+
+def preclose_variants(rows: List[dict]) -> dict:
+    """Kelompokkan baris hasil pemindaian ke tiap variasi penyaring (bersarang).
+
+    Sifatnya bersarang: `none` memuat semua, `stage2` memuat baris yang lolos Stage-2
+    (termasuk yang volumenya kering), dan `stage2_dry` adalah yang paling sempit. Jadi
+    angkanya bisa dibandingkan langsung: berapa yang dibuang, dan apa yang tersisa.
+    """
+    out: Dict[str, dict] = {}
+    for name in PRECLOSE_VARIANTS:
+        out[name] = {"label": PRECLOSE_VARIANT_LABELS[name], "count": 0, "signals": []}
+    for r in rows:
+        v = preclose_variant_of(r)
+        info = {
+            "ticker": r.get("ticker"),
+            # Harga yang benar-benar dibayar bila baris ini dieksekusi (harga pasar saat
+            # pemindaian), bukan harga tutup yang belum terjadi.
+            "entry_now": num(r.get("entry_now") if r.get("entry_now") is not None
+                             else r.get("price"), 2),
+            "day_return_pct": num(r.get("day_return_pct"), 2),
+            "liquidity_grade": r.get("liquidity_grade"),
+            "grade": str(((r.get("rekomendasi") or {}).get("grade")) or "") or None,
+            "stage2_passed": int((r.get("stage2") or {}).get("passed") or 0),
+            "dry_volume": bool(r.get("dry_volume")),
+        }
+        for name in PRECLOSE_VARIANTS:
+            if name == "none" or name == v or (name == "stage2" and v == "stage2_dry"):
+                out[name]["signals"].append(info)
+                out[name]["count"] += 1
+    for name in PRECLOSE_VARIANTS:
+        out[name]["dropped"] = out["none"]["count"] - out[name]["count"]
+    return out
 
 
 def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
@@ -5381,30 +5763,38 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
             "preclose": True,
         }
         results.append(item)
-    # Penyaring buku pada jalur momentum pra-tutup. Peringkat RS dihitung lintas
-    # kandidat yang LOLOS tahap 1 (bukan seluruh pasar) — batas ini disebut apa
-    # adanya di respons supaya angkanya tidak dibaca sebagai peringkat se-pasar.
+    # PERINGKAT RS, PENYARING BUKU, DAN PERBANDINGAN VARIASI
+    #
+    # Peringkat RS dihitung SELALU (bukan hanya saat penyaringnya dinyalakan), karena
+    # perbandingan variasi di bawah butuh penilaian Stage-2 yang sama untuk semua baris.
+    # Ini murni hitungan atas data yang sudah diambil, jadi 0 permintaan tambahan.
+    # Batas cakupannya disebut apa adanya: peringkat dihitung lintas kandidat yang LOLOS
+    # tahap 1 pada pemeriksaan ini (bukan se-pasar).
     dropped_stage2 = dropped_dry = 0
     stage2_rs_scope = None
+    rets = {}
+    for r in results:
+        v = (r.get("stage2") or {}).get("ret252_pct")
+        if v is not None and np.isfinite(float(v)):
+            rets[r["ticker"]] = float(v)
+    ranks: Dict[str, float] = {}
+    if len(rets) >= STAGE2_RS_MIN_UNIVERSE:
+        vals = sorted(rets.values())
+        for tk, v in rets.items():
+            ranks[tk] = 100.0 * bisect_left(vals, v) / max(1, len(vals) - 1)
+        stage2_rs_scope = (f"Peringkat RS dihitung dari {len(rets)} kandidat yang lolos "
+                           "tahap 1 pada pemeriksaan ini (bukan se-pasar).")
+    else:
+        stage2_rs_scope = (f"Peringkat RS TIDAK dinilai: hanya {len(rets)} kandidat yang "
+                           f"lolos tahap 1, kurang dari {STAGE2_RS_MIN_UNIVERSE} yang "
+                           "dibutuhkan. Stage-2 di sini memakai 7 syarat harga.")
+    for r in results:
+        r["stage2"] = stage2_info_from(r.get("stage2"), ranks.get(r["ticker"]))
+    # Variasi penyaring pada pemeriksaan yang SAMA. Tanpa ini, "apakah penyaringnya
+    # menambah nilai" hanya bisa dijawab dari riset retrospektif, bukan dari hasil yang
+    # benar-benar muncul tiap hari — dan pemakaian tidak punya cara membandingkan.
+    variants = preclose_variants(results)
     if require_stage2:
-        rets = {}
-        for r in results:
-            v = (r.get("stage2") or {}).get("ret252_pct")
-            if v is not None and np.isfinite(float(v)):
-                rets[r["ticker"]] = float(v)
-        ranks: Dict[str, float] = {}
-        if len(rets) >= STAGE2_RS_MIN_UNIVERSE:
-            vals = sorted(rets.values())
-            for tk, v in rets.items():
-                ranks[tk] = 100.0 * bisect_left(vals, v) / max(1, len(vals) - 1)
-            stage2_rs_scope = (f"Peringkat RS dihitung dari {len(rets)} kandidat yang lolos "
-                               "tahap 1 pada pemeriksaan ini (bukan se-pasar).")
-        else:
-            stage2_rs_scope = (f"Peringkat RS TIDAK dinilai: hanya {len(rets)} kandidat yang "
-                               f"lolos tahap 1, kurang dari {STAGE2_RS_MIN_UNIVERSE} yang "
-                               "dibutuhkan. Penyaring Stage-2 di sini memakai 7 syarat harga.")
-        for r in results:
-            r["stage2"] = stage2_info_from(r.get("stage2"), ranks.get(r["ticker"]))
         before = len(results)
         results = [r for r in results if (r.get("stage2") or {}).get("ok")]
         dropped_stage2 = before - len(results)
@@ -5429,6 +5819,8 @@ def _preclose_scan(tickers: List[str], mom_min_pct: float = 8.0,
         "stage2_filtered": dropped_stage2,
         "dry_volume_filtered": dropped_dry,
         "stage2_rs_scope": stage2_rs_scope,
+        "variants": variants,
+        "variants_note": PRECLOSE_VARIANTS_NOTE,
     }
 
 
@@ -5888,6 +6280,30 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": vs_ok, "bandar_used": bandar_used}
 
+    if criteria == "pola":
+        # POLA CHART KLASIK (buku: Edianto Ong, Bab 20-21). Hanya pola yang TERUKUR
+        # menambah alpha yang dijadikan pemicu (lihat CHART_PATTERNS_LAYAK & komentar di
+        # CHART_PATTERNS_MEASURED). Pemicunya adalah PENEMBUSAN harga penutupan
+        # (Bab 7: "penembusan sah = harga penutupan di luar garis"), bukan keadaan
+        # "harga sedang di atas garis" — supaya satu pola tidak terhitung berkali-kali.
+        #
+        # Yang penting diketahui pemakai: pola-pola ini adalah JALUR MASUK ALTERNATIF,
+        # bukan penyaring momentum. Diukur: digabung dengan momentum+breakout hasilnya
+        # TIDAK lebih baik (+2,58% Cup & Handle vs +2,90% dasar), jadi jangan dipakai
+        # sebagai syarat tambahan pada momentum — pakai sebagai kriteria tersendiri.
+        pinfo = chart_pattern_info(df)
+        hit = [p for p in pinfo["patterns"] if p.get("layak")]
+        pola_ok = bool(hit)
+        item["pattern_info"] = pinfo
+        item["criteria_met"] = ["POLA: " + p["label"].upper() for p in hit]
+        if pola_ok:
+            best = max(hit, key=lambda p: (p.get("measured") or {}).get("alpha5_pct", -99))
+            item["pattern_pick"] = best["key"]
+            item["pattern_pick_label"] = best["label"]
+        _attach_plan(pola_ok, act=str(item.get("signal") or "BUY"))
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": pola_ok, "bandar_used": bandar_used}
+
     if criteria == "reversal":
         # ROLE REVERSAL S&R (buku Bab 1.4): resistance yang sudah ditembus kini jadi
         # support, dan harga mengujinya dari atas. Bukti 5 tahun universe SANGAT
@@ -5941,6 +6357,9 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
     scanned = skipped = bandar_used = ticket_filtered = 0
     stage2_filtered = dry_filtered = 0
     by_grade: Dict[str, tuple] = {}
+    # Kandidat yang sampai ke penyaring buku (sudah lolos regime/konfirmasi). Dari daftar
+    # yang SAMA ini ketiga variasi penyaring dihitung, supaya perbandingannya sah.
+    prefilter_items: List[dict] = []
     bars_seen: List[int] = []    # untuk melaporkan jendela data yang benar-benar dipakai
     # Filter kondisi pasar (IHSG vs MA200) — dihitung sekali, berlaku untuk semua saham.
     regime = _ihsg_regime() if require_regime else None
@@ -5973,36 +6392,37 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
         # Peringkat RS lintas universe, dihitung SEKALI setelah semua saham selesai.
         # Ini syarat ke-7 Trend Template; tanpa langkah ini, Stage-2 hanya berarti
         # "7 syarat harga" dan klaim "8 syarat" tidak boleh dipakai.
+        # Dihitung SELALU (bukan hanya saat penyaringnya dinyalakan) karena perbandingan
+        # variasi penyaring di bawah butuh penilaian Stage-2 yang sama untuk semua baris.
         stage2_rs_scope = None
-        if require_stage2:
-            rets = {}
+        rets = {}
+        for out in outs:
+            it = out.get("item") or {}
+            r = ((it.get("stage2") or {}).get("ret252_pct"))
+            if r is not None and np.isfinite(float(r)):
+                rets[it.get("ticker")] = float(r)
+        if len(rets) < STAGE2_RS_MIN_UNIVERSE:
+            # Universe terlalu kecil: peringkat persentil jadi tidak berarti, dan
+            # yang lebih berbahaya — kalau dibiarkan diam, syarat ke-7 seolah sudah
+            # dinilai padahal tidak. Karena itu alasannya dilaporkan.
+            stage2_rs_scope = (f"Peringkat RS TIDAK dinilai: hanya {len(rets)} emiten "
+                               f"dipindai, kurang dari {STAGE2_RS_MIN_UNIVERSE} yang "
+                               "dibutuhkan agar persentilnya berarti. Penyaring Stage-2 "
+                               "di sini memakai 7 syarat harga.")
+        else:
+            vals = sorted(rets.values())
             for out in outs:
                 it = out.get("item") or {}
-                r = ((it.get("stage2") or {}).get("ret252_pct"))
-                if r is not None and np.isfinite(float(r)):
-                    rets[it.get("ticker")] = float(r)
-            if len(rets) < STAGE2_RS_MIN_UNIVERSE:
-                # Universe terlalu kecil: peringkat persentil jadi tidak berarti, dan
-                # yang lebih berbahaya — kalau dibiarkan diam, syarat ke-7 seolah sudah
-                # dinilai padahal tidak. Karena itu alasannya dilaporkan.
-                stage2_rs_scope = (f"Peringkat RS TIDAK dinilai: hanya {len(rets)} emiten "
-                                   f"dipindai, kurang dari {STAGE2_RS_MIN_UNIVERSE} yang "
-                                   "dibutuhkan agar persentilnya berarti. Penyaring Stage-2 "
-                                   "di sini memakai 7 syarat harga.")
-            if len(rets) >= STAGE2_RS_MIN_UNIVERSE:
-                vals = sorted(rets.values())
-                for out in outs:
-                    it = out.get("item") or {}
-                    tk = it.get("ticker")
-                    if tk not in rets:
-                        continue
-                    # Persentil 0-100: berapa persen saham lain yang kinerjanya <= ini.
-                    below = bisect_left(vals, rets[tk])
-                    rank = 100.0 * below / max(1, len(vals) - 1)
-                    it["stage2"] = stage2_info_from(it.get("stage2"), rank)
-                stage2_rs_scope = (f"Peringkat RS dihitung dari {len(rets)} emiten yang "
-                                   "ikut dipindai pada halaman ini (bukan se-pasar), jadi "
-                                   "angkanya peringkat DI DALAM pemeriksaan ini.")
+                tk = it.get("ticker")
+                if tk not in rets:
+                    continue
+                # Persentil 0-100: berapa persen saham lain yang kinerjanya <= ini.
+                below = bisect_left(vals, rets[tk])
+                rank = 100.0 * below / max(1, len(vals) - 1)
+                it["stage2"] = stage2_info_from(it.get("stage2"), rank)
+            stage2_rs_scope = (f"Peringkat RS dihitung dari {len(rets)} emiten yang "
+                               "ikut dipindai pada halaman ini (bukan se-pasar), jadi "
+                               "angkanya peringkat DI DALAM pemeriksaan ini.")
 
         for out in outs:
             if out.get("eligible"):
@@ -6013,6 +6433,9 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
                     out["item"]["rs_bypass"] = True
                 if require_confirm and not (out["item"].get("book_confirm") or {}).get("ok"):
                     continue
+                # Di titik ini barisnya KANDIDAT: dari sini variasi penyaring dihitung,
+                # sebelum satu pun penyaring membuangnya.
+                prefilter_items.append(out["item"])
                 if require_stage2 and not (out["item"].get("stage2") or {}).get("ok"):
                     stage2_filtered += 1
                     continue
@@ -6032,6 +6455,7 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
                     continue
                 by_grade[g] = (seen, drop)
                 matched.append(out["item"])
+    variants = preclose_variants(prefilter_items)
     return {
         "scanned": scanned,
         "skipped": skipped,
@@ -6041,6 +6465,8 @@ def _scan(tickers: List[str], criteria: str, period: str, include_signal: bool,
         "dry_volume_filtered": dry_filtered,
         "filters": {"stage2": bool(require_stage2), "dry_volume": bool(require_dry_volume)},
         "stage2_rs_scope": stage2_rs_scope,
+        "variants": variants,
+        "variants_note": PRECLOSE_VARIANTS_NOTE,
         "data_period_requested": period,
         "data_period_effective": fetch_period,
         # Kandidat yang SAMPAI ke penyaring tiket (sudah lolos regime/konfirmasi)
@@ -8375,7 +8801,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|momentumkuat|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|momentumkuat|swing|buy|all|breakout|launchpad|reversal|volsr|pola)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -8565,7 +8991,7 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr|pola)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
@@ -8649,7 +9075,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|momentumkuat|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|momentumkuat|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr|pola)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=300),
     offset: int = Query(0, ge=0),
@@ -8914,6 +9340,18 @@ def screener(
         "stage2_filtered": scan.get("stage2_filtered", 0),
         "dry_volume_filtered": scan.get("dry_volume_filtered", 0),
         "stage2_rs_scope": scan.get("stage2_rs_scope"),
+        # Ketiga variasi penyaring sudah DIHITUNG `_scan` (0 permintaan tambahan), tetapi
+        # dulu tidak diteruskan ke balasan pemindaian biasa, sehingga panel "Variasi
+        # penyaring pada pemeriksaan ini" di dashboard tidak pernah muncul walau angkanya
+        # sudah ada. Jalur pra-tutup sudah meneruskan sejak awal; ini menyamakannya.
+        # Sengaja HANYA label/jumlah/yang dibuang: daftar sinyal per variasi bisa memuat
+        # ratusan ticker, sedangkan dashboard cuma memakai tiga angka itu. Daftar
+        # lengkapnya tetap ada di jalur pra-tutup (dipakai arsip & log workflow).
+        "variants": ({name: {"label": (v or {}).get("label"),
+                             "count": int((v or {}).get("count") or 0),
+                             "dropped": int((v or {}).get("dropped") or 0)}
+                     for name, v in (scan.get("variants") or {}).items()}),
+        "variants_note": PRECLOSE_VARIANTS_NOTE,
         "stage2_note": (STAGE2_FILTER_NOTE if stage2 else None),
         "dry_volume_note": (DRY_VOLUME_FILTER_NOTE if dry_volume else None),
         "ticket_filtered": scan.get("ticket_filtered", 0),
@@ -8966,6 +9404,254 @@ def _preclose_track_record() -> Optional[dict]:
         return d if isinstance(d, dict) else None
     except (TypeError, ValueError):
         return None
+
+
+# ---------------------------------------------------------------------------
+# PERBANDINGAN VARIASI PENYARING, DIUKUR DARI HARI YANG SUDAH LEWAT
+#
+# Kenapa ada: penyaring Stage-2 & volume kering terukur menaikkan alpha di panel riset
+# 2020-2026, tetapi itu bukan bukti bahwa ia bekerja pada hari-hari yang BENAR-BENAR
+# dipindai sekarang. Setiap pemeriksaan pra-tutup menyimpan ketiga variasi (tanpa
+# penyaring / Stage-2 / Stage-2 + volume kering) beserta harga masuk yang bisa dibayar;
+# fungsi di sini mengambil return 1 & 5 hari SESUDAHNYA dari riwayat harga, lalu
+# mengumpulkannya per variasi.
+#
+# Batas kuota DIPASANG SENGAJA: variasi "tanpa penyaring" bisa memuat ratusan kandidat,
+# dan mengambil riwayat satu per satu untuk semuanya akan menghabiskan kuota harian.
+# Karena itu (a) tiap ticker diambil paling banyak sekali lalu disimpan sebagai hasil per
+# hari, dan (b) satu kali pemanggilan hanya boleh mengambil sejumlah ticker terbatas —
+# sisanya dilaporkan sebagai belum lengkap, bukan disembunyikan.
+# ---------------------------------------------------------------------------
+PRECLOSE_VOUT_TTL = 120 * 86400          # 120 hari: hasil per hari tidak berubah lagi
+PRECLOSE_VOUT_MAX_TICKERS = 60           # batas permintaan riwayat per pemanggilan
+PRECLOSE_VOUT_PER_VARIANT = 25           # kandidat teratas per variasi per hari
+
+
+def _preclose_vout_key(day: str) -> str:
+    return f"ci:preclose:vout:{day}"
+
+
+def _preclose_vout_load(day: str) -> dict:
+    raw = _upstash_get(_preclose_vout_key(day))
+    if not raw:
+        return {}
+    try:
+        d = json.loads(raw)
+        return d if isinstance(d, dict) else {}
+    except (TypeError, ValueError):
+        return {}
+
+
+def _preclose_snapshot_variants(day: str) -> dict:
+    """Variasi penyaring dari snapshot UTAMA hari itu (utamakan pengambilan 15:40).
+
+    Diambil dari SATU pengambilan saja supaya sinyal yang sama tidak dihitung dua kali
+    (15:00 dan 15:40 memuat kandidat yang sama pada harga berbeda).
+    """
+    caps = _preclose_captures(day)
+    order = [c for c in (["1540"] if "1540" in caps else []) + sorted(caps, reverse=True)
+             if c in caps]
+    for cap in dict.fromkeys(order):
+        raw = _upstash_get(f"ci:preclose:sig:{day}:{cap}")
+        if not raw:
+            continue
+        try:
+            snap = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        v = snap.get("variants")
+        if v:
+            return {"capture": cap, "captured_wib": snap.get("captured_wib"),
+                    "variants": v}
+    # Data lama (sebelum ada variasi) tetap bisa dipakai untuk variasi "none" lewat
+    # daftar sinyalnya — kalau tidak, hari-hari lama tidak akan pernah terhitung.
+    raw = _upstash_get(f"ci:preclose:sig:{day}")
+    if raw:
+        try:
+            snap = json.loads(raw)
+            sig = snap.get("signals") or []
+            if sig:
+                return {"capture": snap.get("capture") or "1540",
+                        "captured_wib": snap.get("captured_wib"),
+                        "variants": {"none": {"label": PRECLOSE_VARIANT_LABELS["none"],
+                                              "count": len(sig), "signals": sig}}}
+        except (TypeError, ValueError):
+            pass
+    return {}
+
+
+def _variant_return_row(df: pd.DataFrame, day: str, entry: float) -> Optional[dict]:
+    """Return 1 & 5 hari SESUDAH hari sinyal, dari harga masuk yang benar-benar dibayar.
+
+    Dipakai harga TUTUP tiap bar (bukan high/low): itu satu-satunya harga yang bisa
+    dipakai tanpa mengasumsikan urutan intraday.
+    """
+    if df is None or entry is None or entry <= 0:
+        return None
+    try:
+        ts = pd.Timestamp(day)
+    except Exception:
+        return None
+    idx = df.index[df.index.normalize() == ts.normalize()]
+    if len(idx) == 0:
+        return None
+    pos = df.index.get_loc(idx[0])
+    if isinstance(pos, slice):
+        pos = pos.start
+    close = df["Close"].astype(float)
+    n = len(df)
+    out: Dict[str, Any] = {
+        "drift_pct": num((float(close.iloc[pos]) / entry - 1.0) * 100.0, 2),
+        "h1_pct": None, "h5_pct": None,
+    }
+    if pos + 1 < n:
+        out["h1_pct"] = num((float(close.iloc[pos + 1]) / entry - 1.0) * 100.0, 2)
+    if pos + 5 < n:
+        out["h5_pct"] = num((float(close.iloc[pos + 5]) / entry - 1.0) * 100.0, 2)
+    return out
+
+
+def _preclose_variant_outcomes(days: int = 10,
+                              max_tickers: int = PRECLOSE_VOUT_MAX_TICKERS) -> dict:
+    """Hasil NYATA tiap variasi penyaring dari snapshot yang sudah tersimpan."""
+    if not SYNC_ENABLED:
+        return {"ok": False, "variants": None,
+                "reason": "Penyimpanan Upstash tidak aktif, jadi tidak ada snapshot "
+                          "pra-tutup yang bisa dibandingkan."}
+    try:
+        raw_idx = _upstash_get("ci:preclose:days") or "[]"
+        all_days = [d for d in json.loads(raw_idx) if isinstance(d, str)]
+    except (TypeError, ValueError):
+        all_days = []
+    today = _wib_now().strftime("%Y-%m-%d")
+    all_days = [d for d in sorted(all_days) if d <= today][-max(1, days):]
+    if not all_days:
+        return {"ok": True, "days": 0, "per_day": [], "variants": {},
+                "reason": ("Belum ada snapshot pra-tutup tersimpan. Perbandingan penyaring "
+                           "mulai terisi setelah cron pra-tutup berjalan minimal satu hari.")}
+
+    hist_cache: Dict[str, Optional[pd.DataFrame]] = {}
+    used = 0
+    exhausted = False
+    per_day: List[dict] = []
+    # Dari yang TERBARU lebih dulu: hari terbaru yang paling sering berubah (h5 belum ada
+    # lalu terisi), sedangkan hari lama sudah final dan cukup dihitung sekali.
+    for day in reversed(all_days):
+        info = _preclose_snapshot_variants(day)
+        if not info:
+            continue
+        rec = _preclose_vout_load(day)
+        variants = info["variants"]
+        missing: Dict[str, List[dict]] = {}
+        for name, v in variants.items():
+            have = (rec.get(name) or {}) if isinstance(rec.get(name), dict) else {}
+            need = [s for s in (v.get("signals") or [])
+                    if s.get("ticker") and str(s.get("ticker")) not in have]
+            need.sort(key=lambda s: -(s.get("day_return_pct") or 0))
+            if need:
+                missing[name] = need[:PRECLOSE_VOUT_PER_VARIANT]
+        # Ticker yang riwayatnya sudah diambil pada hari LAIN di pemanggilan ini tidak
+        # diambil lagi: tanggal yang berbeda bisa memuat emiten yang sama, dan
+        # mengambilnya dua kali hanya membakar kuota tanpa menambah informasi.
+        todo: List[str] = []
+        for name, rows_ in missing.items():
+            for s in rows_:
+                tk = str(s["ticker"])
+                if tk not in todo and tk not in hist_cache:
+                    todo.append(tk)
+        for tk in todo:
+            if used >= max_tickers:
+                exhausted = True
+                break
+            used += 1
+            hist_cache[tk] = fetch_idx_history(tk, limit=40)
+        for name, rows_ in missing.items():
+            bucket = rec.setdefault(name, {})
+            for s in rows_:
+                tk = str(s["ticker"])
+                res = _variant_return_row(hist_cache.get(tk), day, s.get("entry_now"))
+                if res is None:
+                    continue
+                bucket[tk] = {"entry": s.get("entry_now"), **res}
+        try:
+            _upstash_set(_preclose_vout_key(day), json.dumps(rec, ensure_ascii=False,
+                                                            default=str),
+                         ttl=PRECLOSE_VOUT_TTL)
+        except (TypeError, ValueError):
+            pass
+        # Ringkas hari itu dari hasil yang SUDAH tersimpan (termasuk yang baru dihitung).
+        agg_day: Dict[str, dict] = {}
+        for name in variants:
+            vals = [v for v in (rec.get(name) or {}).values() if isinstance(v, dict)]
+            h1 = [v["h1_pct"] for v in vals if v.get("h1_pct") is not None]
+            h5 = [v["h5_pct"] for v in vals if v.get("h5_pct") is not None]
+            dr = [v["drift_pct"] for v in vals if v.get("drift_pct") is not None]
+            agg_day[name] = {
+                "count": int((variants.get(name) or {}).get("count") or 0),
+                "measured": len(vals),
+                "mean_h1_pct": num(sum(h1) / len(h1), 2) if h1 else None,
+                "mean_h5_pct": num(sum(h5) / len(h5), 2) if h5 else None,
+                "mean_drift_pct": num(sum(dr) / len(dr), 2) if dr else None,
+                "win5_pct": (num(100.0 * sum(1 for x in h5 if x > 0) / len(h5), 1)
+                             if h5 else None),
+            }
+        per_day.append({"date": day, "capture": _capture_label(info["capture"]),
+                        "captured_wib": info.get("captured_wib"),
+                        "in_window": _capture_in_window(info.get("captured_wib")) is not False,
+                        "variants": agg_day})
+
+    per_day.sort(key=lambda d: d["date"])
+    agg: Dict[str, dict] = {}
+    for name in PRECLOSE_VARIANTS:
+        rows_d = [d["variants"].get(name) for d in per_day if d["variants"].get(name)]
+        days_with = [r for r in rows_d if r and r.get("measured")]
+        def _m(key: str) -> Optional[float]:
+            vals = [r[key] for r in days_with if r.get(key) is not None]
+            return num(sum(vals) / len(vals), 2) if vals else None
+        agg[name] = {
+            "label": PRECLOSE_VARIANT_LABELS[name],
+            "days": len(rows_d),
+            "days_measured": len(days_with),
+            "signals": sum(int(r.get("count") or 0) for r in rows_d if r),
+            "measured": sum(int(r.get("measured") or 0) for r in days_with),
+            # Rata-rata PER HARI lebih dulu, baru dirata-ratakan antar hari: satu hari
+            # dengan 60 kandidat tidak boleh berbobot 60x dibanding hari dengan 1.
+            "mean_h1_pct": _m("mean_h1_pct"), "mean_h5_pct": _m("mean_h5_pct"),
+            "mean_drift_pct": _m("mean_drift_pct"), "win5_pct": _m("win5_pct"),
+        }
+    return {
+        "ok": True,
+        "days": len(per_day),
+        "requests_used": used,
+        "request_budget": max_tickers,
+        "budget_exhausted": exhausted,
+        "capped_per_variant": PRECLOSE_VOUT_PER_VARIANT,
+        "per_day": per_day,
+        "variants": agg,
+        "note": ("Diukur dari snapshot yang benar-benar dibuat cron pra-tutup: harga masuk = "
+                 "harga pasar saat pemindaian, hasil = harga TUTUP 1 & 5 hari sesudahnya, "
+                 "BELUM dipotong biaya dan BELUM disesuaikan dengan kelas likuiditas. "
+                 "Untuk perbandingan antar-variasi itu tidak mengubah urutannya (semua "
+                 "variasi memakai harga dan hari yang sama), tetapi angkanya tidak "
+                 "sebanding dengan tabel alpha di panel riset."),
+        "if_empty": (None if per_day else
+                     "Ada indeks tanggal tetapi belum ada snapshot yang memuat variasi "
+                     "penyaring; hari-hari pertama setelah perubahan ini hanya punya "
+                     "variasi \"tanpa penyaring\"."),
+    }
+
+
+@app.get("/api/preclose/variants")
+def preclose_variants_compare(days: int = Query(10, ge=1, le=20),
+                              max_tickers: int = Query(PRECLOSE_VOUT_MAX_TICKERS, ge=0,
+                                                       le=200)):
+    """Bandingkan hasil NYATA tiap variasi penyaring pra-tutup (tanpa penyaring / Stage-2 /
+    Stage-2 + volume kering) dari hari-hari yang sudah lewat.
+
+    `max_tickers=0` berarti hanya membaca hasil yang sudah tersimpan (nol permintaan
+    riwayat) — berguna bila kuota harian sedang dipakai untuk hal lain.
+    """
+    return {"disclaimer": DISCLAIMER, **_preclose_variant_outcomes(days, max_tickers)}
 
 
 @app.get("/api/preclose-track")
@@ -9109,6 +9795,11 @@ def _preclose_hist_merge(payload: dict, *, source: str, telegram_sent: int = 0) 
             # pengambilan sengaja dijalankan supaya bisa DIBANDINGKAN akurasinya, bukan
             # untuk menggandakan sinyal.
             "captures": sorted(set((rec.get("captures") or []) + [str(payload.get("capture") or "")]).difference({""})),
+            # Jumlah kandidat tiap variasi penyaring (tanpa / Stage-2 / Stage-2+volume
+            # kering). Hanya HITUNGANNYA yang disimpan di riwayat harian; daftar sinyal
+            # lengkapnya ada di snapshot supaya catatan ini tetap ringan.
+            "variants": {name: int(((v or {}).get("count")) or 0)
+                         for name, v in (payload.get("variants") or {}).items()},
             "telegram_sent": int(rec.get("telegram_sent") or 0) + int(telegram_sent or 0),
             "requested": max(int(rec.get("requested") or 0), int(payload.get("requested") or 0)),
             "quotes_today": payload.get("quotes_today"),
@@ -9269,7 +9960,7 @@ def preclose_history_flag(date: str = Query(..., description="Tanggal YYYY-MM-DD
 def screener_preclose(
     universe: str = Query("all", pattern="^(all|liquid)$"),
     criteria: str = Query("momentumkuat",
-                          pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$",
+                          pattern="^(momentum|momentumkuat|breakout|launchpad|volsr|pola)$",
                           description="Kriteria yang dinilai pada keadaan sesi berjalan"),
     limit: int = Query(250, ge=1, le=PRECLOSE_MAX_LIMIT,
                        description=(f"Jumlah emiten yang diperiksa harga berjalan (maks "
@@ -9281,13 +9972,17 @@ def screener_preclose(
     period: str = Query("6mo", pattern="^(1mo|3mo|6mo|1y)$"),
     workers: int = Query(12, ge=1, le=24),
     save: bool = Query(True, description="Simpan ringkasannya ke riwayat harian server"),
-    stage2: bool = Query(False, description=(
+    stage2: bool = Query(True, description=(
         "Penyaring Stage-2 (Trend Template Minervini hal 105-106). Diukur di panel IDX "
-        "(research/book_rules_study.py): kandidat pra-tutup yang lolos 8 syarat tren "
-        "punya alpha5 jauh lebih besar. Default MATI.")),
-    dry_volume: bool = Query(False, description=(
+        "(research/book_rules_study.py): momentum+breakout alpha5 +2,90% -> +6,51%. "
+        "Default MENYALA di mode pra-tutup; matikan dengan stage2=false untuk daftar penuh. "
+        "Setiap pemeriksaan menghitung ketiga variasi sekaligus (lihat `variants`), jadi "
+        "memilih penyaring tidak menghilangkan informasi pembandingnya.")),
+    dry_volume: bool = Query(True, description=(
         "Penyaring volume kering (volume hari ini di bawah rata-rata 20 hari). Hasil "
-        "pengukuran IDX: alpha5 +2,90% -> +12,24% pada momentum+breakout. Default MATI.")),
+        "pengukuran IDX: alpha5 +2,90% -> +12,24% pada momentum+breakout — tetapi ini "
+        "penyaring tersempit (~0,9 sinyal/hari se-pasar), jadi sering menyisakan nol. "
+        "Default MENYALA; jumlah kandidat tiap variasi selalu dilaporkan di `variants`.")),
 ):
     """PINDAI PRA-TUTUP: saham yang SEDANG naik >= mom_min_pct%, dengan HARGA MASUK
     yang benar-benar bisa dibayar hari ini (harga pasar saat pemindaian).
@@ -9389,6 +10084,10 @@ def screener_preclose(
         "stage2_rs_scope": scan.get("stage2_rs_scope"),
         "stage2_note": (STAGE2_FILTER_NOTE if stage2 else None),
         "dry_volume_note": (DRY_VOLUME_FILTER_NOTE if dry_volume else None),
+        # Ketiga variasi penyaring dari pemeriksaan yang SAMA. Ini yang menjawab "apakah
+        # penyaringnya menambah nilai" dari hasil hari itu sendiri, bukan dari riset.
+        "variants": scan.get("variants"),
+        "variants_note": PRECLOSE_VARIANTS_NOTE,
         "preclose": {
             "session": scan["session"],
             "entry_price_meaning": ("harga pasar SAAT PEMINDAIAN (mode pra-tutup), "
@@ -9519,7 +10218,7 @@ def _preclose_exec_block(results: List[dict], sess: dict,
 def cron_preclose(request: Request, secret: str = Query(""),
                   universe: str = Query("all", pattern="^(all|liquid)$"),
                   criteria: str = Query("momentumkuat",
-                                        pattern="^(momentum|momentumkuat|breakout|launchpad|volsr)$"),
+                                        pattern="^(momentum|momentumkuat|breakout|launchpad|volsr|pola)$"),
                   limit: int = Query(250, ge=1, le=PRECLOSE_MAX_LIMIT),
                   mom_min_pct: float = Query(8.0, ge=1.0, le=30.0),
                   min_value: float = Query(MOMENTUM_VALUE_FLOOR, ge=0),
@@ -9527,13 +10226,19 @@ def cron_preclose(request: Request, secret: str = Query(""),
                   capture: str = Query("1540", pattern="^[0-2][0-9][0-5][0-9]$",
                                        description="Label jam pengambilan (1500/1540) — dipakai untuk membandingkan akurasi"),
                   send: bool = Query(True),
-                  stage2: bool = Query(False, description=(
-                      "Penyaring Stage-2 (Minervini hal 105-106) untuk notifikasi ini. "
-                      "Terukur: momentum+breakout alpha5 +2,90% -> +6,51%. Default MATI "
-                      "supaya notifikasi harian tetap bisa dibandingkan antar hari.")),
-                  dry_volume: bool = Query(False, description=(
+                  stage2: bool = Query(True, description=(
+                      "Penyaring Stage-2 (Minervini hal 105-106). Terukur: momentum+breakout "
+                      "alpha5 +2,90% -> +6,51%. Default MENYALA di mode pra-tutup sejak "
+                      "hasilnya bisa dibandingkan harian: setiap pemeriksaan menghitung "
+                      "juga versi TANPA penyaring (lihat `variants`), dan return 1 & 5 hari "
+                      "sesudahnya dikumpulkan tiap malam oleh /api/cron/preclose-verify. "
+                      "Matikan dengan stage2=false untuk kembali ke daftar penuh.")),
+                  dry_volume: bool = Query(True, description=(
                       "Penyaring volume kering: volume hari ini di bawah rata-rata 20 hari. "
-                      "Terukur: alpha5 +2,90% -> +12,24%. Default MATI."))):
+                      "Terukur: alpha5 +2,90% -> +12,24%, tetapi ini penyaring PALING "
+                      "sempit (~0,9 sinyal/hari se-pasar), jadi sering menyisakan nol. "
+                      "Karena itu hasilnya TIDAK ditelan diam-diam: respons & notifikasi "
+                      "melaporkan jumlah kandidat tiap variasi (lihat `variants`)."))):
     """Cron PINDAI PRA-TUTUP (jadwal 15:40 WIB, sebelum sesi reguler tutup 15:49:59).
 
     DUA PENGAMBILAN: cron ini dijalankan juga pukul 15:00 dengan capture=1500. Tujuannya
@@ -9581,6 +10286,7 @@ def cron_preclose(request: Request, secret: str = Query(""),
                           require_stage2=stage2, require_dry_volume=dry_volume)
     sess = scan["session"]
     hasil = scan["results"]
+    variants = scan.get("variants") or {}
     # Pemisahan "momentum + breakout" vs "momentum saja" hanya bermakna untuk kriteria
     # momentum. Untuk pola (launchpad/volsr/breakout) kreditnya tidak boleh menumpang
     # pada syarat momentum, jadi semuanya dilaporkan sebagai satu kelompok.
@@ -9594,12 +10300,17 @@ def cron_preclose(request: Request, secret: str = Query(""),
     # SIMPAN SNAPSHOT untuk diverifikasi setelah data final tersedia. Tanpa ini, klaim
     # "harga 15:40 mewakili harga tutup" tidak pernah bisa diuji dengan angka sendiri.
     snapshot_saved = False
-    if SYNC_ENABLED and hasil:
+    # Snapshot disimpan juga saat penyaring MENGHABISKAN hasil, asalkan ada kandidat
+    # tanpa penyaring. Kalau tidak, hari-hari tersempit (yang justru paling perlu
+    # diukur: apakah penyaringnya menambah nilai atau hanya menelan sinyal) tidak punya
+    # data sama sekali, dan perbandingannya jadi berat sebelah.
+    if SYNC_ENABLED and (hasil or (variants.get("none") or {}).get("count")):
         try:
             payload = {
                 "date_wib": sess["date_wib"], "captured_wib": sess["wib"],
                 "capture": capture, "capture_label": _capture_label(capture),
                 "criteria": used, "mom_min_pct": mom_min_pct,
+                "filters": {"stage2": bool(stage2), "dry_volume": bool(dry_volume)},
                 "session": sess,
                 "signals": [{
                     "ticker": r.get("ticker"),
@@ -9609,6 +10320,13 @@ def cron_preclose(request: Request, secret: str = Query(""),
                     "criteria_met": r.get("criteria_met"),
                     "breakout_20h": (r.get("momentum_info") or {}).get("breakout_20h"),
                 } for r in hasil],
+                # Ketiga variasi penyaring pada pemeriksaan yang SAMA. Inilah yang membuat
+                # "pakai penyaring atau tidak" bisa diukur dari hasil nyata per hari.
+                "variants": {
+                    name: {"label": (v or {}).get("label"),
+                           "count": int((v or {}).get("count") or 0),
+                           "signals": (v or {}).get("signals") or []}
+                    for name, v in variants.items()},
             }
             blob = json.dumps(payload, ensure_ascii=False, default=str)
             snapshot_saved = _upstash_set(
@@ -9634,11 +10352,17 @@ def cron_preclose(request: Request, secret: str = Query(""),
          "next_offset": None, "requested": len(tickers), "capture": capture,
          "quotes_today": scan["quotes_today"], "quotes_failed": scan["quotes_failed"],
          "coverage_pct": scan["coverage_pct"], "results": hasil,
+         "variants": variants,
          "preclose": {"session": sess}},
         source="cron")
 
     sent = 0
-    if send and hasil and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+    # Notifikasi juga dikirim ketika penyaring MENGHABISKAN kandidat, asalkan ada
+    # kandidat sebelum disaring. Sebelumnya pesan tidak terkirim sama sekali dalam
+    # keadaan itu, sehingga penerima tidak bisa membedakan "tidak ada sinyal hari ini"
+    # dari "cron tidak berjalan" — padahal dua hal itu sangat berbeda.
+    if send and (hasil or (variants.get("none") or {}).get("count")) \
+            and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         # Cap waktu ikut di kunci: dua pengambilan sehari adalah dua pesan yang berbeda
         # dan disengaja, jadi dedupe-nya tidak boleh saling menutup.
         dedupe = f"ci:notif:preclose:{used}:{capture}:{sess['date_wib']}"
@@ -9721,7 +10445,17 @@ def cron_preclose(request: Request, secret: str = Query(""),
             # lengkap: saat sesi berjalan, yang dibutuhkan hanya harga masuk dan sisa
             # waktu, dan itu tidak boleh tenggelam di tengah pesan panjang.
             exec_block = _preclose_exec_block(hasil, sess)
+            # Ringkasan tiga variasi penyaring, apa pun hasilnya. Tanpa ini, "penyaring
+            # menyisakan 0" tidak bisa dibedakan dari "memang tidak ada saham naik".
+            variant_block = preclose_variants_summary(variants)
+            variant_alert = preclose_variant_alert(variants)
             body = []
+            if not hasil:
+                body.append("\n⚠️ TIDAK ADA kandidat yang lolos penyaring yang aktif "
+                            "(stage2=%s, dry_volume=%s). Angka lengkap tiap variasi ada di "
+                            "baris penyaring di atas; untuk melihat daftar penuh, jalankan "
+                            "ulang tanpa penyaring." % ("on" if stage2 else "off",
+                                                        "on" if dry_volume else "off"))
             if used in ("momentum", "momentumkuat"):
                 if kuat:
                     body.append(f"\n💥 {label} — {len(kuat)} "
@@ -9747,7 +10481,10 @@ def cron_preclose(request: Request, secret: str = Query(""),
                        f"mode pra-tutup; yang terukur adalah bahwa harga 15:45 hampir "
                        f"sama dengan harga tutup (median selisih 0,000%)."
                        if used in PRECLOSE_PATTERN_CRITERIA else ""))
-            if _telegram_send(head + exec_block + "\n".join(body) + tail +
+            if _telegram_send(head + exec_block
+                              + ("\n" + variant_block if variant_block else "")
+                              + ("\n" + variant_alert if variant_alert else "")
+                              + "\n".join(body) + tail +
                               "\n\n(dedesaputra_invst)"):
                 _upstash_set(dedupe, "1", ttl=86400)
                 sent = 1
@@ -9776,6 +10513,15 @@ def cron_preclose(request: Request, secret: str = Query(""),
         "momentum_breakout_hits": len(kuat),
         "momentum_only_hits": len(murni),
         "fragile_hits": len(fragile),
+        # Ketiga variasi penyaring pada pemeriksaan ini + catatan kenapa ia ada. Isinya
+        # daftar sinyal tiap variasi, jadi workflow 15:00/15:40 pun mencatatnya ke log.
+        "variants": {name: {"label": (v or {}).get("label"),
+                            "count": int((v or {}).get("count") or 0),
+                            "dropped": int((v or {}).get("dropped") or 0),
+                            "tickers": [s.get("ticker") for s in ((v or {}).get("signals") or [])]}
+                     for name, v in variants.items()},
+        "variants_note": PRECLOSE_VARIANTS_NOTE,
+        "filters": {"stage2": bool(stage2), "dry_volume": bool(dry_volume)},
         "telegram_sent": sent,
         "telegram_configured": bool(TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID),
         "mom_min_pct": mom_min_pct,
@@ -10189,6 +10935,18 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
     saved = _upstash_set("ci:preclose:track", json.dumps(track, ensure_ascii=False,
                                                          default=str), ttl=0)
 
+    # Hasil NYATA tiap variasi penyaring (tanpa penyaring / Stage-2 / Stage-2 + volume
+    # kering) ikut disegarkan di sini. Pukul 20:00 bar final hari itu sudah tersedia, dan
+    # cron ini memang sudah bagian dari rutinitas harian — jadi tidak perlu cron baru yang
+    # bisa lupa dipasang. Biayanya dibatasi `PRECLOSE_VOUT_MAX_TICKERS` permintaan riwayat
+    # per pemanggilan, dan hasil per hari disimpan supaya tidak diambil dua kali.
+    try:
+        variant_outcomes = _preclose_variant_outcomes()
+    except Exception:
+        variant_outcomes = {"ok": False, "variants": None,
+                            "reason": "Perhitungan perbandingan variasi penyaring gagal; "
+                                      "catatan akurasi di atas tidak terpengaruh."}
+
     sent = 0
     if send and SYNC_ENABLED and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
         dedupe = f"ci:notif:preclose-verif:{day}:{criteria}"
@@ -10224,6 +10982,14 @@ def cron_preclose_verify(request: Request, secret: str = Query(""),
         "per_capture": [{k: v for k, v in p.items() if k != "rows"} for p in per_capture],
         "track_record_saved": saved,
         "track_record": track,
+        # Perbandingan penyaring dalam bentuk yang ringkas (tanpa daftar per hari) supaya
+        # log cron 20:00 tetap terbaca; rinciannya ada di /api/preclose/variants.
+        "variant_filters": {
+            "days": (variant_outcomes or {}).get("days"),
+            "requests_used": (variant_outcomes or {}).get("requests_used"),
+            "budget_exhausted": (variant_outcomes or {}).get("budget_exhausted"),
+            "variants": (variant_outcomes or {}).get("variants"),
+        },
         "telegram_sent": sent,
         "rows": rows,
         "note": ("Selisih negatif = harga tutup lebih rendah dari harga masuk pra-tutup "

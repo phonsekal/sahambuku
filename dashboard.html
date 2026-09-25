@@ -98,6 +98,7 @@
         <option value="launchpad">🔥 Launch Pad (pola buku: base rapat → breakout)</option>
         <option value="reversal">🔄 Role Reversal S&R (resistance jadi support)</option>
         <option value="volsr">📊 S&R Volume (buku Bab 11)</option>
+        <option value="pola">📐 Pola Chart Klasik (buku Bab 20-21)</option>
         <option value="momentumkuat">💥 Momentum + Breakout (bukti terkuat harian)</option>
         <option value="momentum">⚡ Momentum Murni (naik cepat ≥8% + nilai ≥Rp100jt)</option>
         <option value="buykuat">🏆 Kualitas Beli Terbaik (skor ≥70 + tiket sehat + bull)</option>
@@ -172,6 +173,13 @@
     </div>
     <div id="precloseResume" class="mb-3"></div>
     <div id="precloseHist" class="mb-3"></div>
+    <!-- Perbandingan penyaring dari HARI YANG SUDAH LEWAT (bukan simulasi). Diisi oleh
+         loadVariantCompare(); tersembunyi sampai diminta supaya tidak memanggil riwayat
+         harga saat halaman baru dibuka. -->
+    <div class="mb-3">
+      <button id="btnVariant" onclick="toggleVariantCompare()" title="Bandingkan hasil NYATA tiap variasi penyaring (tanpa penyaring / Stage-2 / Stage-2 + volume kering) dari hari-hari yang sudah dipindai: harga masuk = harga pasar saat pemindaian, hasil = harga tutup 1 & 5 hari sesudahnya." class="border border-cyan-500/40 text-cyan-300 hover:bg-cyan-500/10 font-bold rounded-xl px-4 py-2 text-xs transition">⚖️ Bandingkan penyaring (hasil nyata)</button>
+      <div id="variantCompare" class="mt-2 text-[11px] text-slate-300 bg-slate-900/70 border border-slate-800 rounded-2xl px-4 py-3 hidden"></div>
+    </div>
     <div id="scanInfo" class="text-xs text-slate-400 mb-3"></div>
     <div id="koreksiWatchPanel" class="mb-3"></div>
     <div id="screenerResult"></div>
@@ -468,6 +476,9 @@ const fmtIdr = v => (v === null || v === undefined || isNaN(v)) ? "—" : "Rp" +
 const fmtMoney = (v, cur) => (v === null || v === undefined || isNaN(v)) ? "—"
   : ((cur && cur !== "IDR" ? cur + " " : "Rp") + Number(v).toLocaleString("id-ID", {maximumFractionDigits: 0}));
 const pct = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : Number(v).toLocaleString("id-ID", {maximumFractionDigits: d}) + "%";
+// Angka persen BERTANDA untuk sel tabel: kosong -> "—", positif diberi "+". Dipakai
+// panel perbandingan penyaring, di mana arah (naik/turun) itu isi pesannya.
+const sgnTxt = (v, d=2) => (v === null || v === undefined || isNaN(v)) ? "—" : (v > 0 ? "+" : "") + Number(v).toLocaleString("id-ID", {maximumFractionDigits: d, minimumFractionDigits: d}) + "%";
 const arrow = v => v > 0 ? "▲" : v < 0 ? "▼" : "•";
 const cls = v => v > 0 ? "text-emerald-400" : v < 0 ? "text-rose-400" : "text-slate-400";
 
@@ -1399,7 +1410,10 @@ function scParamQuery(offset) {
   // Role Reversal sama: syaratnya adalah tembusnya resistance 60 hari, jadi kekuatan
   // sahamnya sudah jadi syarat — bukan pasrah pada arah indeks.
   // Kriteria lain tetap memakai filter regime sesuai centang pengguna.
-  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent" || crit === "launchpad" || crit === "reversal";
+  // "pola" juga tanpa filter IHSG: alpha pola-pola ini diukur TANPA syarat rezim
+  // (research/chart_pattern_study.py), jadi menambahkannya di sini akan menampilkan
+  // angka yang belum pernah diukur.
+  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent" || crit === "launchpad" || crit === "reversal" || crit === "pola";
   const q = new URLSearchParams({ criteria: crit, universe: $("#scUniverse").value,
     limit: $("#scLimit").value, include_bandarmology: $("#scBandar").checked,
     require_confirm: $("#scConfirm").checked,
@@ -1417,7 +1431,7 @@ function scParamQuery(offset) {
 
 function scCriteriaChanged() {
   const crit = $("#scCriteria").value;
-  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent" || crit === "launchpad" || crit === "reversal";
+  const noRegime = crit === "rs" || crit === "breakout" || crit === "silent" || crit === "launchpad" || crit === "reversal" || crit === "pola";
   const rg = $("#scRegime");
   if (rg) { rg.disabled = noRegime; rg.parentElement.classList.toggle("opacity-40", noRegime); }
 }
@@ -1470,6 +1484,17 @@ function precloseParamQuery(offset) {
        dan yang dilanjutkan hanya CAKUPAN emitennya (supaya tidak ada nama yang
        bolak-balik diperiksa sementara nama lain belum pernah sama sekali).
 ----------------------------------------------------------------- */
+// Penanda "pemakai sudah mengubah centang penyaring sendiri". Dipakai supaya default
+// mode pra-tutup (penyaring menyala) hanya berlaku pada centang yang belum disentuh;
+// kalau pemakai sengaja mematikannya, pilihannya dihormati.
+const scFilterTouched = { stage2: false, dry: false };
+document.addEventListener("DOMContentLoaded", () => {
+  [['scStage2', 'stage2'], ['scDry', 'dry']].forEach(([id, key]) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("change", () => { scFilterTouched[key] = true; });
+  });
+});
+
 const PRECLOSE_PROGRESS_KEY = "ci_preclose_progress";
 // Jeda antar-halaman saat menyapu seluruh pasar di mode pra-tutup. Terukur pada sapuan
 // 4 halaman (951 emiten): cakupan halaman terakhir jatuh ke 69,5% karena sumber harga
@@ -1723,6 +1748,11 @@ async function calcLots(tk) {
 
 async function scanPreclose() {
   const btn = $("#btnPreclose");
+  // Selaraskan centang penyaring dengan default MODE PRA-TUTUP (menyala), kecuali
+  // pemakai sudah menentukan sendiri. Di pemindaian biasa keduanya tetap mati sebagai
+  // bawaan, jadi dua mode itu tidak saling mengubah setelan tanpa sepengetahuan pemakai.
+  if (!scFilterTouched.stage2) $("#scStage2").checked = true;
+  if (!scFilterTouched.dry) $("#scDry").checked = true;
   const picked = $("#scCriteria").value;
   const crit = PRECLOSE_CRITERIA.includes(picked) ? picked : "momentumkuat";
   if (crit !== picked) {
@@ -1914,7 +1944,20 @@ function renderScan(d) {
       pcExtra = execAdviceBlock(pc.exec_advice) + `<div class="mt-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">⏱ Panel pra-tutup: fase sesi saat pemindaian <b>${esc(ss.phase || "belum dibaca")}</b>${ss.wib ? ` (jam server ${esc(ss.wib)} WIB)` : ""}${openNow ? ` · sisa sesi <b>${fmt(ss.minutes_left, 0)} menit</b>` : ""}${winTxt}. Harga masuk mode ini adalah <b>harga PASAR SAAT PEMINDAIAN</b> — bisa dibayar hari itu, bukan harga tutup yang sudah lewat. Cakupan harga berjalan <b>${fmt(d.coverage_pct, 1)}%</b> (${d.quotes_today || 0} dari ${d.requested || 0} emiten punya kutipan hari ini).${d.passed_stage1 ? ` Lolos syarat awal: <b>${d.passed_stage1}</b>.` : ""}</div>`
         + (ss.phase && !openNow ? `<div class="mt-2 text-[11px] text-amber-200/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">⚠️ Sesi reguler sedang <b>TIDAK berjalan</b> (${esc(ss.phase)}): hasil ini membaca sesi terakhir yang selesai, jadi bukan pra-tutup. Jalankan pada 15:00-15:49 WIB untuk memakai harga yang bisa dibayar hari itu.</div>` : "");
     }
-    $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : (d.accumulated ? "Belum ada saham yang lolos kriteria di halaman-halaman yang sudah dipindai." : "Tidak ada saham yang lolos kriteria pada halaman ini.")}</div>${pcExtra}`;
+    // Kriteria pola menghasilkan daftar kosong LEBIH SERING daripada yang tidak, dan justru
+    // di keadaan itu pemakaian paling perlu tahu apa yang sedang dicari. Panel penjelasan
+    // kriteria dibangun SETELAH baris ini (hanya untuk daftar berisi), jadi ringkasannya
+    // ditampilkan di sini — bukan dihilangkan.
+    const EMPTY_CRIT_NOTE = {
+      pola: "📐 <b>Pola Chart Klasik</b> mencari <b>penembusan harga penutupan</b> dari pola yang bentuknya sudah terbentuk: Symmetrical Triangle (+1,86% alpha 5 hari), Falling Wedge (+1,85%), Inverse H&amp;S (+1,80%), Ascending Triangle (+1,73%), Flag/Pennant (+1,71%), Cup &amp; Handle (+0,97%). Semuanya <b>jarang</b> (0,4-3,9 kejadian/hari se-pasar), jadi daftar kosong itu <b>normal</b> — bukan tanda tidak ada yang diperiksa. Yang <b>DITOLAK</b> karena pengukuran dan karena itu tidak dipakai sebagai pemicu: Double Bottom (+0,45%, blok t +1,64), Rectangle (+0,07%), gap naik (+0,08%). Dan ini <b>jalan masuk alternatif</b>, bukan penyaring momentum — digabung momentum+breakout hasilnya tidak lebih baik.",
+      launchpad: "🔥 <b>The Launch Pad</b> jarang muncul (~0,6 kejadian/hari se-pasar), jadi daftar kosong itu normal.",
+      volsr: "📊 <b>S&amp;R Volume</b> mensyaratkan harga menguji ulang support bervolume besar dalam tren naik.",
+      breakout: "🚀 <b>Breakout 20 hari</b>: harga harus menembus high tertinggi 20 hari sebelumnya (halaman ini belum ada yang memenuhi).",
+      rs: "📈 <b>RS Leader</b>: RS line (harga ÷ IHSG) harus mencetak rekor 20 hari — saham kuat lawan pasar.",
+    };
+    const critExtra = EMPTY_CRIT_NOTE[d.criteria]
+      ? `<div class="mt-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">${EMPTY_CRIT_NOTE[d.criteria]}</div>` : "";
+    $("#screenerResult").innerHTML = `<div class="bg-slate-900/70 backdrop-blur border border-slate-800 rounded-2xl p-6 text-sm text-slate-500">${d.regime_blocked ? "⛔ Semua sinyal ditahan: IHSG di bawah MA200 (pasar bearish)." : (d.accumulated ? "Belum ada saham yang lolos kriteria di halaman-halaman yang sudah dipindai." : "Tidak ada saham yang lolos kriteria pada halaman ini.")}</div>${critExtra}${pcExtra}`;
     return;
   }
   const isKoreksi = d.criteria === "koreksi";
@@ -1924,6 +1967,7 @@ function renderScan(d) {
   const isLaunchpad = d.criteria === "launchpad";
   const isReversal = d.criteria === "reversal";
   const isVolSr = d.criteria === "volsr";
+  const isPola = d.criteria === "pola";
   const isMomentum = d.criteria === "momentum";
   const isMomentumKuat = d.criteria === "momentumkuat";
   const isBuyKuat = d.criteria === "buykuat";
@@ -1931,7 +1975,7 @@ function renderScan(d) {
   // Jumlah kolom tabel (untuk colspan baris rencana aksi) — dihitung, bukan ditulis tetap.
   // 16 kolom dasar (15 + kolom 🔔 Pantau yang kini SELALU ada); koreksi menambah 2
   // (Support + AVG Bandar) karena kolom 🔔-nya sudah dihitung di dasar.
-  const nCols = 17 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 2 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0) + (isMomoLike ? 1 : 0);
+  const nCols = 17 + (isRS ? 1 : 0) + (isBreakout ? 1 : 0) + (isKoreksi ? 2 : 0) + (isSilent ? 1 : 0) + (isLaunchpad ? 1 : 0) + (isReversal ? 1 : 0) + (isVolSr ? 1 : 0) + (isPola ? 1 : 0) + (isMomoLike ? 1 : 0);
   let h = isKoreksi
     ? `<div class="mb-3 text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">🛒 <b>Kandidat Beli Koreksi</b>: kualitas kuat (skor ≥70) tapi momentum masih SELL — <b>belum waktunya entry</b>. Tambahkan ke watchlist, lalu tunggu konfirmasi reversal (MACD cross up, harga bertahan di support, atau breakout di atas AVG bandar) sebelum membeli.</div>`
     : (isRS
@@ -1947,11 +1991,14 @@ function renderScan(d) {
     <div class="mt-1.5 pt-1.5 border-t border-cyan-500/20 text-amber-300/90">Uji <b>10 tahun</b> universe SANGAT LIKUID (576 saham, 238 rb saham-hari): alpha20 <b>+1,64%</b> (blok t=+9,10) — tetapi jujur soal sampelnya: 13.147 kejadian itu hanya tersebar di <b>49 hari keputusan independen</b> (sinyalnya muncul di ~93% hari bursa), jadi blok t yang besar berasal dari lebar cross-section, bukan dari 13 ribu bukti terpisah. Dua hal yang membedakannya dari "dekat support" biasa: pembanding <b>pullback ke SMA20 lemah</b> (alpha5 −0,05%), dan menambah syarat volume ≥1,5× justru <b>merusak</b> (alpha5 −0,46%, blok t=−3,31) — retest yang sehat itu sepi. ⚠️ Di horizon 5 hari alphanya cuma <b>+0,19%</b>, dan hasil portofolionya bahkan <b>berbalik tanda</b> antar jendela (5 tahun −44,6% → 10 tahun +87,5%). Pakai sebagai penyaring kandidat, bukan sistem otomatis. Kata "alpha" = keunggulan vs pasar, bukan jaminan harga naik.</div></div>`;
   if (isVolSr) h += `<div class="mb-3 text-[11px] text-lime-300/90 bg-lime-500/10 border border-lime-500/30 rounded-xl px-3.5 py-2.5">📊 <b>S&amp;R berbasis VOLUME</b> (buku Bab 11): support diambil dari <b>low candle dengan volume terbesar</b> (kuantil-90 dari 250 bar), lalu dicari harga yang <b>menguji ulang</b> level itu dalam tren naik (di atas SMA50, SMA50 menanjak).
     <div class="mt-1.5 pt-1.5 border-t border-lime-500/20 text-amber-300/90">Uji <b>10 tahun</b> universe SANGAT LIKUID: alpha20 <b>+0,70%</b> (blok t=+7,64). Yang membuat ini masuk akal adalah <b>kontrolya</b> — dan di jendela 10 tahun kontrolnya makin tajam: geometri sama persis tetapi levelnya dari candle bervolume <b>TERKECIL</b> justru <b>negatif</b> (−0,10%, blok t=−0,37) dan gagal holdout di kedua paruh. Jadi yang bekerja memang candle bervolume besar, bukan sekadar "harga menyentuh harga lama". ⚠️ Tetapi edgenya <b>kecil</b> (+0,70% per 20 hari) dan sinyalnya ada di <b>98% hari bursa</b> — 26.244 kejadian hanya mewakili <b>38 hari keputusan independen</b>. Karena itu ia lebih tepat sebagai penyaring kelas likuiditas, bukan sinyal entry tunggal. Sisi resistance-nya (+0,66%, blok t=+1,99) sengaja tidak dijadikan syarat.</div></div>`;
+  if (isPola) h += `<div class="mb-3 text-[11px] text-fuchsia-300/90 bg-fuchsia-500/10 border border-fuchsia-500/30 rounded-xl px-3.5 py-2.5">📐 <b>Pola Chart Klasik</b> (buku Edianto Ong, Bab 20-21): pemicunya adalah <b>penembusan harga PENUTUPAN</b> dari pola yang bentuknya sudah terbentuk — sesuai Bab 7 buku ("penembusan sah = harga penutupan di luar garis"), bukan sentuhan intraday.
+    <div class="mt-1.5 pt-1.5 border-t border-fuchsia-500/20 text-amber-300/90">Diukur di <b>989 emiten × 1,36 juta saham-hari</b> memakai fungsi yang sama dengan yang dijalankan di sini (alpha 5 hari vs kelas likuiditas yang sama, biaya 0,3% sudah dipotong): Symmetrical Triangle <b>+1,86%</b> (blok t +3,63), Falling Wedge <b>+1,85%</b> (t +2,71), Inverse H&amp;S <b>+1,80%</b> (t +5,63), Ascending Triangle <b>+1,73%</b> (t +4,53), Flag/Pennant <b>+1,71%</b> (t +4,92), Cup &amp; Handle <b>+0,97%</b> (t +6,75). Keenamnya positif di <b>kedua paruh waktu</b>.<br>Yang <b>DITOLAK</b> karena pengukuran: <b>Double Bottom</b> (+0,45%, blok t +1,64 — di bawah ambang t=+2 yang dipakai proyek ini), Rectangle (+0,07%, t +0,35), dan <b>gap naik</b> (+0,08%, t +0,16) — jadi bab gap buku itu tidak terbukti berguna di data harian.<br><b>Peringatan</b> (terukur turun, negatif di 6 dari 7 tahun, dan aplikasi ini <b>tidak bisa short</b>): Descending Triangle −0,68% (t −7,15) dan Head &amp; Shoulders −1,27% (t −3,25). Keduanya muncul di kolom ini sebagai ⚠, bukan sebagai sinyal jual.<br>⚠️ Penting: pola ini adalah <b>jalan masuk alternatif</b>, bukan penyaring momentum. Diuji digabung momentum+breakout hasilnya <b>tidak lebih baik</b> (+2,46% Cup &amp; Handle vs +2,90% dasar), jadi jangan dijadikan syarat tambahan pada momentum. Pengukurannya <b>geometris</b> (puncak/dasar tiap sepertiga jendela), bukan pengenalan gambar — jadi "inti aturannya terukur", bukan "polanya identik dengan yang terlihat mata".</div></div>`;
   if (d.mode === "preclose") {
     const pc = d.preclose || {}, ss = pc.session || {};
     const openNow = ss.phase === "SESI BERJALAN";
     const CRIT_LABEL = { momentum: "Momentum murni", momentumkuat: "Momentum + Breakout",
-      breakout: "Breakout high 20 hari", launchpad: "The Launch Pad", volsr: "S&R Volume" };
+      breakout: "Breakout high 20 hari", launchpad: "The Launch Pad", volsr: "S&R Volume",
+      pola: "Pola Chart Klasik" };
     const critLabel = CRIT_LABEL[d.criteria] || d.criteria;
     const tone = openNow ? "text-rose-200/90 bg-rose-500/10 border-rose-500/30" : "text-amber-200/90 bg-amber-500/10 border-amber-500/30";
     // Dua jendela dibedakan, karena yang DIUKUR bukan seluruh jendela kerja: klaim
@@ -2049,6 +2096,7 @@ function renderScan(d) {
       ${isLaunchpad ? `<th class="text-right px-3" title="Syarat pola Launch Pad: kenaikan sebelum base, seberapa rapat base-nya (semakin kecil semakin baik, ≤0,80), harga breakout base, dan volume vs MA20">Launch Pad</th>` : ""}
       ${isReversal ? `<th class="text-right px-3" title="Level resistance 60 hari yang sudah ditembus dan kini diuji dari atas — zona entry. Jarak = posisi harga terhadap level itu.">Level jadi Support</th>` : ""}
       ${isVolSr ? `<th class="text-right px-3" title="Low candle dengan volume terbesar (kuantil-90 dari 250 bar) = support, dan high-nya = resistance. Jarak = posisi harga terhadap support itu.">S&R Volume</th>` : ""}
+      ${isPola ? `<th class="text-right px-3" title="Pola chart yang PICUNYA menyala pada bar terakhir + alpha 5 hari yang terukur untuk pola itu (989 emiten x 1,36 juta saham-hari). Tanda ⚠ berarti pola bearish yang terukur menurunkan hasil (Head & Shoulders) — bukan sinyal beli.">Pola Chart</th>` : ""}
       ${isSilent ? `<th class="text-left px-3" title="Broker yang konsisten net beli tanpa banyak jual. Informasi bandarmology, bukan sinyal beli.">Akumulator</th>` : ""}
       ${isMomoLike ? `<th class="text-right px-3" title="Rencana dagang harian. MASUK: beli di harga TUTUP sesi berikutnya, JANGAN di harga pembukaan — celah buka rata-rata +3,2% dan alpha sesudahnya negatif (blok t −7,5 pada 1 hari); menunggu diskon juga tidak menolong (limit di harga sinyal terisi 76% tapi hasilnya −1,5%). SL 1,5×ATR14, TP 2× risiko (RRR 1:2 sesuai buku Bab 8), keluar maksimum 5 hari bursa — horizon tempat bukti momentum dihitung.">Rencana Harian</th>` : ""}
       ${isKoreksi ? `<th class="text-right px-3" title="Support terdekat di bawah harga — zona entry pantauan">Support</th><th class="text-right px-3" title="AVG bandar (support psikologis) + jarak harga terhadapnya">AVG Bandar</th>` : ""}
@@ -2087,6 +2135,7 @@ function renderScan(d) {
       ${isLaunchpad ? (() => { const li = r.launchpad_info || {}; return `<td class="px-3 text-right tabular">${li.breakout_price ? `${fmt(li.breakout_price)}<div class="text-[10px] text-orange-300">naik ${fmt(li.prior_gain_pct, 1)}% · rapat ${Number(li.contraction_ratio || 0).toFixed(2)} · vol ${fmt(li.volume_ratio, 1)}×</div>` : "—"}</td>`; })() : ""}
       ${isReversal ? (() => { const ri = r.reversal_info || {}; return `<td class="px-3 text-right tabular">${ri.broken_resistance ? `${fmt(ri.broken_resistance)}<div class="text-[10px] text-cyan-300">${ri.distance_to_level_pct != null ? pct(ri.distance_to_level_pct) : ""} · retest hari ke-${ri.days_since_breakout}</div>` : "—"}</td>`; })() : ""}
       ${isVolSr ? (() => { const vi = r.volume_sr_info || {}; return `<td class="px-3 text-right tabular">${vi.volume_support ? `${fmt(vi.volume_support)}<div class="text-[10px] text-lime-300">${vi.distance_to_support_pct != null ? pct(vi.distance_to_support_pct) : ""} · R ${vi.volume_resistance != null ? fmt(vi.volume_resistance) : "—"}</div>` : "—"}</td>`; })() : ""}
+      ${isPola ? patternCell(r) : ""}
       ${isSilent ? `<td class="px-3 text-xs">${si.broker ? `<b>${esc(si.broker)}</b><div class="text-[10px] text-slate-500">${si.days_buy}/${si.window} hari · <span class="tabular text-emerald-400">${fmtIdr(si.net)}</span> · net/gross ${Number(si.net_ratio || 0).toFixed(2)}</div>` : "—"}</td>` : ""}
       ${isMomoLike ? (() => { const p = (r.momentum_info || {}).plan || {}; if (p.stop_loss == null) return `<td class="px-3 text-right text-[11px]">—</td>`; return `<td class="px-3 text-right tabular text-[11px]">${p.harga_sinyal != null ? `<div class="text-slate-400 text-[10px]">sinyal ${fmt(p.harga_sinyal)}</div>` : ""}<div class="text-amber-300 text-[10px] font-semibold">beli di tutup besok</div><span class="text-rose-400">SL ${fmt(p.stop_loss)}</span> <span class="text-slate-500">(${pct(p.risk_pct != null ? -Math.abs(p.risk_pct) : null)})</span><div class="text-emerald-400">TP ${fmt(p.target)} <span class="text-slate-500">(+${fmt(p.reward_pct, 1)}%)</span></div><div class="text-[10px] text-slate-500">maks ${p.max_hold_days || 5} hari</div><button onclick="psFill(${p.entry != null ? p.entry : p.stop_loss}, ${p.stop_loss}, '${esc(stripJK(r.ticker))}')" title="Hitung berapa LOT yang muat dalam batas risiko buku (Minervini/Tharp/Turtle) dari harga masuk & stop baris ini." class="mt-0.5 text-[10px] px-2 py-0.5 rounded-lg border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/10 font-bold">💼 Lot</button></td>`; })() : ""}
       ${isKoreksi ? `<td class="px-3 text-right tabular text-sky-400">${ki.nearest_support ? `${fmt(ki.nearest_support)}<div class="text-[10px] text-slate-500">${pct(ki.support_distance_pct)}</div>` : "—"}</td><td class="px-3 text-right tabular text-amber-300">${ki.bandar_avg_price ? `${fmt(ki.bandar_avg_price)}<div class="text-[10px] ${(ki.bandar_avg_distance_pct || 0) < 0 ? "text-sky-400" : "text-rose-400"}">${ki.bandar_avg_distance_pct != null ? pct(ki.bandar_avg_distance_pct) : ""}</div>` : "—"}</td>` : ""}
@@ -2126,13 +2175,151 @@ function dryChip(v) {
   return `<span title="Volume hari sinyal DI BAWAH rata-rata 20 hari padahal harga naik. Buku Biawak hal 257 menyebut ini 'kenaikan lemah', tetapi pengukuran panel IDX menunjukkan sebaliknya: momentum+breakout alpha 5 hari +2,90% -> +12,24%." class="text-[10px] px-2 py-0.5 rounded-full border border-cyan-500/40 text-cyan-300 bg-cyan-500/10 ml-1">🫗 vol kering</span>`;
 }
 
+// Ringkasan TIGA variasi penyaring pada pemeriksaan yang SAMA (tanpa penyaring /
+// Stage-2 / Stage-2 + volume kering). Kenapa ditampilkan walau penyaringnya mati:
+// ini satu-satunya cara tahu berapa kandidat yang akan tersisa bila penyaringnya
+// dinyalakan, tanpa memindai ulang. Angkanya datang dari server (dihitung dari baris
+// yang sudah dinilai), bukan dihitung ulang di browser.
+function variantSummaryBlock(variants, note) {
+  if (!variants) return "";
+  const order = ["none", "stage2", "stage2_dry"];
+  const rows = order.filter(k => variants[k]).map(k => {
+    const v = variants[k];
+    const drop = v.dropped != null ? ` <span class="text-slate-500">(−${v.dropped})</span>` : "";
+    return `<div class="flex items-center justify-between gap-3 py-0.5">
+      <span class="text-slate-300">${esc(v.label || k)}</span>
+      <span class="tabular font-semibold ${v.count ? "text-emerald-300" : "text-slate-500"}">${fmt(v.count, 0)}${drop}</span></div>`;
+  }).join("");
+  if (!rows) return "";
+  return `<div class="mb-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">
+    <b>🔎 Variasi penyaring pada pemeriksaan ini</b>
+    <div class="mt-1">${rows}</div>
+    <div class="mt-1 text-slate-500">${esc(note || "")}</div>
+  </div>`;
+}
+
+// Sel pola chart: pola yang menyala + alpha 5 hari TERUKUR untuk pola itu. Angkanya
+// datang dari server (api/index.py CHART_PATTERNS_MEASURED), bukan ditulis ulang di
+// sini — supaya panel dan angka tidak bisa berbeda.
+function patternCell(r) {
+  const pi = r.pattern_info;
+  if (!pi) return "<td class=\"px-3 text-right text-slate-600\">—</td>";
+  const hit = (pi.patterns || []);
+  const av = (pi.avoid || []);
+  const up = hit.filter(p => p.layak).map(p => {
+    const m = p.measured || {};
+    return `<div class=\"text-[11px] text-fuchsia-300\">${esc(p.label)}${m.alpha5_pct != null ? ` <span class=\"text-slate-400\">${m.alpha5_pct > 0 ? "+" : ""}${fmt(m.alpha5_pct, 2)}%</span>` : ""}</div>`;
+  }).join("");
+  const bad = av.map(p => {
+    const m = p.measured || {};
+    return `<div class=\"text-[11px] text-rose-300\" title=\"Pola bearish yang TERUKUR menurunkan hasil ke depan; ini peringatan, bukan sinyal beli.\">⚠ ${esc(p.label)}${m.alpha5_pct != null ? ` <span class=\"text-slate-400\">${fmt(m.alpha5_pct, 2)}%</span>` : ""}</div>`;
+  }).join("");
+  const other = hit.filter(p => !p.layak).map(p => `<div class=\"text-[10px] text-slate-500\" title=\"Terukur tidak menambah alpha, jadi TIDAK dijadikan pemicu.\">${esc(p.label)} (tidak dipakai)</div>`).join("");
+  // TIGA bagian ditampilkan semuanya, tidak dipilih salah satu: satu baris bisa memuat
+  // pola beli DAN pola peringatan sekaligus (mis. Symmetrical Triangle tembus naik sambil
+  // Head & Shoulders baru terbentuk pada saham yang sama). Versi pertama fungsi ini memakai
+  // `up || bad` sehingga peringatannya hilang begitu ada pola beli — dan uji DOM-lah yang
+  // menemukannya.
+  const all = up + bad + other;
+  return `<td class=\"px-3 text-right\">${all || "<span class=\"text-slate-600\">—</span>"}</td>`;
+}
+
 function filterNote(d) {
   const fl = d.filters || {};
-  if (!fl.stage2 && !fl.dry_volume) return "";
+  const variantBlock = variantSummaryBlock(d.variants, d.variants_note);
+  if (!fl.stage2 && !fl.dry_volume) return variantBlock;
   const parts = [];
   if (fl.stage2) parts.push(`<b>🧱 Stage-2</b>: ${d.stage2_filtered || 0} kandidat dibuang karena belum lolos 8 syarat tren. Terukur (989 emiten x 1,6 juta saham-hari): momentum+breakout +2,90% &rarr; <b>+6,51%</b>, breakout +0,35% &rarr; <b>+4,13%</b>, momentum +1,60% &rarr; <b>+4,40%</b> (alpha 5 hari vs kelas likuiditas yang sama).`);
   if (fl.dry_volume) parts.push(`<b>🫗 Volume kering</b>: ${d.dry_volume_filtered || 0} kandidat dibuang karena volumenya di atas rata-rata. Terukur: momentum+breakout +2,90% &rarr; <b>+12,24%</b> (61,5% kejadian untung setelah biaya, positif di 7 dari 7 tahun) — kebalikan dari yang tertulis di bukunya, jadi ini hasil pengukuran kita sendiri, bukan kutipan.`);
-  return `<div class="mb-3 text-[11px] text-cyan-200/90 bg-cyan-500/10 border border-cyan-500/30 rounded-xl px-3.5 py-2.5">Penyaring buku sedang AKTIF:<div class="mt-1 flex flex-col gap-1">${parts.map(p => `<div>${p}</div>`).join("")}</div><div class="mt-1 text-slate-400">Konsekuensinya hasil jauh lebih sedikit. Matikan centangnya untuk membandingkan dengan tanpa penyaring.</div>${d.stage2_rs_scope ? `<div class="mt-1 text-amber-300/90">⚠ ${esc(d.stage2_rs_scope)}</div>` : ""}</div>`;
+  const empty = (d.results || []).length === 0 && d.variants
+    && (d.variants.none || {}).count > 0;
+  return variantBlock
+    + `<div class="mb-3 text-[11px] text-cyan-200/90 bg-cyan-500/10 border border-cyan-500/30 rounded-xl px-3.5 py-2.5">Penyaring buku sedang AKTIF:<div class="mt-1 flex flex-col gap-1">${parts.map(p => `<div>${p}</div>`).join("")}</div><div class="mt-1 text-slate-400">Konsekuensinya hasil jauh lebih sedikit. Matikan centangnya untuk membandingkan dengan tanpa penyaring.</div>${d.stage2_rs_scope ? `<div class="mt-1 text-amber-300/90">⚠ ${esc(d.stage2_rs_scope)}</div>` : ""}${empty ? `<div class="mt-1 text-amber-300">⚠ Tidak ada kandidat yang lolos penyaring ini, padahal ada ${fmt((d.variants.none || {}).count, 0)} kandidat sebelum disaring. Itu wajar untuk penyaring tersempit — bukan berarti pasar tidak ada yang naik.</div>` : ""}</div>`;
+}
+
+/* -----------------------------------------------------------------
+   PERBANDINGAN PENYARING DARI HARI YANG SUDAH LEWAT
+   Angka riset (panel 2020-2026) memang sudah ada, tetapi ia bukan bukti bahwa
+   penyaringnya bekerja pada hari-hari yang BENAR-BENAR dipindai sekarang. Panel ini
+   menampilkan hasil NYATA: harga masuk = harga pasar saat pemindaian, hasil = harga
+   tutup 1 & 5 hari sesudahnya, dihitung server dari snapshot harian.
+----------------------------------------------------------------- */
+const VARIANT_ORDER = ["none", "stage2", "stage2_dry"];
+
+function variantTrackHtml(d) {
+  const v = d.variants || {};
+  const perDay = d.per_day || [];
+  if (d.ok === false) {
+    return `<div class="text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3.5 py-2.5">${esc(d.reason || "Perbandingan tidak tersedia.")}</div>`;
+  }
+  if (!perDay.length) {
+    return `<div class="text-[11px] text-slate-400 bg-slate-800/60 border border-slate-700 rounded-xl px-3.5 py-2.5">
+      <b>Belum ada hari yang bisa dibandingkan.</b> ${esc(d.if_empty || d.reason || "")}
+      <div class="mt-1">Perbandingan ini terisi otomatis: cron pra-tutup menyimpan ketiga variasi setiap hari, dan verifikasi pukul 20:00 menghitung return 1 &amp; 5 harinya.</div>
+    </div>`;
+  }
+  const rows = VARIANT_ORDER.filter(k => v[k]).map(k => {
+    const x = v[k];
+    const h5 = x.mean_h5_pct;
+    const cls = h5 == null ? "text-slate-400" : (h5 > 0 ? "text-emerald-300" : "text-rose-300");
+    return `<tr class="border-t border-slate-800/60">
+      <td class="py-1.5 pr-3 text-slate-200">${esc(x.label || k)}</td>
+      <td class="px-2 text-right tabular text-slate-400">${fmt(x.days_measured, 0)}/${fmt(x.days, 0)}</td>
+      <td class="px-2 text-right tabular text-slate-400">${fmt(x.signals, 0)}</td>
+      <td class="px-2 text-right tabular text-slate-400">${sgnTxt(x.mean_h1_pct)}</td>
+      <td class="px-2 text-right tabular font-semibold ${cls}">${sgnTxt(h5)}</td>
+      <td class="px-2 text-right tabular text-slate-400">${x.win5_pct == null ? "—" : fmt(x.win5_pct, 0) + "%"}</td>
+      <td class="px-2 text-right tabular text-slate-400">${sgnTxt(x.mean_drift_pct)}</td></tr>`;
+  }).join("");
+  const dayRows = perDay.slice(-8).map(dd => `<tr class="border-t border-slate-800/60">
+      <td class="py-1 pr-3 text-slate-400">${esc(dd.date)} ${esc(dd.capture || "")}${dd.in_window ? "" : " <span class=\"text-amber-400\">(luar jendela)</span>"}</td>
+      ${VARIANT_ORDER.map(k => {
+        const x = (dd.variants || {})[k];
+        if (!x) return `<td class="px-2 text-right text-slate-600">—</td>`;
+        return `<td class="px-2 text-right tabular ${x.mean_h5_pct == null ? "text-slate-500" : (x.mean_h5_pct > 0 ? "text-emerald-400" : "text-rose-400")}">${x.count} → ${x.mean_h5_pct == null ? "…" : sgnTxt(x.mean_h5_pct)}</td>`;
+      }).join("")}</tr>`).join("");
+  return `
+    <div class="overflow-x-auto"><table class="w-full text-[11px]">
+      <thead><tr class="text-slate-500 text-left">
+        <th class="py-1 pr-3">variasi penyaring</th><th class="px-2 text-right">hari terukur</th>
+        <th class="px-2 text-right">sinyal</th><th class="px-2 text-right">rata h1</th>
+        <th class="px-2 text-right">rata h5</th><th class="px-2 text-right">% untung h5</th>
+        <th class="px-2 text-right">selisih vs tutup</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>
+    <div class="mt-2 text-[11px] text-slate-400">Per hari (jumlah kandidat &rarr; rata-rata hasil 5 hari):</div>
+    <div class="overflow-x-auto"><table class="w-full text-[11px]">
+      <thead><tr class="text-slate-500 text-left"><th class="py-1 pr-3">tanggal</th>${VARIANT_ORDER.map(k => `<th class="px-2 text-right">${esc(((v[k] || {}).label || k)).split(" ")[0]}</th>`).join("")}</tr></thead>
+      <tbody>${dayRows}</tbody></table></div>
+    <div class="mt-2 text-[11px] text-slate-500">${esc(d.note || "")}</div>
+    ${d.budget_exhausted ? `<div class="mt-1 text-[11px] text-amber-300">⚠ Batas ${fmt(d.request_budget, 0)} permintaan riwayat tercapai pada pemanggilan ini; sisanya akan diisi pada pemanggilan berikutnya.</div>` : ""}`;
+}
+
+let variantCompareOpen = false;
+
+function toggleVariantCompare() {
+  const el = $("#variantCompare");
+  if (!el) return;
+  variantCompareOpen = !variantCompareOpen;
+  el.classList.toggle("hidden", !variantCompareOpen);
+  if (variantCompareOpen) {
+    // 40 permintaan riwayat per pemanggilan: cukup untuk mengisi beberapa hari tanpa
+    // menghabiskan kuota harian (sisanya diisi pada pemanggilan berikutnya, dan
+    // dilaporkan sebagai belum lengkap).
+    loadVariantCompare(40);
+  }
+}
+
+async function loadVariantCompare(maxTickers) {
+  const el = $("#variantCompare");
+  if (!el) return;
+  const mt = maxTickers == null ? 40 : maxTickers;
+  el.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-slate-600 border-t-emerald-400 rounded-full animate-spin align-middle mr-2"></span>Menghitung perbandingan penyaring…`;
+  try {
+    const d = await getJSON(`/api/preclose/variants?days=10&max_tickers=${mt}`);
+    el.innerHTML = variantTrackHtml(d);
+  } catch (e) {
+    el.innerHTML = errorBox(e.message);
+  }
 }
 
 function toggleScanPlan(btn) {
