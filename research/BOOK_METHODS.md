@@ -16,6 +16,7 @@ Alat dan alur kerjanya ada di folder ini juga:
 | `research/chart_pattern_study.py` | uji pola chart bab 20-21 Edianto Ong di panel harian (0 kuota) |
 | `research/fundamentals_pull.py` | tarik fundamental IDX Edge ke cache lokal **sekali** (biaya kuota), lalu riset jadi 0 jaringan |
 | `research/fundamental_study.py` | uji aturan fundamental (Peter Lynch) dari cache, point-in-time (0 kuota) |
+| `research/robust_audit.py` | periksa ulang kriteria lama (momentum, breakout, Launch Pad, dst.) dengan ukuran rata-rata **dan** tahan-outlier (0 kuota) |
 
 Semua keluaran ada di `research/.cache/books/` dan tidak masuk git.
 
@@ -231,6 +232,27 @@ juga: PEG < 1 **−0,15%** (1/3 tahun), fast grower + PEG < 1 −0,12%, "P/E di 
 konsisten dengan nilai buku — tetapi "kuintil" tidak bisa dipasang di produksi, dan itulah
 sebabnya ambang absolutnya (tabel di atas) yang dipakai.
 
+**Kategori turnaround diuji lebih jauh — dan DITOLAK.** Karena "rugi → laba" terdengar seperti
+titik balik yang jelas, ia diukur lebih rinci (semua h20, alpha lawan kelas likuiditas yang sama):
+
+| aturan | n | h20 rata-rata | h20 tahan-outlier | thn+ | catatan |
+|---|---|---|---|---|---|
+| Turnaround (rugi → laba) | 26.871 | +1,64% | **−0,44%** | 3/3 | dua ukuran berbeda tanda → tidak bisa dipasang |
+| Turnaround & likuid (CUKUP+) | 16.312 | +1,28% | −0,24% | 3/3 | berbeda tanda juga |
+| Rugi mengecil (masih rugi) | 44.816 | +1,53% | −0,26% | 2/3 | berbeda tanda |
+| **Turnaround & P/B ≤ 0,5** | 6.403 | +2,00% (t +28,2) | **+1,87%** (t +17,2) | 2/3 | lolos kedua ukuran — tapi lihat kontrol |
+| P/B ≤ 0,5 & laba POSITIF (tanpa transisi) | 88.899 | +0,16% | +0,71% | 3/4 | lemah |
+| P/B ≤ 0,5 & masih RUGI | 44.175 | +1,92% | +1,63% | 4/4 | kuat, tanpa perlu apa pun soal transisi |
+| Laba → rugi & P/B ≤ 0,5 (**kontrol negatif**) | 9.889 | **+3,22%** | **+2,83%** | 2/3 | **lebih tinggi daripada turnaround** |
+
+Kontrol negatifnya yang menentukan. Kalau label "turnaround" membawa informasi, ia harus
+mengalahkan kelompok yang **kebalikannya** (laba berubah menjadi rugi) pada harga yang sama.
+Nyatanya tidak: kontrol negatifnya justru lebih tinggi (+3,22% vs +2,00% rata-rata). Yang bekerja
+bukan "sedang berbalik", melainkan **"murah + laba sedang buruk"** — dan itu sudah tercakup oleh
+kriteria `murah` (P/B ≤ 0,5), tanpa perlu menyaring laporan dua tahun. Kesimpulannya: **tidak ada
+kriteria Turnaround yang dipasang.** Ini juga menjelaskan mengapa gerbang kualitas ROE (§5 di atas)
+merugikan: yang diukur menguntungkan justru saham murah ber-laba lemah, bukan murah ber-laba sehat.
+
 **Batas data**: tidak ada sektor sehingga "cyclical" cuma proksi volatilitas laba; tidak ada
 data dividen padahal slow grower Lynch bertumpu pada dividen; P/E & P/B dari laporan tahunan
 tanpa penyesuaian aset. Dan biaya kuota: laporan per emiten = 2 permintaan, karena itu
@@ -335,6 +357,8 @@ kode + panel dashboard supaya tidak ada yang menyangka angka itu berasal dari bu
 | Fast grower & PEG < 1 | Lynch hal 198-199 | alpha −0,12% & −0,15%, 1-2 dari 3 tahun | ditolak (pertumbuhan laba YoY IC ≈ 0) |
 | Stalwart (besar, tumbuh sedang) | Lynch hal 38 | −0,51%, 0 dari 3 tahun | ditolak |
 | Gerbang kualitas ROE pada saham murah | Lynch (gagasan "sehat") | rata-rata −0,70% vs tahan-outlier +0,57% | ditolak (dua ukuran berbeda tanda) |
+| Label "Turnaround" (rugi → laba) | Lynch hal 38 | rata-rata +1,64% vs tahan-outlier −0,44%; kontrol negatifnya (laba → rugi & P/B ≤ 0,5) justru +3,22% | ditolak (label tak menambah apa pun di atas `murah`) |
+| Publikasi ulang kriteria lama (momentum, breakout, buyscore, volsr) dgn ukuran tahan-outlier | §11 | sebagian besar **EKOR**: rata-rata positif tapi median negatif | ditulis di dokumentasi sebagai **rata-rata yang ditarik ekor**, bukan hasil tipikal |
 | "Pola gap menguntungkan" | Edianto Ong Bab 20 | gap naik +0,08% (blok t +0,16) | ditolak (dihitung, tidak dipakai) |
 | Double Bottom sebagai pemicu | Edianto Ong Bab 21 | +0,45% (blok t +1,64), paruh kedua +0,06% | ditolak (ambang proyek t ≥ +2) |
 
@@ -357,7 +381,59 @@ Stage-2 juga membuang semuanya tanpa penjelasan. Sekarang bila bar < 252 dikemba
 apa adanya ("data hanya N bar") **dan** jendela data otomatis diperpanjang saat penyaring
 dinyalakan.
 
-## 11. Keterbatasan yang harus dibaca bersama hasil di atas
+## 11. Kriteria LAMA diperiksa dengan ukuran tahan-outlier
+
+Waktu aturan fundamental diukur (§5), terlihat bahwa rata-rata return mudah ditarik beberapa saham
+ekstrem — sampai dua ukuran bisa berbeda tanda. Pertanyaan lanjutannya jelas: apakah kriteria lama
+(momentum, breakout, Launch Pad, dst.) juga begitu? `research/robust_audit.py` mengulang pengukuran
+seluruh kriteria screener di panel harian penuh (1.359.789 saham-hari, 981 emiten,
+2020-01-02 s/d 2026-09-11), dengan DUA ukuran yang sama (rata-rata vs selisih median per tanggal).
+
+| kriteria | n | /hari | h20 rata-rata (t) | h20 tahan-outlier (t) | paruh (tahan-outlier) | net20 | putusan |
+|---|---|---|---|---|---|---|---|
+| launchpad | 1.035 | 0,6 | +4,53% (+3,1) | **+6,87% (+4,5)** | +6,88/+6,86 | +4,60% | **SEPAKAT** |
+| swing | 9.524 | 5,9 | +0,45% (+1,4) | +0,83% (+2,5) | +0,33/+1,32 | +1,00% | TIPIS |
+| reversal | 34.033 | 21,1 | +0,15% (+1,5) | +0,36% (+7,3) | +0,02/+0,70 | +1,66% | TIPIS |
+| volsr | 91.041 | 56,5 | +0,62% (+8,2) | −0,01% (−0,3) | −0,09/+0,08 | +3,01% | EKOR |
+| buy ≥ 70 | 99.855 | 62,0 | +1,83% (+11,5) | −0,60% (−6,9) | −0,76/−0,43 | +4,32% | EKOR |
+| buy ≥ 50 | 335.913 | 208,6 | +1,13% (+21,9) | −0,48% (−16,3) | −0,67/−0,29 | +3,29% | EKOR |
+| momentumkuat | 15.351 | 9,5 | +5,04% (+8,8) | −0,74% (−1,8) | −1,41/−0,06 | +9,83% | EKOR |
+| momentum ≥ 10% | 25.890 | 16,1 | +1,48% (+5,2) | −4,40% (−30,8) | −5,07/−3,74 | +5,24% | EKOR |
+| momentum ≥ 8% | 44.468 | 27,6 | +3,08% (+15,1) | −3,13% (−29,9) | −4,40/−1,87 | +7,15% | EKOR |
+| scalping | 15.849 | 9,8 | +0,47% (+1,2) | −4,03% (−13,2) | −3,66/−4,40 | +3,19% | RAPUH |
+| bsjp | 11.512 | 7,2 | +0,49% (+1,3) | −2,84% (−9,4) | −2,71/−2,97 | +2,02% | RAPUH |
+| breakout | 149.583 | 92,9 | −0,08% (−1,7) | +0,08% (+12,4) | +0,16/−0,01 | +2,20% | RAPUH |
+
+Arti putusan: **SEPAKAT** = kedua ukuran sepakat positif dan kuat. **TIPIS** = positif di kedua
+ukuran tetapi tahan-outlier kecil. **EKOR** = rata-rata positif tapi MEDIAN negatif — angkanya
+ditarik segelintir pemenang besar, dan sinyal yang **tipikal** justru tertinggal dari kelas
+likuiditasnya. **RAPUH** = kedua ukuran lemah/negatif.
+
+Ini **bukan** alasan membuang kriteria: kolom `net20` (rata-rata absolut setelah biaya) tetap positif
+di hampir semua baris, jadi daftar itu masih berguna sebagai penyaring kandidat. Yang berubah adalah
+**cara menuliskannya**: untuk kriteria EKOR/RAPUH, angka yang jujur adalah "rata-rata yang ditarik
+ekor", bukan "sinyal ini menghasilkan +x%". Persentase untung h20-nya sendiri cuma ~40%.
+
+**Kontrol arah — yang bekerja arahnya, atau sekadar "ada gerakan besar"?**
+
+| kelompok | n | h20 rata-rata (t) | h20 tahan-outlier (t) | net20 | %untung |
+|---|---|---|---|---|---|
+| naik ≥ 8% (yang dipakai momentum) | 44.468 | +3,08% (+15,1) | −3,13% (−29,9) | +7,15% | 40,2% |
+| **TURUN** ≤ −8% (kontrol arah) | 14.325 | **−5,91%** (−10,4) | −6,42% (−11,5) | −0,30% | 39,8% |
+| \|gerakan\| ≥ 8% (tanpa arah) | 44.817 | +1,28% (+4,7) | −3,34% (−32,3) | +3,72% | 40,0% |
+| naik ≥ 8% & tembus high20 | 15.351 | +5,04% (+8,8) | −0,74% (−1,8) | +9,83% | 42,9% |
+| naik ≥ 8% tapi TIDAK tembus | 26.391 | +0,93% (+3,1) | −3,19% (−19,3) | +4,38% | 38,1% |
+
+Arah **memang** informatif (kelompok turun ≥ 8% jelas negatif), tetapi kelompok **naik** yang
+tipikal tetap tertinggal dari kelasnya: median-nya −3,13%. Jadi angka besar pada momentum datang
+dari ekor kanan (segelintir yang melesat), dan menembus high20 memperbaiki duduk perkaranya
+tanpa menghapusnya. Tindak lanjut yang benar untuk kriteria EKOR/RAPUH sudah dicatat di
+`robust_audit.py`: **(1)** tulis apa adanya bahwa angkanya rata-rata-tertarik-ekor, **(2)** uji
+ulang dengan pembanding lebih ketat (ukuran/kapitalisasi yang sama, bukan sekelas likuiditas),
+**(3)** jangan mengutak-atik ambang sampai lolos di ukuran tahan-outlier — itu bentuk pencarian
+pola di masa lalu yang paling mudah tidak disadari.
+
+## 12. Keterbatasan yang harus dibaca bersama hasil di atas
 
 * **Survivorship bias**: panel hanya memuat emiten yang masih ada di cache; emiten delisting tidak
   ikut, jadi semua angka cenderung terlalu optimistis.
@@ -367,8 +443,10 @@ dinyalakan.
   dengan menarik FY yang lebih lama (`--summary --export`, 0 kuota) bila laporan lamanya tersedia.
 * **Dua ukuran untuk satu aturan.** Di sampel besar, rata-rata return ditarik oleh beberapa saham
   ekstrem, jadi aturan fundamental diukur dengan rata-rata DAN ukuran tahan-outlier; yang berbeda
-  tanda tidak dipasang. Aturan lama (yang tidak fundamental) belum diperiksa dengan cara ini —
-  itu pekerjaan lanjutan, dan arahnya bisa membalik beberapa kesimpulan lama.
+  tanda tidak dipasang. Kriteria lama sudah diperiksa dengan cara ini (§11): sebagian besar
+  berputusan **EKOR/RAPUH** — rata-ratanya positif tetapi tipikalnya tidak, jadi angka lama di
+  dokumen ini harus dibaca sebagai "rata-rata yang ditarik ekor" sampai diukur ulang dengan
+  pembanding yang lebih ketat.
 * **Harga buku vs harga eksekusi**: angka alpha diukur dari harga tutup hari sinyal. Untuk
   pemakaian harian, satu-satunya cara mendapatkannya adalah memindai sebelum bursa tutup
   (`/api/screener/preclose`); membeli di celah buka sesi berikutnya menghapus alpanya.

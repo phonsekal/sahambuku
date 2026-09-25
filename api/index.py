@@ -2937,12 +2937,16 @@ def _fund_row(ticker: str) -> Optional[dict]:
     return (store.get("codes") or {}).get(ticker.upper().replace(".JK", "").strip())
 
 
-def fundamental_value_info(df: pd.DataFrame, ticker: str) -> dict:
-    """P/B (dan P/E, ROE, pertumbuhan) dari laporan tahunan + HARGA LIVE saat ini.
+def fundamental_value_info(df: pd.DataFrame, ticker: str,
+                           price: Optional[float] = None) -> dict:
+    """P/B (dan P/E, ROE, pertumbuhan) dari laporan tahunan + HARGA saat ini.
 
     Semua angka dikembalikan apa adanya termasuk yang kosong: pemanggil harus tahu
     bedanya "murah" dan "tidak bisa dinilai" (mis. ekuitas negatif). Karena itu
     ekuitas <= 0 tidak dijadikan P/B kecil, melainkan None + alasan.
+
+    price dipakai bila pemanggil sudah punya harga yang lebih baru (mis. kutipan live
+    di tab Analisis); kalau None, harga diambil dari bar terakhir df.
     """
     store = load_fundamentals()
     if not store:
@@ -2954,7 +2958,7 @@ def fundamental_value_info(df: pd.DataFrame, ticker: str) -> dict:
         return {"available": False,
                 "reason": (f"{ticker.upper().replace('.JK', '')} belum ada di snapshot laporan "
                            "tahunan (emiten baru / laporan belum ditarik).")}
-    close = float(df["Close"].astype(float).iloc[-1])
+    close = (float(price) if price else float(df["Close"].astype(float).iloc[-1]))
     shares = rec.get("shares")
     equity = rec.get("equity")
     ni = rec.get("net_income")
@@ -8071,6 +8075,12 @@ def _analyze_core(ticker: str, period: str, risk_amount: float,
         # Peringkat RS di sini TIDAK dihitung (butuh pembanding lintas saham); perhatikan
         # `rs_known` dan `note`-nya, jangan dibaca sebagai "8 syarat lolos".
         "stage2": stage2_info(df),
+        # NILAI BUKU dari snapshot laporan tahunan yang tersimpan di server
+        # (api/fundamentals.json) + harga terakhir. Ini SUMBER BERBEDA dari
+        # "fundamentals" di bawah (FMP/Yahoo) dan tidak memakai kuota API, jadi selalu
+        # dihitung — supaya tab Analisis menampilkan P/B & ROE yang sama dengan yang
+        # dipakai kriteria screener "murah", tanpa menunggu tombol Fundamental diklik.
+        "value_info": fundamental_value_info(df, ticker, last_price),
         "fundamentals": (None if fund_level == "off"
                          else fetch_fundamentals(ticker, last_price,
                                                  light=fund_level == "ringkas")),
@@ -9277,6 +9287,18 @@ def screener(
     mencetak rekor baru). Kriteria ini tidak memakai filter regime karena memang
     dirancang untuk pasar bearish; rs_bypass=True memakai logika yang sama untuk
     kriteria swing/buy/koreksi.
+    REVISI UKURAN (audit 2020-2026, research/robust_audit.py): seluruh kriteria lama
+    diukur ulang dengan ukuran TAHAN-OUTLIER (selisih MEDIAN per tanggal lawan median
+    populasi dasar), bukan hanya rata-rata. Putusannya: launchpad SEPAKAT (rata-rata
+    +4,53% / tahan-outlier +6,87%); swing & reversal TIPIS; volsr, buy>=70, buy>=50,
+    momentumkuat, momentum>=8%/10% berputusan EKOR (rata-rata positif tapi MEDIAN
+    negatif — angkanya ditarik segelintir pemenang besar, sinyal yang tipikal justru
+    tertinggal dari kelas likuiditasnya, %untung h20 hanya ~40%); scalping, bsjp,
+    breakout RAPUH. Angka rata-rata di bawah tetap dilaporkan apa adanya (standar
+    proyek ini), tetapi untuk kriteria berputusan EKOR/RAPUH bacalah sebagai
+    "rata-rata yang ditarik ekor", bukan hasil yang tipikal. Tabel lengkap, paruh,
+    dan kontrol arah (naik>=8% vs turun<=-8% vs |gerakan|) ada di
+    research/BOOK_METHODS.md §11.
     Kriteria "breakout" mencari saham yang menembus HIGH tertinggi 20 hari
     sebelumnya (alpha20 +1,94%, t=+3,95 pada uji 5 tahun saham likuid, stabil di
     uji holdout dua paruh waktu). Filter regime juga tidak dipakai: breakout tetap

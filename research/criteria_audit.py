@@ -248,6 +248,29 @@ def block_t(excess_series: pd.Series, h: int) -> float:
     return float(blocks.mean() / (blocks.std(ddof=1) / math.sqrt(len(blocks))))
 
 
+def median_excess(S: pd.DataFrame, mask: pd.Series, h: int,
+                  base: Optional[pd.Series] = None) -> pd.Series:
+    """Deret per-tanggal UKURAN TAHAN-OUTLIER: median return-lebih kelompok DIKURANGI
+    median populasi dasar pada tanggal yang sama.
+
+    KENAPA SELISIH, BUKAN MEDIAN MENTAH: `excg{h}` sudah dikurangi RATA-RATA kelas pada
+    tanggal itu, sedangkan distribusi return saham miring ke kanan — akibatnya median
+    `excg` NEGATIF untuk hampir semua kelompok, termasuk yang jelas lebih baik daripada
+    pembandingnya. Kalau median mentah dipakai, tidak ada aturan yang bisa lolos, dan itu
+    bukan temuan tentang pasarnya melainkan cacat alat ukur (ketahuan saat mengukur aturan
+    fundamental: semua baris "median" ~−0,6% sampai −4%). Selisih terhadap dasar membuang
+    kemiringan itu karena keduanya memikulnya sama.
+
+    Dipakai bersama ukuran rata-rata: kalau keduanya BERBEDA TANDA, hasilnya ditentukan
+    beberapa saham ekstrem dan aturannya tidak boleh dipasang.
+    """
+    mask = mask.fillna(False)
+    sub = S.loc[mask].groupby("date")[f"excg{h}"].median()
+    ref_mask = base if base is not None else pd.Series(True, index=S.index)
+    ref = S.loc[ref_mask.fillna(False)].groupby("date")[f"excg{h}"].median()
+    return sub.sub(ref.reindex(sub.index))
+
+
 def holdout(excess_series: pd.Series, h: int) -> Tuple[float, float]:
     """Alpha di paruh waktu AWAL dan AKHIR — sinyal yang cuma hidup di satu paruh = noise."""
     per = excess_series.dropna()

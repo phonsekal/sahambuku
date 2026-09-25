@@ -317,20 +317,11 @@ def row_stats(S: pd.DataFrame, mask: pd.Series, h: int = 5, min_n: int = 30,
         return {"n": n, "enough": False}
     sub = S.loc[mask]
     per = sub.groupby("date")[f"excg{h}"].mean()
-    # UKURAN TAHAN OUTLIER = selisih MEDIAN per tanggal terhadap MEDIAN populasi dasar
-    # pada tanggal yang sama.
-    #
-    # Kenapa harus "selisih", bukan median mentah: `excg` sudah dikurangi RATA-RATA
-    # kelas, sedangkan distribusi return miring ke kanan — akibatnya median excg
-    # NEGATIF untuk hampir semua kelompok, termasuk kelompok yang jelas lebih baik dari
-    # pembandingnya. Kalau ukuran medián dipakai mentah, TIDAK ada aturan yang bisa
-    # lolos, dan itu bukan temuan tentang pasarnya melainkan cacat alat ukur. (Ini
-    # ketahuan pada percobaan pertama bagian F: semua baris "median" ~-0,6% s/d -4%.)
-    # Selisih median thd dasar membuang kemiringan itu karena keduanya memikulnya sama.
-    per_med = sub.groupby("date")[f"excg{h}"].median()
-    if base is not None:
-        base_med = S.loc[base].groupby("date")[f"excg{h}"].median()
-        per_med = per_med.sub(base_med.reindex(per_med.index))
+    # Ukuran tahan-outlier dipinjam dari criteria_audit.median_excess supaya definisinya
+    # hanya SATU untuk seluruh riset ini (studi ini dan audit aturan lama memakai fungsi
+    # yang sama) — penjelasan kenapa harus "selisih median", bukan median mentah, ada di
+    # sana.
+    per_med = CA.median_excess(S, mask, h, base)
     ha, hb = CA.holdout(per, h)
     ha_m, hb_m = CA.holdout(per_med, h)
     nd = (S.loc[base, "date"].nunique() if base is not None else S["date"].nunique())
@@ -575,6 +566,38 @@ def main() -> int:
         ("P/B <= 1 & ROE >= 10% & likuid",
          lambda S: ((S["pb"] <= 1.0) & (S["roe"] >= 0.10)
                     & S["grade"].isin(CA.LIQUID_GRADES)), "pb"),
+        # --- TURNAROUND (Lynch hal 38) + dua kontrolnya ---------------------------------
+        # Kategori ini satu-satunya kategori buku yang hasil rata-ratanya positif di
+        # sampel penuh (+0,32%), tetapi rata-rata saja belum cukup — karena itu diukur
+        # dengan dua ukuran seperti aturan lain. Kontrolnya penting supaya "turnaround"
+        # tidak diam-diam hanya berarti "saham yang sedang bangkit dari harga jatuh":
+        # rugi mengecil (masih rugi) dan laba->rugi mengukur arah sebaliknya.
+        ("Turnaround (rugi -> laba)",
+         lambda S: (S["ni_prev"] < 0) & (S["ni"] > 0), "ni_prev"),
+        ("Turnaround & likuid (CUKUP+)",
+         lambda S: ((S["ni_prev"] < 0) & (S["ni"] > 0)
+                    & S["grade"].isin(CA.LIQUID_GRADES)), "ni_prev"),
+        ("Rugi mengecil (masih rugi)",
+         lambda S: (S["ni_prev"] < 0) & (S["ni"] < 0) & (S["ni"] > S["ni_prev"]), "ni_prev"),
+        ("Laba -> rugi (kontrol negatif)",
+         lambda S: (S["ni_prev"] > 0) & (S["ni"] < 0), "ni_prev"),
+        # Apakah nilai buku menyelamatkan turnaround? Diuji, bukan diasumsikan: kalau
+        # sinyalnya memang "saham murah yang bangkit", menambahkan syarat murah harus
+        # memperbaiki kedua ukuran, bukan hanya rata-ratanya.
+        ("Turnaround & P/B <= 1",
+         lambda S: (S["ni_prev"] < 0) & (S["ni"] > 0) & (S["pb"] <= 1.0), "ni_prev"),
+        ("Turnaround & P/B <= 0,5",
+         lambda S: (S["ni_prev"] < 0) & (S["ni"] > 0) & (S["pb"] <= 0.5), "ni_prev"),
+        # --- PEMBONGKARAN: apakah yang bekerja "TRANSISINYA" atau cuma "murah + laba"? ---
+        # Tiga baris ini memisahkan keduanya. Kalau yang unggul hanya baris pertama,
+        # transisi rugi->laba memang bahan aktifnya. Kalau ketiganya mirip, label
+        # "turnaround" cuma hiasan dan yang bekerja adalah nilai buku + laba positif.
+        ("P/B <= 0,5 & laba POSITIF (tanpa transisi)",
+         lambda S: (S["pb"] <= 0.5) & (S["ni"] > 0), "ni_prev"),
+        ("P/B <= 0,5 & masih RUGI",
+         lambda S: (S["pb"] <= 0.5) & (S["ni"] < 0), "ni_prev"),
+        ("Laba -> rugi & P/B <= 0,5 (kontrol)",
+         lambda S: (S["ni_prev"] > 0) & (S["ni"] < 0) & (S["pb"] <= 0.5), "ni_prev"),
     ]
     print("  'med' = selisih MEDIAN per tanggal lawan median populasi dasar (tahan outlier).")
     print("  Sebuah aturan dipasang hanya bila LOLOS UKURAN RATA-RATA DAN tahan-outlier:")
