@@ -118,7 +118,10 @@ def pull_yfinance(tickers: List[str], period: str, chunk: int = 80,
                 got = raw
                 break
             except Exception as exc:
-                wait = 10 * (2 ** attempt)      # 10s, 20s, 40s
+                # Backoff sengaja pendek (5/10/20 dtk): potongan yang gagal karena
+                # rate-limit jarang pulih dalam hitungan detik, dan backoff panjang
+                # membuat satu run habis waktunya hanya untuk menunggu.
+                wait = 5 * (2 ** attempt)       # 5s, 10s, 20s
                 msg = str(exc)[:110]
                 print(f"    yfinance percobaan {attempt + 1} gagal ({msg}) — tunggu {wait}s")
                 time.sleep(wait)
@@ -194,7 +197,8 @@ def kraken_ohlc(pair: str, days: int = 730) -> Optional[pd.DataFrame]:
 
 
 def pull_market(market: str, limit: Optional[int], period: str, days: int,
-                top: int, chunk: int, force: bool = False) -> None:
+                top: int, chunk: int, force: bool = False,
+                sweep_max: int = 60) -> None:
     """Tarik satu pasar, simpan per potongan, lalu gabungkan menjadi panel panjang."""
     pdir = _parts_dir(market)
     # code = nama yang DIPAKAI di panel (BTC, AAPL); yahoo = simbol yang diunduh
@@ -256,18 +260,22 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
     covered = _covered_codes(pdir)
     missing = [t for t in tickers if t not in covered]
     if missing:
-        print(f"  SWEEP: {len(missing)} ticker belum dapat — dicoba ulang pelan-pelan")
+        limit_groups = max(0, sweep_max)
+        print(f"  SWEEP: {len(missing)} ticker belum dapat — paling banyak "
+              f"{limit_groups * 15} dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)")
         for i, group in enumerate(_chunks(missing, 15)):
+            if i >= limit_groups:
+                break
             sp = os.path.join(pdir, f"sweep_{i:03d}.pkl")
             if os.path.exists(sp) and not force:
                 continue
             dl = [code_to_yahoo.get(t, t) for t in group]
-            frames = pull_yfinance(dl, period, chunk=len(dl), retries=2)
+            frames = pull_yfinance(dl, period, chunk=len(dl), retries=1)
             frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
             if frames:
                 with open(sp, "wb") as fh:
                     pickle.dump({"frames": frames, "period": period}, fh)
-            time.sleep(3)
+            time.sleep(2)
         print(f"  SWEEP selesai — total dapat {len(_covered_codes(pdir))} ticker")
 
     merge_parts(market)
@@ -319,13 +327,18 @@ def main() -> int:
                     help="ticker per potongan (lebih besar = lebih sedikit permintaan = "
                          "lebih jarang ditolak)")
     ap.add_argument("--force", action="store_true", help="timpa checkpoint yang ada")
+    ap.add_argument("--sweep-max", type=int, default=60,
+                    help="batas kelompok (x15 ticker) yang dicoba ulang di SWEEP; "
+                         "0 = tanpa sweep. Dibuat berbatas supaya satu run tidak "
+                         "menghabiskan waktu hanya untuk menunggu rate-limit")
     ap.add_argument("--merge", action="store_true", help="hanya gabungkan checkpoint")
     args = ap.parse_args()
     if args.merge:
         merge_parts(args.market)
     else:
         pull_market(args.market, args.limit, args.period, args.days,
-                    args.top, args.chunk, force=args.force)
+                    args.top, args.chunk, force=args.force,
+                    sweep_max=args.sweep_max)
     return 0
 
 
