@@ -1,21 +1,26 @@
 name: Data & Ukur Pasar AS + Crypto
 
 # KENAPA CRON INI ADA DI LUAR VERCEL:
-# Screener IDX dilayani dari daftar + kuota IDX Edge, tetapi untuk AS & crypto tidak
-# ada sumber seperti itu: setiap ticker = satu panggilan jaringan. Vercel tidak boleh
-# dipakai untuk itu — function-nya berbatas waktu 10-60 detik dan Yahoo membatasi IP
-# datacenter (di mesin pengembang saja sudah `YFRateLimitError`). Jadi penarikan
-# OHLCV massal dijalankan di runner GitHub Actions (tanpa batas durasi 10 menit dan
-# IP-nya tidak diblokir), hasil ukurnya ditulis ke berkas laporan yang di-commit.
+# Screener IDX dilayani dari daftar emiten + kuota IDX Edge, tetapi untuk AS & crypto
+# tidak ada sumber seperti itu: setiap ticker = satu panggilan jaringan. Vercel tidak
+# boleh dipakai untuk itu — function-nya berbatas 10-60 detik dan Yahoo membatasi IP
+# datacenter. Jadi penarikan OHLCV massal dijalankan di runner GitHub Actions, dan
+# hasil ukurnya ditulis ke berkas laporan yang di-commit.
 #
-# TAHAP INI ADALAH TAHAP UKUR (sesuai keputusan proyek: "ukur dulu, baru bangun
-# menu"). Yang diproduksi adalah TABEL HASIL, bukan menu aplikasi. Menu/screener
-# hanya dipasang untuk aturan yang lolos DUA ukuran (rata-rata + tahan-outlier).
+# TAHAP INI ADALAH TAHAP UKUR (sesuai keputusan proyek: "ukur dulu, baru bangun menu").
+# Yang diproduksi adalah TABEL HASIL, bukan menu aplikasi.
 #
-# TAHAN GAGAL: pull.py menyimpan checkpoint per potongan di .cache, jadi bila
-# penarikan terputus (rate-limit di ticker ke-N) jalankan ulang dan ia melanjutkan.
-# Karena .cache tidak masuk repo, setiap run memulai dari nol — itu disengaja agar
-# tidak ada data basi yang dianggap baru.
+# RATE LIMIT ITU NYATA DAN SUDAH TERUKUR: pada percobaan pertama, hanya ~23 dari 99
+# potongan yang berhasil (1.339 dari 5.896 ticker). Tiga penangkalnya:
+#   1. potongan BESAR (chunk 250 -> ~24 permintaan, bukan 99);
+#   2. SWEEP — ticker yang belum dapat dicoba ulang dalam kelompok kecil dgn jeda;
+#   3. CACHE checkpoint antar-run (actions/cache) supaya run berikutnya MELANJUTKAN,
+#      bukan mengulang dari nol. Karena itu cakupan bertambah tiap minggu.
+#
+# TOLERANSI GAGAL: setiap pasar berdiri sendiri (continue-on-error) dan langkah
+# penyimpanan laporan berjalan `if: always()`, sehingga kegagalan satu pasar tidak
+# lagi menghapus laporan pasar yang sudah berhasil — itu yang terjadi di percobaan
+# pertama, ketika jalur crypto gagal dan laporan AS ikut hilang dari commit.
 on:
   schedule:
     - cron: "0 22 * * 0"        # Minggu 22:00 UTC (Senin 05:00 WIB), setelah bursa AS tutup
@@ -42,7 +47,7 @@ permissions:
 jobs:
   tarik-dan-ukur:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300
     steps:
       - uses: actions/checkout@v4
 
@@ -55,6 +60,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      # Cache checkpoint data harga antar-run: inilah yang membuat cakupan
+      # bertambah dari minggu ke minggu meski Yahoo membatasi tiap run.
+      - name: Pulihkan cache data pasar
+        uses: actions/cache@v4
+        with:
+          path: research/.cache/markets
+          key: markets-${{ github.run_id }}
+          restore-keys: |
+            markets-
+
       - name: Tentukan pasar
         id: m
         run: |
@@ -64,28 +79,42 @@ jobs:
 
       - name: Tarik + ukur saham AS
         if: steps.m.outputs.market == 'both' || steps.m.outputs.market == 'us'
+        continue-on-error: true
         run: |
-          set -euo pipefail
-          LIM="${{ steps.m.outputs.us_limit }}"
-          ARGS=(--market us --period 5y --chunk 60)
-          if [ -n "$LIM" ]; then ARGS+=(--limit "$LIM"); fi
+          set -uo pipefail
           mkdir -p research/markets/reports
-          python research/markets/pull.py "${ARGS[@]}" 2>&1 | tee research/markets/reports/pull_us.log
-          python research/markets/study.py --market us 2>&1 | tee research/markets/reports/report_us.txt
+          LIM="${{ steps.m.outputs.us_limit }}"
+          ARGS=(--market us --period 5y --chunk 250)
+          if [ -n "$LIM" ]; then ARGS+=(--limit "$LIM"); fi
+          python research/markets/pull.py "${ARGS[@]}" 2>&1 | tee research/markets/reports/pull_us.log || true
+          if [ -f research/.cache/markets/us_panel.pkl ]; then
+            python research/markets/study.py --market us 2>&1 | tee research/markets/reports/report_us.txt || true
+          else
+            echo "Panel AS tidak terbentuk — laporan dilewati (lihat pull_us.log)" \
+              | tee research/markets/reports/report_us.txt
+          fi
 
       - name: Tarik + ukur crypto
         if: steps.m.outputs.market == 'both' || steps.m.outputs.market == 'crypto'
+        continue-on-error: true
         run: |
-          set -euo pipefail
+          set -uo pipefail
           mkdir -p research/markets/reports
           python research/markets/pull.py --market crypto --period 5y \
             --top "${{ steps.m.outputs.crypto_top }}" --chunk 25 \
-            2>&1 | tee research/markets/reports/pull_crypto.log
-          python research/markets/study.py --market crypto 2>&1 | tee research/markets/reports/report_crypto.txt
+            2>&1 | tee research/markets/reports/pull_crypto.log || true
+          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
+            python research/markets/study.py --market crypto 2>&1 | tee research/markets/reports/report_crypto.txt || true
+          else
+            echo "Panel crypto tidak terbentuk — laporan dilewati (lihat pull_crypto.log)" \
+              | tee research/markets/reports/report_crypto.txt
+          fi
 
+      # Selalu jalan: laporan pasar yang berhasil tidak boleh hilang karena pasar lain gagal.
       - name: Simpan laporan ukur ke repo
+        if: always()
         run: |
-          set -euo pipefail
+          set -uo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add research/markets/reports
@@ -93,7 +122,7 @@ jobs:
             echo "Tidak ada perubahan laporan."
           else
             git commit -m "Perbarui laporan ukur pasar AS & crypto (otomatis)"
-            git push
+            git push || echo "Push ditolak (mungkin ada perubahan lain) — laporan tetap ada di artefak."
           fi
 
       - name: Arsipkan laporan (artefak)

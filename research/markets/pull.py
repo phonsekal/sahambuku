@@ -63,6 +63,18 @@ def _chunks(seq: List[str], n: int):
         yield seq[i:i + n]
 
 
+def _covered_codes(pdir: str) -> set:
+    """Kode yang sudah punya data di checkpoint mana pun (untuk menentukan sisa)."""
+    covered = set()
+    for f in sorted(x for x in os.listdir(pdir) if x.endswith(".pkl")):
+        try:
+            with open(os.path.join(pdir, f), "rb") as fh:
+                covered.update((pickle.load(fh).get("frames") or {}).keys())
+        except Exception:
+            continue
+    return covered
+
+
 def _clean_frame(df: pd.DataFrame) -> Optional[pd.DataFrame]:
     """Rapikan satu blok ticker dari yfinance menjadi DataFrame OHLCV standar."""
     if df is None or df.empty:
@@ -98,11 +110,16 @@ def pull_yfinance(tickers: List[str], period: str, chunk: int = 80,
                 raw = yf.download(group, period=period, interval="1d",
                                   auto_adjust=True, group_by="ticker",
                                   progress=False, threads=threads)
+                # Balasan KOSONG diperlakukan sebagai gagal, bukan sebagai "tidak ada
+                # data": saat rate-limit, yfinance mengembalikan frame kosong tanpa
+                # melempar error. Kalau itu dianggap selesai, potongan itu hilang diam-diam.
+                if raw is None or raw.empty:
+                    raise RuntimeError("balasan kosong (kemungkinan rate-limit)")
                 got = raw
                 break
             except Exception as exc:
-                wait = 5 * (2 ** attempt)
-                msg = str(exc)[:120]
+                wait = 10 * (2 ** attempt)      # 10s, 20s, 40s
+                msg = str(exc)[:110]
                 print(f"    yfinance percobaan {attempt + 1} gagal ({msg}) — tunggu {wait}s")
                 time.sleep(wait)
         if got is None or got.empty:
@@ -231,6 +248,28 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
             pickle.dump({"frames": frames, "period": period}, fh)
         print(f"  [{i}] tersimpan {len(frames)} ticker")
 
+    # SWEEP: pada penarikan besar, Yahoo sering membalas kosong di sebagian potongan
+    # (terukur: hanya ~23 dari 99 potongan yang berhasil sebelum kena batas). Ticker
+    # yang belum dapat dicoba ulang dalam kelompok KECIL dengan jeda lebih panjang —
+    # permintaan kecil lebih jarang ditolak, dan checkpoint terpisah (sweep_*) supaya
+    # tidak menimpa potongan utama.
+    covered = _covered_codes(pdir)
+    missing = [t for t in tickers if t not in covered]
+    if missing:
+        print(f"  SWEEP: {len(missing)} ticker belum dapat — dicoba ulang pelan-pelan")
+        for i, group in enumerate(_chunks(missing, 15)):
+            sp = os.path.join(pdir, f"sweep_{i:03d}.pkl")
+            if os.path.exists(sp) and not force:
+                continue
+            dl = [code_to_yahoo.get(t, t) for t in group]
+            frames = pull_yfinance(dl, period, chunk=len(dl), retries=2)
+            frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
+            if frames:
+                with open(sp, "wb") as fh:
+                    pickle.dump({"frames": frames, "period": period}, fh)
+            time.sleep(3)
+        print(f"  SWEEP selesai — total dapat {len(_covered_codes(pdir))} ticker")
+
     merge_parts(market)
 
 
@@ -245,7 +284,12 @@ def merge_parts(market: str) -> pd.DataFrame:
         with open(os.path.join(pdir, f), "rb") as fh:
             blob = pickle.load(fh)
         for tk, df in (blob.get("frames") or {}).items():
-            d = df.reset_index().rename(columns={"index": "date", "Date": "date"})
+            # Kolom tanggal dibuat EKSPLISIT dari indeks. Sebelumnya mengandalkan
+            # nama indeks ("index"/"Date") dan itu pernah gagal `KeyError: 'date'`
+            # begitu ada frame yang indeksnya bernama lain — jalur crypto di CI.
+            d = df.copy()
+            d["date"] = pd.to_datetime(d.index)
+            d = d.reset_index(drop=True)
             d.columns = [str(c).lower() for c in d.columns]
             d["code"] = tk
             long_rows.append(d[[c for c in ("code", "date", "open", "high", "low",
@@ -271,7 +315,9 @@ def main() -> int:
     ap.add_argument("--period", default="5y", help="jendela yfinance (mis. 5y, max)")
     ap.add_argument("--days", type=int, default=730, help="riwayat Kraken (crypto)")
     ap.add_argument("--top", type=int, default=100, help="jumlah crypto teratas")
-    ap.add_argument("--chunk", type=int, default=80, help="ticker per potongan")
+    ap.add_argument("--chunk", type=int, default=250,
+                    help="ticker per potongan (lebih besar = lebih sedikit permintaan = "
+                         "lebih jarang ditolak)")
     ap.add_argument("--force", action="store_true", help="timpa checkpoint yang ada")
     ap.add_argument("--merge", action="store_true", help="hanya gabungkan checkpoint")
     args = ap.parse_args()
