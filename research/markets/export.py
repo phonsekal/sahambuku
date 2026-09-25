@@ -26,9 +26,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import os
 import pickle
 import sys
+from datetime import datetime, timezone
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
@@ -40,7 +42,7 @@ CACHE_DIR = os.path.join(RESEARCH, ".cache", "markets")
 BIG_MARKETS = {"us"}
 
 
-def export_market(market: str, bars: int = 220) -> str:
+def export_market(market: str, bars: int = 260) -> str:
     if market in BIG_MARKETS:
         raise SystemExit(
             f"'{market}' terlalu besar untuk diekspor penuh ({bars} bar x ribuan ticker). "
@@ -66,15 +68,38 @@ def export_market(market: str, bars: int = 220) -> str:
                             float(getattr(r, "volume"))])
                 n += 1
     size_mb = os.path.getsize(out) / 1e6
-    print(f"[{market}] {n:,} baris · {panel['code'].nunique()} ticker · "
-          f"{panel['date'].max().date()} · {size_mb:.2f} MB -> {out}")
+    # Meta CAKUPAN: berapa ticker yang benar-benar dapat vs ukuran universe, dan
+    # berapa bar yang disimpan. Ditulis terpisah dari CSV supaya endpoint/dashboard
+    # bisa menyebut "74 dari 100" apa adanya, bukan menyiratkan cakupan penuh.
+    cov: dict = {}
+    cov_path = os.path.join(CACHE_DIR, f"{market}_universe.json")
+    if os.path.exists(cov_path):
+        try:
+            with open(cov_path, "r", encoding="utf-8") as fh:
+                cov = json.load(fh) or {}
+        except Exception:
+            cov = {}
+    meta = {
+        "market": market,
+        "bars": int(bars),
+        "as_of": str(panel["date"].max().date()),
+        "scanned": int(panel["code"].nunique()),
+        "universe": int(cov.get("universe") or panel["code"].nunique()),
+        "rows": int(n),
+        "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+    }
+    meta_path = os.path.join(API_DIR, f"market_{market}_meta.json")
+    with open(meta_path, "w", encoding="utf-8") as fh:
+        json.dump(meta, fh, ensure_ascii=False, separators=(",", ":"))
+    print(f"[{market}] {n:,} baris · {panel['code'].nunique()} dari {meta['universe']} "
+          f"ticker · {panel['date'].max().date()} · {size_mb:.2f} MB -> {out}")
     return out
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ekspor snapshot pasar ke api/")
     ap.add_argument("--market", choices=["crypto", "us"], required=True)
-    ap.add_argument("--bars", type=int, default=220)
+    ap.add_argument("--bars", type=int, default=260)
     args = ap.parse_args()
     export_market(args.market, args.bars)
     return 0

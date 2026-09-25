@@ -137,11 +137,23 @@ def main() -> int:
     for market in ("crypto", "us"):
         rep = parse_report(os.path.join(REPORTS, f"report_{market}.txt"))
         if rep:
+            # Cakupan dari export.py (mis. 74 dari 100 koin) supaya angka di dashboard
+            # tidak terbaca seolah seluruh universe sudah diukur.
+            meta_path = os.path.join(API_DIR, f"market_{market}_meta.json")
+            if os.path.exists(meta_path):
+                try:
+                    with open(meta_path, "r", encoding="utf-8") as fh:
+                        rep["coverage"] = json.load(fh)
+                except Exception:
+                    pass
             out["markets"][market] = rep
+            cov = rep.get("coverage") or {}
+            cov_txt = (f" · cakupan {cov.get('scanned')}/{cov.get('universe')} ticker"
+                       if cov else "")
             print(f"[{market}] {rep.get('tickers')} ticker · "
                   f"{len(rep['rules'])} aturan diukur · "
                   f"{len(rep['lolos_bar'])} lolos bar · "
-                  f"{len(INSTALLED.get(market, []))} dipasang")
+                  f"{len(INSTALLED.get(market, []))} dipasang{cov_txt}")
     os.makedirs(API_DIR, exist_ok=True)
     with open(args.out, "w", encoding="utf-8") as fh:
         json.dump(out, fh, ensure_ascii=False, separators=(",", ":"))

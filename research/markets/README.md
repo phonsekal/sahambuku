@@ -167,9 +167,29 @@ Permukaan produksi:
 |---|---|
 | `GET /api/markets/study` | hasil ukur kedua pasar + daftar aturan yang DIPASANG & yang lolos bar |
 | `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota); menolak pasar `us` |
-| `api/market_crypto.csv` | snapshot 220 bar × 74 koin (di-commit pipeline CI) |
-| `api/market_study.json` | ringkasan hasil ukur (di-commit pipeline CI) |
-| tab **🌐 AS & Crypto** di dashboard | tabel hasil ukur + pemindai crypto |
+| `api/market_crypto.csv` | snapshot 260 bar × 74 koin (di-commit pipeline CI) |
+| `api/market_crypto_meta.json` | cakupan: berapa ticker dapat dari berapa (mis. 74/100) |
+| `api/market_study.json` | ringkasan hasil ukur + `installed` + `age_days`/`stale` (di-commit pipeline CI) |
+| tab **🌐 AS & Crypto** di dashboard | status data, tabel hasil ukur, pemindai crypto |
+
+### Cakupan data: 74 dari 100 (disebut apa adanya)
+
+Sepuluh koin teratas yang tidak berhasil ditarik: HYPE, RAIN, USYC, BUIDL, MORPHO,
+ASTER, WLFI, U, VVV, EURSAFO, BCAP, PI — sebagian memang tidak ada di Yahoo
+("chart API" membalas kosong untuk semua varian simbol) dan sebagian gagal sementara
+karena pembatasan. Karena itu:
+
+* puller mencoba **Kraken** sebagai sumber kedua khusus di jalur SWEEP;
+* jumlah yang benar-benar dapat **ditulis ke `api/market_crypto_meta.json`** dan
+  ditampilkan di dashboard sebagai "cakupan 74/100" — supaya tidak pernah terbaca
+  sebagai cakupan penuh.
+
+### Peringatan data basi
+
+Umur snapshot dihitung **di server** (`MARKET_STALE_DAYS = 5`) dan dikirim sebagai
+`age_days` + `stale` per pasar, lalu ditampilkan sebagai peringatan di tab. Ambang 5
+hari dipilih supaya akhir pekan bursa AS (tutup 2 hari) tidak dianggap keterlambatan.
+Diuji: tanggal 24 hari lalu → `stale=True`; 1 hari → `stale=False`.
 
 ## Tahap berikutnya (belum dikerjakan)
 
@@ -177,5 +197,5 @@ Permukaan produksi:
    setelah run penuh, putuskan lagi apakah ada aturan AS yang lolos.
 2. **Snapan AS**: karena AS ~5.900 ticker, ia TIDAK boleh diekspor penuh (puluhan MB).
    Bila nanti ada aturan AS yang lolos, yang diekspor cukup *sinyal hari itu*.
-3. **Crypto lebih luas**: 74 dari 100 koin berhasil ditarik; sisanya bisa ditambah
-   dengan mengulang puller (checkpoint di-cache antar-run).
+3. **Crypto lebih luas**: cakupan kini 74/100 (lihat bagian cakupan di atas). Sisa
+   koin butuh sumber lain (Kraken/CoinGecko OHLC) karena Yahoo tidak mengenalnya.

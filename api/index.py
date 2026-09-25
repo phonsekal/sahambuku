@@ -8278,6 +8278,12 @@ def crypto_screen(criteria: str, limit: int) -> dict:
     }
 
 
+# Umur snapshot di atas ini dianggap BASI dan ditandai di API maupun dashboard.
+# Saham AS: bursa tutup akhir pekan, jadi 3 hari masih normal; crypto 24/7.
+# Dipilih 5 hari supaya hanya menandai keterlambatan pipeline, bukan akhir pekan.
+MARKET_STALE_DAYS = 5
+
+
 @app.get("/api/markets/study")
 def markets_study():
     """Hasil ukur pasar AS & crypto + daftar aturan yang benar-benar dipasang.
@@ -8285,12 +8291,30 @@ def markets_study():
     Dipisah dari hasil pemindaian: ini MENJAWAB "apakah aturannya terbukti?",
     bukan "saham apa yang lolos hari ini". Kuncinya `installed` (dipasang) dan
     `lolos_bar` (lolos syarat statistik) — dua hal berbeda yang sering dicampur.
+
+    Umur snapshot dihitung DI SINI (bukan di dashboard) supaya "data basi" hanya
+    punya satu definisi dan tidak bisa berbeda antar halaman. Tanpa ini, tabel
+    hasil ukur lama bisa terbaca seolah keadaan hari ini.
     """
     data = _read_json_cached(MARKET_STUDY_PATH)
     if not data:
         raise HTTPException(503, ("Ringkasan hasil ukur belum ada "
                                   "(api/market_study.json). Jalankan workflow markets-data."))
-    return {**data, "disclaimer": DISCLAIMER}
+    import datetime as _dt          # konvensi berkas ini: impor lokal, bukan di kepala modul
+    today = _dt.datetime.utcnow().date()
+    markets: Dict[str, dict] = {}
+    for name, val in (data.get("markets") or {}).items():
+        v = dict(val) if isinstance(val, dict) else {"value": val}
+        try:
+            d = _dt.datetime.strptime(str(v.get("as_of")), "%Y-%m-%d").date()
+            v["age_days"] = max(0, (today - d).days)
+        except (ValueError, TypeError):
+            v["age_days"] = None
+        v["stale"] = bool(v["age_days"] is not None and v["age_days"] > MARKET_STALE_DAYS)
+        markets[name] = v
+    return {**data, "markets": markets,
+            "stale_days_threshold": MARKET_STALE_DAYS,
+            "disclaimer": DISCLAIMER}
 
 
 @app.get("/api/markets/{market}/screener")

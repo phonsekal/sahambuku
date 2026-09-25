@@ -146,9 +146,14 @@ def signals_for(df: pd.DataFrame) -> Dict[str, pd.Series]:
 def build_frame(panel: pd.DataFrame, market: str) -> pd.DataFrame:
     """Satu baris per (kode, tanggal) berisi semua sinyal + return ke depan + excg."""
     rows: List[pd.DataFrame] = []
-    codes = panel["code"].unique()
-    for i, code in enumerate(codes):
-        g = panel[panel["code"] == code].sort_values("date")
+    # groupby, BUKAN `panel[panel["code"] == code]` di dalam loop. Versi lama
+    # memfilter SELURUH panel untuk tiap ticker (O(n x jumlah ticker)); di panel IDX
+    # (1,4 juta baris, ~1.000 emiten) itu masih selesai, tetapi di panel AS
+    # (7+ juta baris, ~5.900 ticker) ia tidak akan selesai dalam batas waktu apa pun.
+    # groupby membentuk grupnya SEKALI (O(n)) lalu tiap iterasi mengambil potongannya.
+    groups = panel.sort_values(["code", "date"]).groupby("code", sort=False)
+    n_codes = panel["code"].nunique()
+    for i, (code, g) in enumerate(groups):
         if len(g) < 60:
             continue
         df = g.set_index("date")
@@ -165,7 +170,7 @@ def build_frame(panel: pd.DataFrame, market: str) -> pd.DataFrame:
             d[f"fwd{h}"] = raw.clip(-WINSOR_PCT, WINSOR_PCT).to_numpy()
         rows.append(d)
         if (i + 1) % 500 == 0:
-            print(f"  ... {i + 1}/{len(codes)} ticker")
+            print(f"  ... {i + 1}/{n_codes} ticker")
     if not rows:
         raise SystemExit("Panel terlalu pendek untuk diukur (butuh >=60 bar/ticker).")
     S = pd.concat(rows, ignore_index=True)

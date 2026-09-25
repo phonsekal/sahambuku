@@ -29,6 +29,7 @@ Jalankan:
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import pickle
 import sys
@@ -196,24 +197,41 @@ def yahoo_daily(symbol: str, period: str = "5y", timeout: int = 25) -> Optional[
 
 
 def pull_via_yahoo(codes: List[str], period: str,
-                   code_to_yahoo: Dict[str, str], sleep: float = 0.12,
-                   retries: int = 2) -> Dict[str, pd.DataFrame]:
-    """Tarik satu-satu lewat Yahoo chart API (curl_cffi). Kunci hasil = nama panel."""
+                   code_to_yahoo: Dict[str, str], sleep: float = 0.05,
+                   retries: int = 2, workers: int = 6) -> Dict[str, pd.DataFrame]:
+    """Tarik lewat Yahoo chart API (curl_cffi) dengan beberapa worker.
+
+    KENAPA BERPARALEL: satu permintaan 5 tahun berisi ~1.250 bar dan makan ~1-2 detik.
+    Untuk ~5.900 ticker AS, sekuensial = ~3 JAM — melewati batas waktu workflow dan
+    sudah terbukti menggantung di percobaan sebelumnya. Dengan beberapa worker,
+    waktunya turun ke ~20-30 menit. Jumlah worker sengaja moderat (bawaan 6): terlalu
+    agresif memicu pembatasan, dan itu justru mematikan seluruh run.
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     out: Dict[str, pd.DataFrame] = {}
     n = len(codes)
-    for i, code in enumerate(codes):
+
+    def one(code: str):
         sym = code_to_yahoo.get(code, code)
-        df = None
         for attempt in range(retries):
             df = yahoo_daily(sym, period)
             if df is not None:
-                break
+                return code, df
             time.sleep(0.5 * (attempt + 1))
-        if df is not None:
-            out[code] = df
-        if (i + 1) % 200 == 0:
-            print(f"    yahoo: {i + 1}/{n} — dapat {len(out)}")
-        time.sleep(sleep)
+        return code, None
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as ex:
+        futs = [ex.submit(one, c) for c in codes]
+        for fut in as_completed(futs):
+            done += 1
+            code, df = fut.result()
+            if df is not None:
+                out[code] = df
+            if done % 250 == 0:
+                print(f"    yahoo: {done}/{n} — dapat {len(out)}")
+            time.sleep(sleep)      # pacing di sisi konsumen
     return out
 
 
@@ -269,7 +287,7 @@ def kraken_ohlc(pair: str, days: int = 730) -> Optional[pd.DataFrame]:
 
 def pull_market(market: str, limit: Optional[int], period: str, days: int,
                 top: int, chunk: int, force: bool = False,
-                sweep_max: int = 60, source: str = "yahoo") -> None:
+                sweep_max: int = 60, source: str = "yahoo", workers: int = 6) -> None:
     """Tarik satu pasar, simpan per potongan, lalu gabungkan menjadi panel panjang."""
     pdir = _parts_dir(market)
     # code = nama yang DIPAKAI di panel (BTC, AAPL); yahoo = simbol yang diunduh
@@ -306,7 +324,7 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
         dl = [code_to_yahoo.get(t, t) for t in group]
         if source == "yahoo":
             # Jalur utama: curl_cffi per simbol (terbukti lolos blokir datacenter).
-            frames = pull_via_yahoo(group, period, code_to_yahoo)
+            frames = pull_via_yahoo(group, period, code_to_yahoo, workers=workers)
         else:
             frames = pull_yfinance(dl, period, chunk=len(dl))
             # kembalikan kunci frame ke nama panel (BTC-USD -> BTC)
@@ -338,6 +356,15 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
     # tidak menimpa potongan utama.
     covered = _covered_codes(pdir)
     missing = [t for t in tickers if t not in covered]
+    # Simpan ukuran universe (sebelum penyaringan limit) untuk laporan cakupan.
+    try:
+        with open(os.path.join(CACHE_DIR, f"{market}_universe.json"), "w",
+                  encoding="utf-8") as fh:
+            # code_to_yahoo dibangun dari universe PENUH (sebelum --limit dipakai),
+            # jadi angkanya tidak menyesatkan saat dipakai untuk uji cepat.
+            json.dump({"universe": len(code_to_yahoo)}, fh)
+    except Exception:
+        pass
     if missing:
         limit_groups = max(0, sweep_max)
         print(f"  SWEEP: {len(missing)} ticker belum dapat — paling banyak "
@@ -349,11 +376,25 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
             if os.path.exists(sp) and not force:
                 continue
             if source == "yahoo":
-                frames = pull_via_yahoo(group, period, code_to_yahoo, sleep=0.3, retries=1)
+                frames = pull_via_yahoo(group, period, code_to_yahoo, sleep=0.1,
+                                        retries=1, workers=4)
             else:
                 dl = [code_to_yahoo.get(t, t) for t in group]
                 frames = pull_yfinance(dl, period, chunk=len(dl), retries=1)
                 frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
+            # Crypto: sebagian koin memang TIDAK ada di Yahoo (mis. HYPE, WLFI, ASTER)
+            # atau gagal sementara. Kraken dicoba sebagai sumber kedua supaya cakupan
+            # tidak berhenti di ~74/100. Kraken hanya dijalankan di SWEEP (kelompok
+            # kecil) agar laju permintaannya tetap sopan.
+            if market == "crypto" and krk_idx:
+                for sym in [t for t in group if t not in frames]:
+                    pair = U.resolve_kraken(sym, krk_idx)
+                    if not pair:
+                        continue
+                    dk = kraken_ohlc(pair, days=days)
+                    if dk is not None:
+                        frames[sym] = dk
+                        print(f"    {sym}: diisi dari Kraken ({pair})")
             if frames:
                 with open(sp, "wb") as fh:
                     pickle.dump({"frames": frames, "period": period}, fh)
@@ -389,6 +430,21 @@ def merge_parts(market: str) -> pd.DataFrame:
     panel = pd.concat(long_rows, ignore_index=True)
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
+    # Catat CAKUPAN (berapa dari berapa) supaya "74 koin" tidak pernah terbaca
+    # sebagai "100 koin". Ditulis terpisah karena yang menarik hanya tickernya.
+    try:
+        cov_path = os.path.join(CACHE_DIR, f"{market}_universe.json")
+        prev = {}
+        if os.path.exists(cov_path):
+            with open(cov_path, "r", encoding="utf-8") as fh:
+                prev = json.load(fh) or {}
+        prev.update({"scanned": int(panel["code"].nunique()),
+                     "as_of": str(panel["date"].max().date()),
+                     "rows": int(len(panel))})
+        with open(cov_path, "w", encoding="utf-8") as fh:
+            json.dump(prev, fh)
+    except Exception as exc:
+        print(f"  (gagal menulis cakupan: {exc})")
     out = _panel_path(market)
     with open(out, "wb") as fh:
         pickle.dump(panel, fh)
@@ -408,6 +464,8 @@ def main() -> int:
     ap.add_argument("--chunk", type=int, default=250,
                     help="ticker per potongan (lebih besar = lebih sedikit permintaan = "
                          "lebih jarang ditolak)")
+    ap.add_argument("--workers", type=int, default=6,
+                    help="jumlah permintaan paralel ke Yahoo chart API (bawaan 6)")
     ap.add_argument("--source", choices=["yahoo", "yfinance"], default="yahoo",
                     help="jalur penarikan: 'yahoo' (curl_cffi, tahan blokir datacenter) "
                          "atau 'yfinance' (batch)")
@@ -423,7 +481,8 @@ def main() -> int:
     else:
         pull_market(args.market, args.limit, args.period, args.days,
                     args.top, args.chunk, force=args.force,
-                    sweep_max=args.sweep_max, source=args.source)
+                    sweep_max=args.sweep_max, source=args.source,
+                    workers=args.workers)
     return 0
 
 

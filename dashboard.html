@@ -3440,14 +3440,30 @@ async function loadMarkets(force) {
   }
   const ms = d.markets || {};
   const inst = d.installed || {};
+  // Cakupan & umur data ditampilkan APA ADANYA: "74 dari 100" tidak boleh terbaca
+  // sebagai "seluruh universe", dan snapshot lama tidak boleh terbaca sebagai
+  // keadaan hari ini.
+  const covTxt = v => {
+    const c = v.coverage || {};
+    return (c.universe && c.scanned) ? ' · cakupan ' + c.scanned + '/' + c.universe : "";
+  };
+  const staleMs = Object.keys(ms).filter(k => ms[k] && ms[k].stale);
   $("#mkStatus").innerHTML = (Object.keys(ms).length ? Object.keys(ms).map(k => {
     const v = ms[k];
     return '<span class="inline-flex items-center gap-1.5 mr-4"><b class="text-slate-200">' + esc(k.toUpperCase()) +
-      '</b><span class="text-slate-500">' + esc(String(v.tickers)) + ' ticker · ' +
+      '</b><span class="text-slate-500">' + esc(String(v.tickers)) + ' ticker' + esc(covTxt(v)) + ' · ' +
       esc(String(v.rows)) + ' baris · data s/d ' + esc(String(v.as_of)) +
+      (v.age_days != null ? ' (' + esc(String(v.age_days)) + ' hari lalu)' : "") +
       ' · biaya ' + esc(String(v.cost_pct)) + '%' +
       (v.winsor_pct ? ' · return dipotong ±' + esc(String(v.winsor_pct)) + '%' : '') + '</span></span>';
-  }).join("") : '<span class="text-slate-400">Belum ada laporan ukur.</span>');
+  }).join("") + (staleMs.length
+    ? '<div class="mt-2 text-amber-300/90">⚠ <b>Data BASI:</b> snapshot ' +
+      esc(staleMs.map(x => x.toUpperCase()).join(", ")) + ' lebih tua dari ' +
+      esc(String(d.stale_days_threshold == null ? 5 : d.stale_days_threshold)) +
+      ' hari — angka di bawah keadaan LAMA, bukan keadaan hari ini. Jalankan workflow ' +
+      '<b>Data &amp; Ukur Pasar AS + Crypto</b> untuk menyegarkan.</div>'
+    : "")
+  : '<span class="text-slate-400">Belum ada laporan ukur.</span>');
 
   let h = "";
   (inst.crypto || []).length ? Object.keys(inst).forEach(m => {
@@ -3466,7 +3482,8 @@ async function loadMarkets(force) {
     const rules = v.rules || [];
     h += '<div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-4 mb-4 overflow-x-auto shadow-xl shadow-black/20">' +
       '<div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">📏 Hasil ukur ' + esc(m.toUpperCase()) +
-      ' — ' + rules.length + ' aturan diukur, ' + (v.lolos_bar || []).length + ' lolos bar</div>' +
+      ' — ' + rules.length + ' aturan diukur, ' + (v.lolos_bar || []).length + ' lolos bar' +
+      esc(covTxt(v)) + (v.stale ? ' <span class="text-amber-300">· data basi</span>' : "") + '</div>' +
       '<table class="w-full text-xs min-w-[820px]"><thead><tr class="text-[10px] uppercase text-slate-500 border-b border-slate-700/60">' +
       '<th class="text-left py-1.5">aturan</th><th class="text-right">n</th><th class="text-right">rata-rata h20</th>' +
       '<th class="text-right">tahan-outlier h20</th><th class="text-right">blok t</th><th class="text-right">net20</th>' +
