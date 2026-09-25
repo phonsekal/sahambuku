@@ -48,7 +48,26 @@ INSTALLED: Dict[str, List[dict]] = {
         {"key": "crypto_momentum", "label": "Momentum 5 hari (crypto)",
          "rule": "ret 5 hari >= +10%"},
     ],
-    "us": [],   # belum ada yang lolos bar -> sengaja kosong, bukan lupa
+    # AS: 3 aturan MEMANG lolos bar (pullback di uptrend, di atas SMA200,
+    # dekat puncak 52m), tetapi sengaja TIDAK dipasang. Alasannya ditulis di
+    # INSTALL_NOTE di bawah supaya keputusan ini bisa ditelusuri, bukan terbaca
+    # sebagai "lupa" atau "tidak ada yang lolos".
+    "us": [],
+}
+
+# Kenapa aturan yang lolos bar belum tentu dipasang. Diukur dengan bar proyek,
+# tetapi pemasangan menuntut SATU hal lagi: aturan itu bisa DISAJIKAN dan sudah
+# masuk akal secara biaya. Keduanya diperiksa di sini.
+INSTALL_NOTE: Dict[str, str] = {
+    "us": ("3 aturan lolos bar (pullback di uptrend, di atas SMA200, dekat puncak "
+           "52m) tetapi belum dipasang: yang terkuat pun hanya +0,54% rata-rata "
+           "dengan net20 +0,04% di aturan terlemah (setelah biaya 0,3% nyaris "
+           "nol), dan snapshot penuh AS (~5.800 ticker) TIDAK boleh diekspor ke "
+           "repo sehingga belum ada jalur penyajian yang terverifikasi eksekusi. "
+           "Aturan hanya dipasang bila lolos bar DAN bisa disajikan."),
+    "crypto": ("7 aturan lolos bar, 3 dipasang. Aturan tren yang lolos bar tetapi "
+               "paruh pertamanya negatif (tembus high50, tren naik + tembus high20, "
+               "puncak 52m baru) sengaja tidak dipakai."),
 }
 
 _ROW_RE = re.compile(
@@ -132,6 +151,7 @@ def main() -> int:
         "bar_note": ("Dipasang hanya bila lolos SEMUA: alpha>0, rata-rata DAN "
                      "tahan-outlier positif, blok t >= +2, net>0, kedua paruh positif."),
         "installed": INSTALLED,
+        "install_note": INSTALL_NOTE,
         "markets": {},
     }
     for market in ("crypto", "us"):

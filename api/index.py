@@ -8324,7 +8324,14 @@ def markets_screener(
                           pattern="^(momentum_breakout|breakout|momentum)$"),
     limit: int = Query(30, ge=1, le=200),
 ):
-    """Pemindai pasar di luar IDX. Saat ini hanya `crypto` yang punya aturan lolos."""
+    """Pemindai pasar di luar IDX. Saat ini hanya `crypto` yang punya aturan DIPASANG.
+
+    AS diukur penuh (5.794 ticker) dan 3 aturannya lolos bar, tetapi belum dipasang:
+    snapshot penuh AS tidak boleh diekspor ke repo, dan net20 aturan terlemah hanya
+    +0,04% setelah biaya. Karena itu `us` ditolak dengan 422, bukan diberi daftar
+    yang belum terbukti — alasannya bisa diperiksa di `install_note`
+    (`GET /api/markets/study`) dan di `research/markets/README.md`.
+    """
     if market != "crypto":
         raise HTTPException(422, (
             f"Screener pasar '{market}' belum dipasang: belum ada aturannya yang lolos "

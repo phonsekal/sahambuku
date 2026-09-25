@@ -3466,16 +3466,19 @@ async function loadMarkets(force) {
   : '<span class="text-slate-400">Belum ada laporan ukur.</span>');
 
   let h = "";
-  (inst.crypto || []).length ? Object.keys(inst).forEach(m => {
+  const notes = d.install_note || {};
+  Object.keys(inst).forEach(m => {
     const list = inst[m] || [];
+    const nRules = ((ms[m] || {}).lolos_bar || []).length;
     h += '<div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-4 mb-4">' +
       '<div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-2">✅ Aturan yang DIPASANG — ' + esc(m.toUpperCase()) + '</div>' +
       (list.length ? list.map(r => '<div class="text-xs text-slate-300 mb-1"><b class="text-emerald-300">' + esc(r.label) +
         '</b> <span class="text-slate-500">— ' + esc(r.rule) + '</span></div>').join("")
-        : '<div class="text-xs text-amber-300/90">Belum ada. Diukur, tetapi TIDAK ada aturan yang lolos bar proyek — jadi sengaja tidak dipasang.</div>') +
-      (m === "us" ? '<div class="text-[11px] text-slate-500 mt-2">Sampel AS yang ada masih sebagian (terurut abjad); angka final menunggu run penuh.</div>' : '') +
+        : '<div class="text-xs text-amber-300/90">Belum ada yang dipasang' +
+          (nRules ? ' — meski ' + nRules + ' aturan lolos bar (lihat tabel di bawah).' : ' — tidak ada aturan yang lolos bar proyek.') + '</div>') +
+      (notes[m] ? '<div class="text-[11px] text-slate-500 mt-2">' + esc(notes[m]) + '</div>' : '') +
       '</div>';
-  }) : "";
+  });
 
   Object.keys(ms).forEach(m => {
     const v = ms[m];
