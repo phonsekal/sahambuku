@@ -169,55 +169,73 @@ tahunan + market-cap IDX Edge ke cache (sekali, lalu riset 0 jaringan), dan
 market-cap terakhir yang tanggalnya <= tanggal baris. Alpha selalu diukur lawan **kelas
 likuiditas yang sama** pada tanggal yang sama.
 
-Sampel: **117 emiten** (bagian alfabetis awal universe, condong kapitalisasi kecil),
-2023-05-02 s/d 2026-09-11 untuk P/E & P/B; 558 tanggal pertumbuhan laba (2024-04-30 ke atas,
-karena butuh FY-1). P/E & P/B memakai laporan **tahunan**, bukan TTM.
+Sampel: **931 dari 989 emiten panel** (laporan seluruh pasar sudah ditarik), 1,29 juta
+saham-hari, 2023-05-02 s/d 2026-09-11 untuk P/E & P/B; 558 tanggal pertumbuhan laba
+(2024-04-30 ke atas, karena butuh FY-1). P/E & P/B memakai laporan **tahunan**, bukan TTM.
 
-**Yang TERUKUR bekerja — dan tetap bekerja setelah efek ukuran dikeluarkan** (IC peringkat
-per tanggal; "kontrol" = ukuran-dalam-kelas sudah dibuang):
+Catatan penting soal cara membaca: dengan sampel sekecil 117 emiten dulu, kesimpulannya
+BERBEDA (ROE tampak positif). Di sampel penuh, rata-rata return mudah ditarik beberapa saham
+ekstrem, sehingga **dua ukuran bisa berbeda tanda**. Karena itu setiap aturan diukur dua kali —
+rata-rata (seperti studi lain di proyek ini) dan **tahan-outlier** (selisih median per tanggal
+terhadap median populasi dasar) — dan **hanya yang lolos keduanya** yang pernah dipasang.
+
+**Yang TERUKUR bekerja** (IC peringkat per tanggal, "kontrol" = efek ukuran sudah dibuang):
 
 | faktor | IC h5 | IC h20 | kontrol | kesimpulan |
 |---|---|---|---|---|
-| P/B rendah | **−0,025** | −0,037 | −0,026 | murah (nilai buku) menang; Q5−Q1 h5 −0,28% |
-| P/E rendah | −0,035 | **−0,063** | −0,033 | konsisten dgn P/B |
-| ROE tinggi | +0,036 | +0,050 | +0,035 | kualitas menang |
-| Earnings yield tinggi | +0,035 | +0,063 | +0,033 | cermin dari P/E |
-| Ukuran (log market cap) | +0,029 | +0,039 | +0,024 | yang menang justru yang LEBIH besar |
+| P/B rendah | −0,016 | **−0,032** | −0,017 | murah (nilai buku) menang; Q1 +0,85% vs Q5 −0,36% (h20) |
+| P/E rendah | −0,026 | **−0,045** | −0,025 | konsisten dgn P/B |
+| Earnings yield tinggi | +0,026 | +0,045 | +0,025 | cermin dari P/E |
+| ROE tinggi | +0,021 | +0,028 | +0,021 | hanya tahan di ukuran PERINGKAT — di ukuran rata-rata gagal (lihat bawah) |
+| Pertumbuhan laba YoY | +0,004 | +0,006 | +0,004 | praktis nol |
+| Pertumbuhan pendapatan YoY | +0,011 | +0,020 | +0,011 | kecil, tidak konsisten dgn ukuran rata-rata |
+| Ukuran (log market cap) | +0,026 | +0,038 | +0,024 | yang menang justru yang LEBIH besar |
 
-Baris terakhir penting: karena yang menang di sampel ini yang lebih besar, hasil "murah &
-berkualitas" di atas **tidak** bisa dijelaskan sebagai efek mikro-cap.
+Baris terakhir penting: karena yang menang di sampel ini yang lebih besar, hasil "murah" di
+bawah **tidak** bisa dijelaskan sebagai efek mikro-cap.
 
-**Yang TERUKUR gagal — justru inti nasihat Lynch:**
+**Aturan siap-produksi (ambang absolut), diukur dengan DUA ukuran** — ini yang menentukan
+apa yang dipasang. Ambang ditulis sebelum diukur, bukan dicari yang paling bagus:
 
-| aturan (halaman) | hasil ukur (alpha5 lawan kelas) | putusan |
-|---|---|---|
-| Pertumbuhan laba YoY sebagai faktor | IC −0,008 (t 558 tgl) ≈ nol | tidak dipakai |
-| Pertumbuhan pendapatan YoY | IC +0,001 ≈ nol | tidak dipakai |
-| **Fast grower** (laba +≥20%) | −0,11%, blok t −10,4, **1/3 tahun** | ditolak |
-| **Fast grower + PEG < 1** (favorit Lynch) | −0,11%, **0/3 tahun** | ditolak |
-| **PEG < 1** (hal 198-199) | −0,16%, blok t −10,6, 1/3 tahun | ditolak |
-| Stalwart (besar, laba +8..20%) | −0,44%, blok t −61,2, 0/3 tahun | ditolak |
-| P/E di atas pertumbuhan (peringatan) | −0,30%, kedua paruh negatif | **searah bukunya** (satu-satunya) |
+| aturan | n | /hari | h20 rata-rata | h20 tahan-outlier | paruh (tahan-outlier) | thn+ | putusan |
+|---|---|---|---|---|---|---|---|
+| **P/B ≤ 0,5** | 133.458 | 167 | **+0,69%** (t +28,2) | **+0,43%** (t +14,9) | +0,18/+0,69 | 4/4 | **DIPAKAI** (kriteria `murah`) |
+| P/B ≤ 0,75 | 229.914 | 288 | +0,37% | +0,29% | +0,09/+0,48 | 3/4 | tidak dipasang (lebih tumpul) |
+| P/B ≤ 1,0 | 303.674 | 380 | +0,22% | +0,26% | +0,09/+0,42 | 3/4 | tidak dipasang |
+| P/B ≤ 1,5 | 401.826 | 503 | +0,16% | +0,20% | +0,05/+0,35 | 2/4 | tidak dipasang |
+| P/E ≤ 10 / ≤ 15 | 162.639 | 204 | **−0,41%** | +0,38% | +0,28/+0,49 | 2/4 | **DITOLAK** (dua ukuran berbeda tanda) |
+| ROE ≥ 15% | 120.371 | 151 | **−0,72%** | +0,20% | +0,21/+0,19 | 1/4 | **DITOLAK** (berbeda tanda) |
+| P/B ≤ 1 & ROE ≥ 10% | 56.439 | 71 | **−0,70%** | +0,57% | +0,48/+0,66 | 2/4 | **DITOLAK** (berbeda tanda) |
+| P/B ≤ 1 & ROE ≥ 15% | 21.535 | 27 | −1,13% | −0,02% | +0,29/−0,32 | 1/4 | **DITOLAK** |
+| P/B ≤ 1 & likuid (CUKUP+) | 179.623 | 225 | +0,00% | +0,22% | −0,12/+0,56 | 2/4 | **DITOLAK** (paruh awal negatif) |
 
-Soal PEG perlu jujur: kuantil PEG TERENDAH memang positif, tetapi kelompok itu isinya P/E
-rendah berpertumbuhan kecil — jadi keunggulannya milik P/E, bukan milik PEG. Tanda yang benar-
-benar disarankan buku (PEG < 1) sendiri negatif.
+**Keputusan: kriterianya nilai buku MURNI (P/B ≤ 0,5), TANPA gerbang kualitas.** Ini hasil yang
+tidak diharapkan — "murah + sehat" (P/B + ROE) adalah bentuk yang paling masuk akal secara akal
+sehat, tetapi diukur ia gagal: rata-ratanya −0,70% (lebih buruk daripada P/B sendirian) sementara
+ukuran tahan-outlier +0,57%. Dua ukuran berbeda tanda berarti hasilnya ditentukan beberapa saham
+ekstrem, dan itu bukan dasar yang cukup untuk dipasang. ROE tetap **ditampilkan sebagai konteks**
+di kolom Nilai Buku, bukan syarat — supaya angkanya tidak hilang dari tampilan.
 
-**Yang TERUKUR positif:**
+Tiga batas yang ikut ditulis di docstring kriteria & di dashboard:
+1. **Horizonnya ~1 BULAN**, bukan harian: di 5 hari hasilnya +0,15% dan paruh pertamanya masih
+   −0,01% (ukuran tahan-outlier). Bukan sinyal besok pagi.
+2. **Ter konsentrasi di saham kurang likuid**: versi "P/B ≤ 1 & kelas CUKUP+" hasilnya ~0.
+   Saham murah yang likuid TIDAK punya alpha di sampel ini.
+3. **Daftarnya panjang** (~167/hari dari 932) — ini penyisiran luas, bukan daftar beli pendek.
 
-| kategori | n | /hari | alpha5 | blok t | paruh | net5 | thn+ | putusan |
-|---|---|---|---|---|---|---|---|---|
-| **Turnaround (rugi → laba)** | 3.465 | 6,2 | **+0,66%** | +19,7 | +0,46/+0,86 | +0,97% | 3/3 | **dipertimbangkan** |
-| Slow grower (besar, laba <8%) | 2.174 | 3,9 | +0,74% | +59,3 | +0,84/+0,65 | +0,91% | 2/2 | dicatat (n kecil) |
-| Asset play (P/B kuintil-1) | 15.153 | 19,0 | +0,18% | +11,5 | +0,39/**−0,03** | +0,32% | 2/4 | gagal holdout |
-| Cyclical (PROKSI volatilitas laba) | 49.545 | 30,8 | +0,15% | +13,2 | +0,06/+0,24 | +0,26% | 5/7 | proksi terlalu luas |
+**Kategori Lynch sendiri (rata-rata, alpha 5 hari lawan kelas):** tidak satu pun lolos bar
+proyek. Fast grower −0,00% (1/3 tahun), stalwart −0,51% (0/3), slow grower −0,20% (0/3),
+turnaround +0,32% (2/3), asset play +0,17% (4/4), cyclical +0,07% (4/7). Aturan operasionalnya
+juga: PEG < 1 **−0,15%** (1/3 tahun), fast grower + PEG < 1 −0,12%, "P/E di atas pertumbuhan"
+−0,21% (satu-satunya yang searah bukunya). Asset play (P/B kuintil-1) yang positif itu memang
+konsisten dengan nilai buku — tetapi "kuintil" tidak bisa dipasang di produksi, dan itulah
+sebabnya ambang absolutnya (tabel di atas) yang dipakai.
 
-**Batas yang harus dibaca bersama angka ini**: hanya 117 emiten (bukan pasar); tidak ada data
-sektor sehingga "cyclical" cuma proksi volatilitas laba; tidak ada data dividen padahal slow
-grower Lynch bertumpu pada dividen; P/E & P/B dari laporan tahunan tanpa penyesuaian aset.
-Jadi yang bisa dikatakan: **di sampel ini, "murah + berkualitas" terukur; "tumbuh cepat" dan
-"PEG" tidak.** Itu bukan bukti untuk seluruh IDX — dan karena kategorinya juga butuh laporan
-per emiten, memakainya di produksi berarti menambah satu permintaan kuota per kandidat.
+**Batas data**: tidak ada sektor sehingga "cyclical" cuma proksi volatilitas laba; tidak ada
+data dividen padahal slow grower Lynch bertumpu pada dividen; P/E & P/B dari laporan tahunan
+tanpa penyesuaian aset. Dan biaya kuota: laporan per emiten = 2 permintaan, karena itu
+penarikan dilakukan sekali (`--export`) dan aplikasi hanya membaca `api/fundamentals.json`
+(0 permintaan saat memindai).
 
 ---
 
@@ -314,8 +332,9 @@ kode + panel dashboard supaya tidak ada yang menyangka angka itu berasal dari bu
 | Detektor VCP penuh | Minervini hal 109-118 | 258 kejadian, alpha +0,54% ≈ breakout biasa; 0 saat digabung momentum | ditolak |
 | "Harga naik + volume naik = kuat" | Biawak hal 257 | kebalikannya yang benar (+6,73% vs +1,28%) | dibalik, lalu dipakai sebagai `dry_volume` |
 | Stage-2 sebagai kriteria mandiri | Minervini hal 105-106 | alpha hanya +0,79% (59 sinyal/hari) | dipakai sebagai **penyaring**, bukan kriteria |
-| Fast grower & PEG < 1 | Lynch hal 198-199 | alpha −0,11% & −0,16%, 0-1 dari 3 tahun | ditolak (pertumbuhan laba YoY IC ≈ 0) |
-| Stalwart (besar, tumbuh sedang) | Lynch hal 38 | −0,44%, 0 dari 3 tahun | ditolak |
+| Fast grower & PEG < 1 | Lynch hal 198-199 | alpha −0,12% & −0,15%, 1-2 dari 3 tahun | ditolak (pertumbuhan laba YoY IC ≈ 0) |
+| Stalwart (besar, tumbuh sedang) | Lynch hal 38 | −0,51%, 0 dari 3 tahun | ditolak |
+| Gerbang kualitas ROE pada saham murah | Lynch (gagasan "sehat") | rata-rata −0,70% vs tahan-outlier +0,57% | ditolak (dua ukuran berbeda tanda) |
 | "Pola gap menguntungkan" | Edianto Ong Bab 20 | gap naik +0,08% (blok t +0,16) | ditolak (dihitung, tidak dipakai) |
 | Double Bottom sebagai pemicu | Edianto Ong Bab 21 | +0,45% (blok t +1,64), paruh kedua +0,06% | ditolak (ambang proyek t ≥ +2) |
 
@@ -342,10 +361,14 @@ dinyalakan.
 
 * **Survivorship bias**: panel hanya memuat emiten yang masih ada di cache; emiten delisting tidak
   ikut, jadi semua angka cenderung terlalu optimistis.
-* **Sampel fundamental** hanya **117 emiten** (bagian alfabetis awal universe, condong
-  kapitalisasi kecil) dan P/E/P/B-nya dari laporan TAHUNAN, bukan TTM. Karena itu angka di
-  §5 adalah bukti arah untuk sampel itu — jangan ditulis sebagai "rata-rata IDX". Menambah
-  emiten = menambah kuota IDX Edge, jadi ini batas yang disengaja, bukan pekerjaan yang lupa.
+* **Sampel fundamental** kini **931 dari 989 emiten** panel (laporan seluruh pasar sudah ditarik),
+  tetapi P/E & P/B-nya dari laporan TAHUNAN, bukan TTM, dan periode faktor terpanjang baru sejak
+  2023-05 (pertumbuhan laba sejak 2024-04). Jadi angka §5 berlaku untuk periode itu — perpanjang
+  dengan menarik FY yang lebih lama (`--summary --export`, 0 kuota) bila laporan lamanya tersedia.
+* **Dua ukuran untuk satu aturan.** Di sampel besar, rata-rata return ditarik oleh beberapa saham
+  ekstrem, jadi aturan fundamental diukur dengan rata-rata DAN ukuran tahan-outlier; yang berbeda
+  tanda tidak dipasang. Aturan lama (yang tidak fundamental) belum diperiksa dengan cara ini —
+  itu pekerjaan lanjutan, dan arahnya bisa membalik beberapa kesimpulan lama.
 * **Harga buku vs harga eksekusi**: angka alpha diukur dari harga tutup hari sinyal. Untuk
   pemakaian harian, satu-satunya cara mendapatkannya adalah memindai sebelum bursa tutup
   (`/api/screener/preclose`); membeli di celah buka sesi berikutnya menghapus alpanya.

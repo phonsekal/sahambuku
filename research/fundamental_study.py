@@ -20,9 +20,11 @@ Yang diuji (dan definisinya ditulis di kode ini, bukan dikutip):
 
 Kenapa hasilnya harus dibaca dengan hati-hati (batas yang disebut di laporan)
 ---------------------------------------------------------------------------
-1. Hanya **119 emiten** yang laporannya sudah ditarik ke cache (bagian alfabetis awal
-   dari universe, condong ke kapitalisasi kecil). Itu ~12% pasar, BUKAN seluruh pasar.
-   Jadi ini bukti arah, bukan rerata IDX.
+1. Cakupannya adalah **emiten yang laporannya sudah ditarik ke cache**. Setelah
+   `fundamentals_pull.py` menuntaskan pasar, itu ~928 dari 989 emiten panel — cukup
+   untuk disebut pasar. Kalau cache-nya belum lengkap, laporan bagian A akan menyebut
+   angka sebenarnya; memakai 117 emiten (kondisi cache sebelum penarikan penuh)
+   MENGHASILKAN KESIMPULAN YANG BERBEDA, jadi jumlahnya selalu dicetak, tidak diingat.
 2. Angka P/E & P/B memakai laporan **tahunan (FY)**, bukan TTM; ekuitas diambil buku
    apa adanya (tanpa penyesuaian aset tak berwujud). Pertumbuhan YoY baru bisa
    dihitung sejak FY2023 terbit.
@@ -41,6 +43,7 @@ Point-in-time (ini yang membuat angkanya bukan "lihat belakang")
 
 Jalankan:
     .venv/bin/python research/fundamental_study.py
+    .venv/bin/python research/fundamental_study.py --limit 200    # uji cepat
     .venv/bin/python research/fundamental_study.py --codes BBCA,BBRI,TLKM,ASII
 """
 from __future__ import annotations
@@ -314,13 +317,30 @@ def row_stats(S: pd.DataFrame, mask: pd.Series, h: int = 5, min_n: int = 30,
         return {"n": n, "enough": False}
     sub = S.loc[mask]
     per = sub.groupby("date")[f"excg{h}"].mean()
+    # UKURAN TAHAN OUTLIER = selisih MEDIAN per tanggal terhadap MEDIAN populasi dasar
+    # pada tanggal yang sama.
+    #
+    # Kenapa harus "selisih", bukan median mentah: `excg` sudah dikurangi RATA-RATA
+    # kelas, sedangkan distribusi return miring ke kanan — akibatnya median excg
+    # NEGATIF untuk hampir semua kelompok, termasuk kelompok yang jelas lebih baik dari
+    # pembandingnya. Kalau ukuran medián dipakai mentah, TIDAK ada aturan yang bisa
+    # lolos, dan itu bukan temuan tentang pasarnya melainkan cacat alat ukur. (Ini
+    # ketahuan pada percobaan pertama bagian F: semua baris "median" ~-0,6% s/d -4%.)
+    # Selisih median thd dasar membuang kemiringan itu karena keduanya memikulnya sama.
+    per_med = sub.groupby("date")[f"excg{h}"].median()
+    if base is not None:
+        base_med = S.loc[base].groupby("date")[f"excg{h}"].median()
+        per_med = per_med.sub(base_med.reindex(per_med.index))
     ha, hb = CA.holdout(per, h)
+    ha_m, hb_m = CA.holdout(per_med, h)
     nd = (S.loc[base, "date"].nunique() if base is not None else S["date"].nunique())
     return {
         "n": n, "enough": True, "days": int(nd),
         "per_day": n / max(1, nd),
         "alpha": float(per.mean()), "t": CA.block_t(per, h),
         "early": ha, "late": hb,
+        "alpha_med": float(per_med.mean()), "t_med": CA.block_t(per_med, h),
+        "early_med": ha_m, "late_med": hb_m,
         "net": float(sub[f"fwd{h}"].mean() - COST * 100),
         "win": float((sub[f"fwd{h}"] > COST * 100).mean() * 100),
         "years_pos": int(sum(
@@ -362,10 +382,12 @@ def quintile_spread(S: pd.DataFrame, col: str, h: int) -> Tuple[Optional[pd.Data
     d["q"] = d.groupby("date")[col].transform(
         lambda x: pd.qcut(x.rank(method="first"), 5, labels=False, duplicates="drop"))
     per_date = d.groupby(["q", "date"])[f"excg{h}"].mean().unstack(0)
+    per_med = d.groupby(["q", "date"])[f"excg{h}"].median().unstack(0)
     if per_date.shape[1] < 2:
         return None, float("nan")
     tab = pd.DataFrame({
         "alpha": per_date.mean(),
+        "median": per_med.mean(),
         "net": d.groupby("q")[f"fwd{h}"].mean() - COST * 100,
         "n": d.groupby("q").size(),
     })
@@ -381,15 +403,20 @@ def fmt_q_table(S: pd.DataFrame, col: str) -> None:
             print(f"    (tidak cukup nilai valid untuk kuantil h{h})")
             continue
         cells = "  ".join(f"Q{int(q)+1} {v:+.2f}" for q, v in tab["alpha"].items())
+        medc = "  ".join(f"Q{int(q)+1} {v:+.2f}" for q, v in tab["median"].items())
         t = CA.block_t(spread, h)
-        print(f"    h{h}: {cells}   Q5-Q1 {spread.mean():+.2f}% (blok t {t:+.2f})")
+        print(f"    h{h} rata-rata : {cells}   Q5-Q1 {spread.mean():+.2f}% (blok t {t:+.2f})")
+        print(f"    h{h} median    : {medc}")
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Uji aturan fundamental Peter Lynch di IDX")
     ap.add_argument("--codes", default="", help="subset kode (koma); kosong = semua yang ada di cache")
+    ap.add_argument("--limit", type=int, default=None, help="batasi jumlah emiten (uji cepat)")
     args = ap.parse_args()
     codes = [c.strip().upper() for c in args.codes.split(",") if c.strip()] or None
+    if codes is None and args.limit:
+        codes = sorted(load_annuals())[: args.limit]
 
     print("Membangun panel fundamental (membaca cache, 0 permintaan) ...")
     S = build(codes)
@@ -398,10 +425,14 @@ def main() -> int:
     print(f"\n{'='*118}\nA. CAKUPAN — angka di bawah ini HARUS dibaca bersama bagian ini\n{'='*118}")
     print(f"  {len(S):,} saham-hari · {S['code'].nunique()} emiten · {nd} tanggal · "
           f"{S['date'].min().date()} -> {S['date'].max().date()}")
-    print(f"  Emiten dengan laporan di cache: {S['code'].nunique()} dari "
-          f"{len(load_annuals())} — sisanya dilewati karena tidak cukup bar harga di panel")
-    print("  Sampelnya bagian alfabetis awal universe market-cap, jadi condong ke")
-    print("  kapitalisasi kecil: 'besar' di laporan ini = besar DI ANTARA sampel ini.")
+    n_panel = len(P.load_panel()["code"].unique())
+    print(f"  Emiten dengan laporan di cache: {S['code'].nunique()} (dari "
+          f"{len(load_annuals())} yang laporannya ada; {n_panel} emiten di panel harga)")
+    print("  Selisihnya = emiten yang laporannya belum ditarik / bar harganya kurang dari")
+    print("  MIN_BARS. " + ("Sampel ini sudah mencakup hampir seluruh panel." if
+          S["code"].nunique() >= 0.8 * n_panel else
+          "Sampel ini BARU SEBAGIAN pasar — perluas cache sebelum menyimpulkan "
+          "'rata-rata IDX'."))
     print(f"  Laporan tahunan yang tersedia : FY "
           f"{min(int(y) for c in load_annuals().values() for y in c)}.."
           f"{max(int(y) for c in load_annuals().values() for y in c)} "
@@ -515,8 +546,90 @@ def main() -> int:
               f"{r['early']:>+8.2f}/{r['late']:<+8.2f} {r['net']:>+7.2f} "
               f"{r['win']:>7.1f}% {r['years_pos']:>3}/{r['years']:<3}")
 
-    # ---------------------------------------------------- F. SANITY CHECK
-    print(f"\n{'='*118}\nF. SANITY CHECK — apakah angkanya masuk akal? (snapshot TERAKHIR)\n{'='*118}")
+    # ------------------------------------------- F. ATURAN SIAP PRODUKSI
+    # Bagian ini yang menentukan apa yang boleh dipasang di aplikasi. Kuantil (bagian C)
+    # bagus untuk MENGETAHUI ada tidaknya efek, tetapi tidak bisa dipasang di produksi:
+    # produksi memindai saham satu per satu dan tidak punya kuantil pasar saat itu.
+    # Karena itu di sini diukur aturan ber-AMBANG ABSOLUT (P/B ≤ 1, ROE ≥ 15%, dst) —
+    # bentuk yang benar-benar bisa dieksekusi, dan satu-satunya yang dipasang.
+    print(f"\n{'='*118}\nF. ATURAN SIAP PRODUKSI (ambang absolut, bisa dipasang apa adanya)\n{'='*118}")
+    print("  Ambang ditulis SEBELUM diukur (bukan dicari yang paling bagus), lalu yang dipakai")
+    print("  adalah yang lolos: alpha positif, blok t >= +2, KEDUA paruh positif, net > 0.")
+    print("  'net20' = rata-rata absolut setelah biaya 0,3%; '%untung' = bagian baris yang")
+    print("  untung melebihi biaya. Kolom alpha tetap lawan kelas likuiditas yang sama.")
+    grid = [
+        ("P/B <= 0,5", lambda S: S["pb"] <= 0.5, "pb"),
+        ("P/B <= 0,75", lambda S: S["pb"] <= 0.75, "pb"),
+        ("P/B <= 1,0", lambda S: S["pb"] <= 1.0, "pb"),
+        ("P/B <= 1,5", lambda S: S["pb"] <= 1.5, "pb"),
+        ("P/E <= 10", lambda S: S["pe"] <= 10.0, "pe"),
+        ("P/E <= 15", lambda S: S["pe"] <= 15.0, "pe"),
+        ("ROE >= 15%", lambda S: S["roe"] >= 0.15, "roe"),
+        ("ROE >= 20%", lambda S: S["roe"] >= 0.20, "roe"),
+        ("P/B <= 1 & ROE >= 10%", lambda S: (S["pb"] <= 1.0) & (S["roe"] >= 0.10), "pb"),
+        ("P/B <= 1 & ROE >= 15%", lambda S: (S["pb"] <= 1.0) & (S["roe"] >= 0.15), "pb"),
+        ("P/B <= 1,5 & ROE >= 15%", lambda S: (S["pb"] <= 1.5) & (S["roe"] >= 0.15), "pb"),
+        ("P/E <= 10 & ROE >= 15%", lambda S: (S["pe"] <= 10.0) & (S["roe"] >= 0.15), "pe"),
+        ("P/B <= 1 & likuid (CUKUP+)",
+         lambda S: (S["pb"] <= 1.0) & S["grade"].isin(CA.LIQUID_GRADES), "pb"),
+        ("P/B <= 1 & ROE >= 10% & likuid",
+         lambda S: ((S["pb"] <= 1.0) & (S["roe"] >= 0.10)
+                    & S["grade"].isin(CA.LIQUID_GRADES)), "pb"),
+    ]
+    print("  'med' = selisih MEDIAN per tanggal lawan median populasi dasar (tahan outlier).")
+    print("  Sebuah aturan dipasang hanya bila LOLOS UKURAN RATA-RATA DAN tahan-outlier:")
+    print("  kalau keduanya berbeda tanda, artinya hasilnya bergantung pada beberapa saham")
+    print("  ekstrem — dan itu bukan dasar yang cukup untuk dipasang di aplikasi.")
+    print(f"  {'aturan':<34} {'n':>8} {'/hari':>6} {'a5 rata':>8} {'a5 med':>7} {'a5 t':>6} "
+          f"{'a20 rata':>9} {'a20 med':>8} {'t med':>7} {'paruh20 med':>17} {'net20':>7} "
+          f"{'thn+':>7} {'lolos':>6}")
+    candidates: List[Tuple[str, Dict, Dict]] = []
+    for label, fn, bcol in grid:
+        base = S[bcol].notna()
+        try:
+            mask = fn(S).fillna(False)
+        except Exception:
+            continue
+        r5 = row_stats(S, mask, h=5, base=base)
+        r20 = row_stats(S, mask, h=20, base=base)
+        if not r20["enough"] or not r5.get("enough"):
+            print(f"  {label:<34} {r20['n']:>8,}  (sampel < 30 — tidak disimpulkan)")
+            continue
+        med20 = (r20["alpha_med"] > 0 and r20["t_med"] >= 2 and r20["early_med"] > 0
+                 and r20["late_med"] > 0)
+        med5 = (r5["alpha_med"] > 0 and r5["t_med"] >= 2
+                and r5["early_med"] > 0 and r5["late_med"] > 0)
+        mean20 = (r20["alpha"] > 0 and r20["t"] >= 2 and r20["early"] > 0
+                  and r20["late"] > 0 and r20["net"] > 0)
+        mean5 = (r5["alpha"] > 0 and r5["t"] >= 2 and r5["early"] > 0 and r5["late"] > 0)
+        marks = (("t20" if mean20 else "-") + ("o20" if med20 else "-")
+                 + ("t5" if mean5 else "-") + ("o5" if med5 else "-"))
+        if mean20 and med20 and mean5 and med5:
+            marks += "  <== LOLOS"
+        print(f"  {label:<34} {r20['n']:>8,} {r20['per_day']:>6.1f} "
+              f"{r5['alpha']:>+8.2f} {r5['alpha_med']:>+7.2f} {r5['t_med']:>+6.1f} "
+              f"{r20['alpha']:>+9.2f} {r20['alpha_med']:>+8.2f} {r20['t_med']:>+7.1f} "
+              f"{r20['early_med']:>+8.2f}/{r20['late_med']:<+8.2f} {r20['net']:>+7.2f} "
+              f"{r20['years_pos']:>3}/{r20['years']:<3} {marks}")
+        if mean20 and med20:
+            candidates.append((label, r5, r20))
+
+    if candidates:
+        print("\n  RINCI KANDIDAT (yang lolos kedua ukuran di h20) — supaya keputusannya bisa diperiksa:")
+        for label, r5, r20 in candidates:
+            print(f"\n   {label} · {r20['n']:,} baris · {r20['per_day']:.1f}/hari · net20 {r20['net']:+.2f}% "
+                  f"· untung {r20['win']:.1f}% · thn+ {r20['years_pos']}/{r20['years']}")
+            for tag, r in (("h5 ", r5), ("h20", r20)):
+                print(f"     {tag} rata-rata: alpha {r['alpha']:+.2f}% (t {r['t']:+.1f}, "
+                      f"paruh {r['early']:+.2f}/{r['late']:+.2f})   "
+                      f"median: {r['alpha_med']:+.2f}% (t {r['t_med']:+.1f}, "
+                      f"paruh {r['early_med']:+.2f}/{r['late_med']:+.2f})")
+    else:
+        print("\n  TIDAK ada aturan yang lolos kedua ukuran di h20 — tidak ada yang dipasang "
+              "sebagai kriteria baru.")
+
+    # ---------------------------------------------------- G. SANITY CHECK
+    print(f"\n{'='*118}\nG. SANITY CHECK — apakah angkanya masuk akal? (snapshot TERAKHIR)\n{'='*118}")
     last = S["date"].max()
     snap = S[S["date"] == last].copy()
     print(f"  Tanggal: {last.date()} · {len(snap)} emiten dengan harga di panel")
@@ -535,17 +648,19 @@ def main() -> int:
           f"(P/E & P/B 'masuk akal' bila puluhan/tidak ratusan — kalau ratusan, "
           f"pemilihan jalur EPS/ekuitas yang salah)")
 
-    # ------------------------------------------------------------- G. PUTUSAN
-    print(f"\n{'='*118}\nG. RINGKASAN & BATAS\n{'='*118}")
+    # ------------------------------------------------------------- H. PUTUSAN
+    print(f"\n{'='*118}\nH. RINGKASAN & BATAS\n{'='*118}")
     print("  Aturan dianggap TERUKUR BAIK bila: alpha lawan kelas positif, blok t >= +2,")
     print("  positif di KEDUA paruh waktu, dan tetap positif setelah biaya 0,3%.")
     print("  Catatan membaca t: di sini blok t mengukur KONSISTENSI (ribuan tanggal), jadi t besar")
     print("  pada alpha ~0,1% hanya berarti 'konsisten kecil'. Yang menentukan keputusan adalah")
     print("  BESAR alpha dibanding biaya 0,3% — bukan nilai t-nya.")
     print("  Batas yang berlaku untuk SEMUA angka di atas:")
-    print(f"   * hanya {S['code'].nunique()} emiten (subset alfabetis, condong kapitalisasi kecil)"
-          " — bukan pasar;")
-    print("     angka alpha di bagian B-D dihitung atas subset ini dan tidak boleh disebut 'rata-rata IDX';")
+    print(f"   * sampel = {S['code'].nunique()} emiten dari {n_panel} di panel harga; angka di"
+          " bagian B-F berlaku untuk emiten itu saja;")
+    print("   * rata-rata vs tahan-outlier bisa BERBEDA TANDA (contoh nyata: ROE, dan gerbang")
+    print("     kualitas pada kombinasi P/B+ROE). Bila itu terjadi, aturannya TIDAK dipasang —")
+    print("     hasil yang bergantung pada beberapa saham ekstrem bukan dasar yang cukup;")
     print("   * P/E & P/B dari laporan TAHUNAN, bukan TTM, dan tanpa penyesuaian aset;")
     print("   * tidak ada data sektor (cyclical = proksi volatilitas laba) & tanpa dividen;")
     print("   * pertumbuhan laba hanya bisa dihitung sejak FY2023 terbit -> sampel lebih pendek")
