@@ -146,11 +146,36 @@ di atas SMA200, dan dua **kontrol** (dasar 52 minggu baru, dasar 52 minggu baru)
 Dua kontrol itu penting: kalau kontrol ikut "menang", yang bekerja bukan aturannya
 melainkan arah pasar.
 
+## Yang sudah dipasang di produksi
+
+Keputusan aturan dihitung dengan bar proyek yang sama (`summary.py`), bukan diketik
+manual, dan dipisahkan dari pengukuran:
+
+* **Crypto** — 20 aturan diukur, 7 lolos bar, **3 dipasang**:
+  `crypto_momentum_breakout` (ret 5 hari ≥ +10% **dan** tembus high 20 hari),
+  `crypto_breakout` (tembus high 20 hari), `crypto_momentum` (ret 5 hari ≥ +10%).
+  Alasan memilih irisan: `mom5d≥10% + tembus high20` punya alpha h20 +5,27% rata-rata,
+  +7,18% tahan-outlier, blok t +8,8, net20 +6,46%, dan positif di KEDUA paruh
+  (+1,38/+9,15). Aturan tren yang lolos bar tetapi paruh pertamanya negatif
+  (`tembus high50`, `tren naik + tembus high20`, `puncak 52m baru`) sengaja TIDAK dipakai.
+* **Saham AS** — 20 aturan diukur, **0 lolos bar, 0 dipasang**. Permintaan screener AS
+  ditolak dengan alasan yang bisa diperiksa, bukan mengembalikan daftar yang tidak terbukti.
+
+Permukaan produksi:
+
+| bagian | gunanya |
+|---|---|
+| `GET /api/markets/study` | hasil ukur kedua pasar + daftar aturan yang DIPASANG & yang lolos bar |
+| `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota); menolak pasar `us` |
+| `api/market_crypto.csv` | snapshot 220 bar × 74 koin (di-commit pipeline CI) |
+| `api/market_study.json` | ringkasan hasil ukur (di-commit pipeline CI) |
+| tab **🌐 AS & Crypto** di dashboard | tabel hasil ukur + pemindai crypto |
+
 ## Tahap berikutnya (belum dikerjakan)
 
-1. **Baca laporan** dari workflow, lalu putuskan aturan mana yang lolos.
-2. **Endpoint** `/api/screener` yang sadar-pasar (`market=us|crypto`) tanpa
-   komponen IDX, membaca snapshot hasil CI (bukan menarik saat request).
-3. **Snapan produksi**: workflow menulis hanya *sinyal hari ini* (kecil) ke repo,
-   pola yang sama dengan `api/fundamentals.json` — bukan panel penuh.
-4. **Tab dashboard** untuk AS & crypto.
+1. **Angle AS final**: laporan AS yang ada masih dari sampel sebagian (terurut abjad);
+   setelah run penuh, putuskan lagi apakah ada aturan AS yang lolos.
+2. **Snapan AS**: karena AS ~5.900 ticker, ia TIDAK boleh diekspor penuh (puluhan MB).
+   Bila nanti ada aturan AS yang lolos, yang diekspor cukup *sinyal hari itu*.
+3. **Crypto lebih luas**: 74 dari 100 koin berhasil ditarik; sisanya bisa ditambah
+   dengan mengulang puller (checkpoint di-cache antar-run).

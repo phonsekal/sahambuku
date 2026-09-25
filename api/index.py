@@ -8119,6 +8119,196 @@ def fundamentals_only(
             "disclaimer": DISCLAIMER}
 
 
+# ---------------------------------------------------------------------------
+# PASAR LAIN (AS & CRYPTO): hasil ukur + screener crypto
+#
+# Kenapa TERPISAH dari /api/screener, bukan cabang di dalamnya: seluruh penyaring
+# IDX (regime IHSG, kelas likuiditas dalam Rupiah, Broker Summary) tidak berlaku
+# di luar IDX, dan menaruhnya sebagai cabang akan membuat dua definisi risiko
+# bercampur dalam satu fungsi besar. Aturannya juga diukur TERPISAH di
+# research/markets/study.py — jadi yang dipasang di sini harus sama persis
+# definisinya dengan yang diukur, dan hanya yang lolos bar proyek.
+#
+# Sumber data runtime: berkas snapshot hasil pipeline CI (api/market_crypto.csv +
+# api/market_study.json). TIDAK ada panggilan jaringan saat request — Vercel tidak
+# bisa memindai ratusan ticker, dan Yahoo membatasi IP datacenter.
+# ---------------------------------------------------------------------------
+_API_DIR = os.path.dirname(os.path.abspath(__file__))
+MARKET_STUDY_PATH = os.path.join(_API_DIR, "market_study.json")
+MARKET_CSV = {m: os.path.join(_API_DIR, f"market_{m}.csv") for m in ("crypto", "us")}
+_MARKET_CACHE: Dict[str, dict] = {}
+
+# Definisi sinyal di sini HARUS sama dengan yang diukur (research/markets/study.py):
+#   mom5d  = (close / close[-6] - 1) * 100 >= 10
+#   breakout20 = close > max(high 20 bar SEBELUMNYA)
+# Nama aturan di laporan ukur dipetakan ke kunci produksi supaya angkanya bisa
+# ditampilkan bersama hasilnya (bukan dua tempat berbeda yang bisa menyimpang).
+CRYPTO_CRITERIA = {
+    "momentum_breakout": "ret 5 hari >= +10% DAN close menembus high 20 hari",
+    "breakout": "close menembus high tertinggi 20 hari sebelumnya",
+    "momentum": "ret 5 hari >= +10%",
+}
+CRYPTO_RULE_NAME = {
+    "momentum_breakout": "mom5d>=10% + tembus high20",
+    "breakout": "tembus high20",
+    "momentum": "mom5d>=10%",
+}
+
+
+def _read_json_cached(path: str) -> Optional[dict]:
+    """Baca JSON dengan cache per-waktu-ubah (mtime), supaya tidak di-parse ulang."""
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _MARKET_CACHE.get(path)
+    if hit and hit.get("mtime") == mt:
+        return hit.get("data")
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+    except Exception:
+        return None
+    _MARKET_CACHE[path] = {"mtime": mt, "data": data}
+    return data
+
+
+def load_market_panel(market: str) -> Optional[pd.DataFrame]:
+    """Panel OHLCV ringkas dari api/market_<pasar>.csv (ekspor CI, 0 kuota)."""
+    path = MARKET_CSV.get(market)
+    if not path:
+        return None
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _MARKET_CACHE.get(path)
+    if hit and hit.get("mtime") == mt:
+        return hit.get("data")
+    try:
+        df = pd.read_csv(path, parse_dates=["date"])
+    except Exception:
+        return None
+    _MARKET_CACHE[path] = {"mtime": mt, "data": df}
+    return df
+
+
+def _crypto_measured(study: Optional[dict], key: str) -> Optional[dict]:
+    """Baris hasil ukur untuk sebuah aturan produksi (angka yang sama di UI & riset)."""
+    want = CRYPTO_RULE_NAME.get(key)
+    if not study or not want:
+        return None
+    for row in ((study.get("markets") or {}).get("crypto") or {}).get("rules") or []:
+        if row.get("aturan") == want:
+            return row
+    return None
+
+
+def crypto_screen(criteria: str, limit: int) -> dict:
+    """Saring crypto dari snapshot yang sudah tersimpan (tanpa jaringan, 0 kuota).
+
+    Kenapa hanya tiga aturan: ketiganya satu-satunya yang lolos bar proyek di pasar
+    ini (alpha>0, rata-rata DAN tahan-outlier positif, blok t>=+2, net>0, kedua
+    paruh positif) — lihat api/market_study.json. Aturan yang tidak lolos sengaja
+    TIDAK disediakan di sini, bukan karena lupa.
+    """
+    df = load_market_panel("crypto")
+    if df is None or df.empty:
+        raise HTTPException(503, ("Snapshot crypto belum ada di server "
+                                  "(api/market_crypto.csv). Pipeline CI yang menulisnya — "
+                                  "lihat /api/markets/study untuk status."))
+    study = _read_json_cached(MARKET_STUDY_PATH)
+    out: List[dict] = []
+    for code, g in df.groupby("code"):
+        g = g.sort_values("date")
+        if len(g) < 30:
+            continue
+        close = g["close"].astype(float).to_numpy()
+        high = g["high"].astype(float).to_numpy()
+        vol = g["volume"].astype(float).to_numpy()
+        price = float(close[-1])
+        if price <= 0:
+            continue
+        ret1 = (price / close[-2] - 1) * 100 if len(close) > 1 and close[-2] else None
+        ret5 = (price / close[-6] - 1) * 100 if len(close) > 5 and close[-6] else None
+        hi20 = float(high[-21:-1].max()) if len(high) > 21 else None
+        vma20 = float(vol[-21:-1].mean()) if len(vol) > 21 else None
+        vol_x = (float(vol[-1]) / vma20) if vma20 else None
+        hit = []
+        if ret5 is not None and ret5 >= 10.0:
+            hit.append("momentum")
+        if hi20 is not None and price > hi20:
+            hit.append("breakout")
+        if criteria == "momentum_breakout":
+            ok = "momentum" in hit and "breakout" in hit
+        else:
+            ok = criteria in hit
+        if not ok:
+            continue
+        out.append({
+            "ticker": code,
+            "date": str(g["date"].iloc[-1].date()),
+            "price": num(price, 6),
+            "ret1_pct": num(ret1, 2),
+            "ret5_pct": num(ret5, 2),
+            "high20": num(hi20, 6),
+            "dist_high20_pct": (num((price / hi20 - 1) * 100, 2) if hi20 else None),
+            "vol_vs_ma20_x": num(vol_x, 2),
+            "criteria_met": [CRYPTO_CRITERIA[c] for c in ("momentum", "breakout") if c in hit],
+        })
+    out.sort(key=lambda r: (r.get("ret5_pct") or -999), reverse=True)
+    measured = _crypto_measured(study, criteria)
+    return {
+        "market": "crypto",
+        "criteria": criteria,
+        "criteria_label": CRYPTO_CRITERIA.get(criteria),
+        "universe": "crypto top-100 (stablecoin & token wrapped dibuang)",
+        "as_of": str(df["date"].max().date()),
+        "scanned": int(df["code"].nunique()),
+        "total_matched": len(out),
+        "results": out[:limit],
+        "measurement": measured,
+        "notes": [
+            "Diukur pada 74 koin, 5 tahun (research/markets/study.py): tren & breakout "
+            "MENANG, sedangkan membeli jenuh jual (RSI<30) GAGAL (-2,01%).",
+            "Harga dari snapshot harian CI (bukan real-time); as_of di atas.",
+            "Crypto diperdagangkan 24/7 — tidak ada 'harga pra-tutup' seperti IDX.",
+        ],
+        "disclaimer": DISCLAIMER,
+    }
+
+
+@app.get("/api/markets/study")
+def markets_study():
+    """Hasil ukur pasar AS & crypto + daftar aturan yang benar-benar dipasang.
+
+    Dipisah dari hasil pemindaian: ini MENJAWAB "apakah aturannya terbukti?",
+    bukan "saham apa yang lolos hari ini". Kuncinya `installed` (dipasang) dan
+    `lolos_bar` (lolos syarat statistik) — dua hal berbeda yang sering dicampur.
+    """
+    data = _read_json_cached(MARKET_STUDY_PATH)
+    if not data:
+        raise HTTPException(503, ("Ringkasan hasil ukur belum ada "
+                                  "(api/market_study.json). Jalankan workflow markets-data."))
+    return {**data, "disclaimer": DISCLAIMER}
+
+
+@app.get("/api/markets/{market}/screener")
+def markets_screener(
+    market: str,
+    criteria: str = Query("momentum_breakout",
+                          pattern="^(momentum_breakout|breakout|momentum)$"),
+    limit: int = Query(30, ge=1, le=200),
+):
+    """Pemindai pasar di luar IDX. Saat ini hanya `crypto` yang punya aturan lolos."""
+    if market != "crypto":
+        raise HTTPException(422, (
+            f"Screener pasar '{market}' belum dipasang: belum ada aturannya yang lolos "
+            "bar proyek (alpha>0, rata-rata & tahan-outlier positif, blok t>=+2, net>0, "
+            "kedua paruh positif). Lihat /api/markets/study untuk angkanya."))
+    return crypto_screen(criteria, limit)
+
+
 @app.get("/api/quotes")
 def quotes(
     tickers: str = Query(..., description="Kode saham dipisah koma, maks 15. Contoh: BBCA,TLKM,BBRI"),

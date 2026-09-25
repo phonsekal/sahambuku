@@ -110,6 +110,24 @@ jobs:
               | tee research/markets/reports/report_crypto.txt
           fi
 
+      # Ekspor yang dibutuhkan runtime: snapshot harga ringkas (hanya pasar yang
+      # memang dipasang, saat ini crypto) + ringkasan hasil ukur untuk endpoint
+      # /api/markets/study dan tab dashboard. AS sengaja TIDAK diekspor penuh
+      # (puluhan MB) dan belum punya aturan yang lolos.
+      - name: Ekspor snapshot + ringkasan ukur
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
+            # 220 bar = cukup untuk SMA200 & indikator yang dipakai, tetapi tetap
+            # kecil (<1 MB) supaya repo tidak membengkak karena snapshot mingguan.
+            python research/markets/export.py --market crypto --bars 220 2>&1 | tee -a research/markets/reports/export.log || true
+          else
+            echo "Panel crypto tidak ada — ekspor dilewati" | tee -a research/markets/reports/export.log
+          fi
+          python research/markets/summary.py 2>&1 | tee -a research/markets/reports/export.log || true
+
       # Selalu jalan: laporan pasar yang berhasil tidak boleh hilang karena pasar lain gagal.
       - name: Simpan laporan ukur ke repo
         if: always()
@@ -117,7 +135,7 @@ jobs:
           set -uo pipefail
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add research/markets/reports
+          git add research/markets/reports api/market_crypto.csv api/market_study.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan laporan."
           else
