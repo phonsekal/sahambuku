@@ -13,6 +13,9 @@ Alat dan alur kerjanya ada di folder ini juga:
 | `research/books_ocr.py` | OCR halaman hasil pindai (bisa dilanjutkan per halaman) |
 | `research/book_search.py` | cari istilah **beserta nomor halaman**, teks PDF digabung dengan hasil OCR |
 | `research/book_rules_study.py` | uji aturan buku di panel harian IDX lokal (0 kuota) |
+| `research/chart_pattern_study.py` | uji pola chart bab 20-21 Edianto Ong di panel harian (0 kuota) |
+| `research/fundamentals_pull.py` | tarik fundamental IDX Edge ke cache lokal **sekali** (biaya kuota), lalu riset jadi 0 jaringan |
+| `research/fundamental_study.py` | uji aturan fundamental (Peter Lynch) dari cache, point-in-time (0 kuota) |
 
 Semua keluaran ada di `research/.cache/books/` dan tidak masuk git.
 
@@ -158,10 +161,63 @@ bukan mengantisipasi celah buka — lihat `MOMENTUM_ENTRY_RULE`).
 asset play, turnaround) hal 38; tenbagger; "beli yang Anda pahami" (hal 11); grafik per kategori
 (hal 41).
 
-**Keputusan: belum bisa dipakai.** Kategorisasi Lynch bertumpu pada **fundamental** (pertumbuhan
-laba, PEG, nilai aset) yang tidak ada di data lokal, dan aplikasi ini tidak mengambil data
-fundamental per emiten secara rutin. Memaksakannya akan menghasilkan label tanpa bukti — persis
-yang dihindari di proyek ini. Dicatat sebagai arah berikutnya bila sumber fundamental tersedia.
+**Keputusan: DIUKUR, dan sebagian besar DITOLAK.** Dulu tercatat "belum bisa dipakai" karena
+tidak ada data fundamental. Sumbernya sekarang ada: `fundamentals_pull.py` menarik laporan
+tahunan + market-cap IDX Edge ke cache (sekali, lalu riset 0 jaringan), dan
+`fundamental_study.py` mengukurnya **point-in-time**: laporan FY Y baru dipakai setelah
+**30 April Y+1** (batas pelaporan 4 bulan), dan jumlah saham beredar diambil dari snapshot
+market-cap terakhir yang tanggalnya <= tanggal baris. Alpha selalu diukur lawan **kelas
+likuiditas yang sama** pada tanggal yang sama.
+
+Sampel: **117 emiten** (bagian alfabetis awal universe, condong kapitalisasi kecil),
+2023-05-02 s/d 2026-09-11 untuk P/E & P/B; 558 tanggal pertumbuhan laba (2024-04-30 ke atas,
+karena butuh FY-1). P/E & P/B memakai laporan **tahunan**, bukan TTM.
+
+**Yang TERUKUR bekerja — dan tetap bekerja setelah efek ukuran dikeluarkan** (IC peringkat
+per tanggal; "kontrol" = ukuran-dalam-kelas sudah dibuang):
+
+| faktor | IC h5 | IC h20 | kontrol | kesimpulan |
+|---|---|---|---|---|
+| P/B rendah | **−0,025** | −0,037 | −0,026 | murah (nilai buku) menang; Q5−Q1 h5 −0,28% |
+| P/E rendah | −0,035 | **−0,063** | −0,033 | konsisten dgn P/B |
+| ROE tinggi | +0,036 | +0,050 | +0,035 | kualitas menang |
+| Earnings yield tinggi | +0,035 | +0,063 | +0,033 | cermin dari P/E |
+| Ukuran (log market cap) | +0,029 | +0,039 | +0,024 | yang menang justru yang LEBIH besar |
+
+Baris terakhir penting: karena yang menang di sampel ini yang lebih besar, hasil "murah &
+berkualitas" di atas **tidak** bisa dijelaskan sebagai efek mikro-cap.
+
+**Yang TERUKUR gagal — justru inti nasihat Lynch:**
+
+| aturan (halaman) | hasil ukur (alpha5 lawan kelas) | putusan |
+|---|---|---|
+| Pertumbuhan laba YoY sebagai faktor | IC −0,008 (t 558 tgl) ≈ nol | tidak dipakai |
+| Pertumbuhan pendapatan YoY | IC +0,001 ≈ nol | tidak dipakai |
+| **Fast grower** (laba +≥20%) | −0,11%, blok t −10,4, **1/3 tahun** | ditolak |
+| **Fast grower + PEG < 1** (favorit Lynch) | −0,11%, **0/3 tahun** | ditolak |
+| **PEG < 1** (hal 198-199) | −0,16%, blok t −10,6, 1/3 tahun | ditolak |
+| Stalwart (besar, laba +8..20%) | −0,44%, blok t −61,2, 0/3 tahun | ditolak |
+| P/E di atas pertumbuhan (peringatan) | −0,30%, kedua paruh negatif | **searah bukunya** (satu-satunya) |
+
+Soal PEG perlu jujur: kuantil PEG TERENDAH memang positif, tetapi kelompok itu isinya P/E
+rendah berpertumbuhan kecil — jadi keunggulannya milik P/E, bukan milik PEG. Tanda yang benar-
+benar disarankan buku (PEG < 1) sendiri negatif.
+
+**Yang TERUKUR positif:**
+
+| kategori | n | /hari | alpha5 | blok t | paruh | net5 | thn+ | putusan |
+|---|---|---|---|---|---|---|---|---|
+| **Turnaround (rugi → laba)** | 3.465 | 6,2 | **+0,66%** | +19,7 | +0,46/+0,86 | +0,97% | 3/3 | **dipertimbangkan** |
+| Slow grower (besar, laba <8%) | 2.174 | 3,9 | +0,74% | +59,3 | +0,84/+0,65 | +0,91% | 2/2 | dicatat (n kecil) |
+| Asset play (P/B kuintil-1) | 15.153 | 19,0 | +0,18% | +11,5 | +0,39/**−0,03** | +0,32% | 2/4 | gagal holdout |
+| Cyclical (PROKSI volatilitas laba) | 49.545 | 30,8 | +0,15% | +13,2 | +0,06/+0,24 | +0,26% | 5/7 | proksi terlalu luas |
+
+**Batas yang harus dibaca bersama angka ini**: hanya 117 emiten (bukan pasar); tidak ada data
+sektor sehingga "cyclical" cuma proksi volatilitas laba; tidak ada data dividen padahal slow
+grower Lynch bertumpu pada dividen; P/E & P/B dari laporan tahunan tanpa penyesuaian aset.
+Jadi yang bisa dikatakan: **di sampel ini, "murah + berkualitas" terukur; "tumbuh cepat" dan
+"PEG" tidak.** Itu bukan bukti untuk seluruh IDX — dan karena kategorinya juga butuh laporan
+per emiten, memakainya di produksi berarti menambah satu permintaan kuota per kandidat.
 
 ---
 
@@ -188,12 +244,36 @@ ukuran taruhan/risiko kehancuran, yang di aplikasi ini menjadi kalkulator lot be
   percentage retracement (Bab 23); Dow Theory (Bab 18); volume (Bab 19).
 * Skala arithmetic vs logarithmic (Bab 6); trend line & channel, fan principle (Bab 8-14).
 
-**Keputusan: sebagian sudah ada, sebagian tidak diukur.** Definisi "penembusan sah" sudah
-sesuai: `breakout_20_series()` membandingkan **Close** dengan high 20 bar sebelumnya, bukan
-sentuhan intraday. Pola Launch Pad dan Volume S&R (versi buku Coachinvestasi) juga sudah
-terpasang. Pola chart klasik lain (Cup & Handle, triangle, flag) **belum diukur** — pola visual
-butuh deteksi bentuk yang tidak bisa dibaca dari ringkasan harian tanpa menggambar; itu pekerjaan
-terpisah, bukan sesuatu yang boleh diklaim dari satu sesi pembacaan.
+**Keputusan: sekarang SUDAH DIUKUR, dan dipakai sebagai kriteria `pola`.** Definisi "penembusan
+sah" sudah sesuai sejak awal: `breakout_20_series()` membandingkan **Close** dengan high 20 bar
+sebelumnya, bukan sentuhan intraday. Yang dulu dicatat "belum diukur" (Cup & Handle, triangle,
+flag, wedge, H&S) sekarang diterjemahkan menjadi **aturan geometris** — puncak/dasar tiap
+sepertiga jendela + pemicu berupa penembusan harga penutupan — lalu diukur di panel penuh
+(989 emiten, 1,36 juta saham-hari) oleh `research/chart_pattern_study.py`, memakai fungsi
+produksi `chart_pattern_components()` apa adanya (satu definisi, bukan salinan).
+
+| pola | alpha5 vs kelas | blok t | paruh | net5 | n | putusan |
+|---|---|---|---|---|---|---|
+| Symmetrical Triangle | +1,86% | +3,63 | +1,95/+1,77 | +2,39% | 2.030 | **LAYAK** |
+| Falling Wedge | +1,85% | +2,71 | +1,71/+1,99 | +1,60% | 1.701 | **LAYAK** |
+| Inverse Head & Shoulders | +1,80% | +5,63 | +1,63/+1,96 | +1,64% | 1.465 | **LAYAK** |
+| Ascending Triangle | +1,73% | +4,53 | +1,41/+2,05 | +1,78% | 3.485 | **LAYAK** |
+| Flag / Pennant | +1,71% | +4,92 | +1,19/+2,22 | +2,07% | 594 | **LAYAK** |
+| Cup & Handle | +0,97% | +6,75 | +0,82/+1,12 | +1,59% | 6.288 | **LAYAK** |
+| Double Bottom (W) | +0,45% | +1,64 | +0,84/+0,06 | +0,73% | 9.489 | ditolak (t < 2) |
+| Rectangle tembus atas | +0,07% | +0,35 | +0,24/−0,09 | +0,33% | 4.087 | ditolak |
+| Gap naik (Bab 20) | +0,08% | +0,16 | +0,13/+0,04 | +1,98% | 2.840 | ditolak (klaim gap tidak terbukti) |
+| Rising Wedge | −0,09% | −0,34 | — | — | — | tidak konsisten |
+| **Descending Triangle** | **−0,68%** | −7,15 | −1,06/−0,30 | −1,03% | 6.444 | **PERINGATAN** (tidak bisa short) |
+| **Head & Shoulders** | **−1,27%** | −3,25 | −1,70/−0,85 | −0,59% | 1.442 | **PERINGATAN** |
+
+Dua pola bearish itu negatif di 1 dari 7 tahun (positif di 6 dari 7) sehingga dipakai sebagai
+label peringatan, bukan sinyal. Batas kejujuran yang disebut di kode & dashboard: ini **geometri**
+(puncak/dasar + penembusan penutupan), bukan pengenalan gambar — jadi yang terjawab adalah
+"apakah inti aturannya terukur", bukan "apakah polanya identik dengan yang terlihat mata".
+Diukur juga sebagai syarat tambahan: digabung momentum+breakout, pola TIDAK menambah
+(+2,58% Cup & Handle vs +2,90% dasar) — karena itu `pola` dipasang sebagai **kriteria tersendiri**,
+bukan penyaring pada kriteria momentum.
 
 ---
 
@@ -234,6 +314,10 @@ kode + panel dashboard supaya tidak ada yang menyangka angka itu berasal dari bu
 | Detektor VCP penuh | Minervini hal 109-118 | 258 kejadian, alpha +0,54% ≈ breakout biasa; 0 saat digabung momentum | ditolak |
 | "Harga naik + volume naik = kuat" | Biawak hal 257 | kebalikannya yang benar (+6,73% vs +1,28%) | dibalik, lalu dipakai sebagai `dry_volume` |
 | Stage-2 sebagai kriteria mandiri | Minervini hal 105-106 | alpha hanya +0,79% (59 sinyal/hari) | dipakai sebagai **penyaring**, bukan kriteria |
+| Fast grower & PEG < 1 | Lynch hal 198-199 | alpha −0,11% & −0,16%, 0-1 dari 3 tahun | ditolak (pertumbuhan laba YoY IC ≈ 0) |
+| Stalwart (besar, tumbuh sedang) | Lynch hal 38 | −0,44%, 0 dari 3 tahun | ditolak |
+| "Pola gap menguntungkan" | Edianto Ong Bab 20 | gap naik +0,08% (blok t +0,16) | ditolak (dihitung, tidak dipakai) |
+| Double Bottom sebagai pemicu | Edianto Ong Bab 21 | +0,45% (blok t +1,64), paruh kedua +0,06% | ditolak (ambang proyek t ≥ +2) |
 
 ## 10. Dua cacat produksi yang ketahuan SAAT menguji tambahan ini
 
@@ -258,6 +342,10 @@ dinyalakan.
 
 * **Survivorship bias**: panel hanya memuat emiten yang masih ada di cache; emiten delisting tidak
   ikut, jadi semua angka cenderung terlalu optimistis.
+* **Sampel fundamental** hanya **117 emiten** (bagian alfabetis awal universe, condong
+  kapitalisasi kecil) dan P/E/P/B-nya dari laporan TAHUNAN, bukan TTM. Karena itu angka di
+  §5 adalah bukti arah untuk sampel itu — jangan ditulis sebagai "rata-rata IDX". Menambah
+  emiten = menambah kuota IDX Edge, jadi ini batas yang disengaja, bukan pekerjaan yang lupa.
 * **Harga buku vs harga eksekusi**: angka alpha diukur dari harga tutup hari sinyal. Untuk
   pemakaian harian, satu-satunya cara mendapatkannya adalah memindai sebelum bursa tutup
   (`/api/screener/preclose`); membeli di celah buka sesi berikutnya menghapus alpanya.
