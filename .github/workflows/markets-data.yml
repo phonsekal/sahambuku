@@ -1,0 +1,105 @@
+name: Data & Ukur Pasar AS + Crypto
+
+# KENAPA CRON INI ADA DI LUAR VERCEL:
+# Screener IDX dilayani dari daftar + kuota IDX Edge, tetapi untuk AS & crypto tidak
+# ada sumber seperti itu: setiap ticker = satu panggilan jaringan. Vercel tidak boleh
+# dipakai untuk itu — function-nya berbatas waktu 10-60 detik dan Yahoo membatasi IP
+# datacenter (di mesin pengembang saja sudah `YFRateLimitError`). Jadi penarikan
+# OHLCV massal dijalankan di runner GitHub Actions (tanpa batas durasi 10 menit dan
+# IP-nya tidak diblokir), hasil ukurnya ditulis ke berkas laporan yang di-commit.
+#
+# TAHAP INI ADALAH TAHAP UKUR (sesuai keputusan proyek: "ukur dulu, baru bangun
+# menu"). Yang diproduksi adalah TABEL HASIL, bukan menu aplikasi. Menu/screener
+# hanya dipasang untuk aturan yang lolos DUA ukuran (rata-rata + tahan-outlier).
+#
+# TAHAN GAGAL: pull.py menyimpan checkpoint per potongan di .cache, jadi bila
+# penarikan terputus (rate-limit di ticker ke-N) jalankan ulang dan ia melanjutkan.
+# Karena .cache tidak masuk repo, setiap run memulai dari nol — itu disengaja agar
+# tidak ada data basi yang dianggap baru.
+on:
+  schedule:
+    - cron: "0 22 * * 0"        # Minggu 22:00 UTC (Senin 05:00 WIB), setelah bursa AS tutup
+  workflow_dispatch:
+    inputs:
+      market:
+        description: "Pasar yang diukur"
+        required: true
+        default: "both"
+        type: choice
+        options: ["both", "us", "crypto"]
+      us_limit:
+        description: "Batasi jumlah saham AS (kosong = seluruh pasar)"
+        required: false
+        default: ""
+      crypto_top:
+        description: "Jumlah crypto teratas"
+        required: false
+        default: "100"
+
+permissions:
+  contents: write
+
+jobs:
+  tarik-dan-ukur:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Pasang dependensi
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Tentukan pasar
+        id: m
+        run: |
+          echo "market=${{ github.event.inputs.market || 'both' }}" >> "$GITHUB_OUTPUT"
+          echo "us_limit=${{ github.event.inputs.us_limit || '' }}" >> "$GITHUB_OUTPUT"
+          echo "crypto_top=${{ github.event.inputs.crypto_top || '100' }}" >> "$GITHUB_OUTPUT"
+
+      - name: Tarik + ukur saham AS
+        if: steps.m.outputs.market == 'both' || steps.m.outputs.market == 'us'
+        run: |
+          set -euo pipefail
+          LIM="${{ steps.m.outputs.us_limit }}"
+          ARGS=(--market us --period 5y --chunk 60)
+          if [ -n "$LIM" ]; then ARGS+=(--limit "$LIM"); fi
+          mkdir -p research/markets/reports
+          python research/markets/pull.py "${ARGS[@]}" 2>&1 | tee research/markets/reports/pull_us.log
+          python research/markets/study.py --market us 2>&1 | tee research/markets/reports/report_us.txt
+
+      - name: Tarik + ukur crypto
+        if: steps.m.outputs.market == 'both' || steps.m.outputs.market == 'crypto'
+        run: |
+          set -euo pipefail
+          mkdir -p research/markets/reports
+          python research/markets/pull.py --market crypto --period 5y \
+            --top "${{ steps.m.outputs.crypto_top }}" --chunk 25 \
+            2>&1 | tee research/markets/reports/pull_crypto.log
+          python research/markets/study.py --market crypto 2>&1 | tee research/markets/reports/report_crypto.txt
+
+      - name: Simpan laporan ukur ke repo
+        run: |
+          set -euo pipefail
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add research/markets/reports
+          if git diff --cached --quiet; then
+            echo "Tidak ada perubahan laporan."
+          else
+            git commit -m "Perbarui laporan ukur pasar AS & crypto (otomatis)"
+            git push
+          fi
+
+      - name: Arsipkan laporan (artefak)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laporan-pasar-as-crypto
+          path: research/markets/reports/
+          if-no-files-found: ignore
