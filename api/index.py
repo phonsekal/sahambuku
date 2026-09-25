@@ -2883,6 +2883,137 @@ def _screener_metrics(df: pd.DataFrame) -> dict:
     return {"last": last, "day_ret": day_ret, "est_value": est_value, "vol_ratio": vol_ratio}
 
 
+# ---------------------------------------------------------------------------
+# NILAI BUKU (KRITERIA `murah`) — laporan tahunan yang sudah jadi, bukan tarikan per saham
+#
+# Kenapa berkas, bukan permintaan API saat memindai: mengambil laporan per emiten =
+# 2 permintaan kuota PER KANDIDAT. Satu pemindaian 250 emiten = ~500 permintaan dari
+# kuota harian yang dibagi dengan produksi. Jadi penarikan dilakukan sekali oleh
+# research/fundamentals_pull.py --export, dan aplikasi hanya membaca angkanya.
+#
+# Yang disimpan: ekuitas & laba TAHUNAN (tidak berubah selama setahun) + jumlah saham
+# dari snapshot terakhir. HARGA tidak disimpan — P/B dihitung dari harga live saat
+# pemindaian, supaya P/B tidak basi walau berkasnya berumur. Batas umur berkas tetap
+# dilaporkan (fundamental_info.data_age_days) supaya pemakai tahu angkanya dari kapan.
+# ---------------------------------------------------------------------------
+FUNDAMENTALS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fundamentals.json")
+MURAH_PB_MAX = 0.5          # ambang P/B yang diukur (lihat docstring kriteria "murah")
+MURAH_STALE_DAYS = 120      # di atas ini, peringatan umur data ikut dikirim ke pemakai
+_FUND_STATE: Dict[str, Any] = {"mtime": None, "codes": {}}
+
+
+def load_fundamentals() -> dict:
+    """Snapshot laporan tahunan per emiten (api/fundamentals.json).
+
+    Dimuat sekali per proses dan dimuat ulang bila berkasnya berubah. Kalau berkasnya
+    tidak ada atau rusak, kembalikan {} — kriteria `murah` lalu melaporkan "tidak
+    tersedia" apa adanya, bukan menebak P/B dari harga saja.
+    """
+    try:
+        mtime = os.path.getmtime(FUNDAMENTALS_PATH)
+    except OSError:
+        return {}
+    if _FUND_STATE["mtime"] == mtime:
+        return _FUND_STATE["codes"]
+    try:
+        with open(FUNDAMENTALS_PATH, "r", encoding="utf-8") as fh:
+            payload = json.load(fh)
+        codes = payload.get("codes") or {}
+        if not isinstance(codes, dict):
+            codes = {}
+        _FUND_STATE["codes"] = {"codes": {k.upper(): v for k, v in codes.items()
+                                          if isinstance(v, dict)},
+                                "meta": {k: v for k, v in payload.items() if k != "codes"}}
+        _FUND_STATE["mtime"] = mtime
+    except (OSError, ValueError):
+        return {}
+    return _FUND_STATE["codes"]
+
+
+def _fund_row(ticker: str) -> Optional[dict]:
+    store = load_fundamentals()
+    if not store:
+        return None
+    return (store.get("codes") or {}).get(ticker.upper().replace(".JK", "").strip())
+
+
+def fundamental_value_info(df: pd.DataFrame, ticker: str) -> dict:
+    """P/B (dan P/E, ROE, pertumbuhan) dari laporan tahunan + HARGA LIVE saat ini.
+
+    Semua angka dikembalikan apa adanya termasuk yang kosong: pemanggil harus tahu
+    bedanya "murah" dan "tidak bisa dinilai" (mis. ekuitas negatif). Karena itu
+    ekuitas <= 0 tidak dijadikan P/B kecil, melainkan None + alasan.
+    """
+    store = load_fundamentals()
+    if not store:
+        return {"available": False,
+                "reason": ("Data fundamental belum tersedia di server ini "
+                           "(api/fundamentals.json tidak terbaca).")}
+    rec = _fund_row(ticker)
+    if not rec:
+        return {"available": False,
+                "reason": (f"{ticker.upper().replace('.JK', '')} belum ada di snapshot laporan "
+                           "tahunan (emiten baru / laporan belum ditarik).")}
+    close = float(df["Close"].astype(float).iloc[-1])
+    shares = rec.get("shares")
+    equity = rec.get("equity")
+    ni = rec.get("net_income")
+    prev_ni = rec.get("prev_net_income")
+    eps = rec.get("eps")
+    pb = pb_reason = None
+    if not shares:
+        pb_reason = "jumlah saham belum ada di snapshot (snapshot market-cap terpotong)"
+    elif equity is None:
+        pb_reason = "ekuitas tidak ada di laporan (mis. bank/keuangan dengan jalur berbeda)"
+    elif equity <= 0:
+        pb_reason = f"ekuitas negatif ({equity:,.0f}) — P/B tidak bisa dihitung"
+    else:
+        pb = close * float(shares) / float(equity)
+    mcap = close * float(shares) if shares else None
+    out = {
+        "available": True,
+        "ticker": ticker.upper().replace(".JK", ""),
+        "price": num(close, 2),
+        "market_cap": num(mcap, 0),
+        "fy": rec.get("fy"),
+        "shares_date": rec.get("shares_date"),
+        "pb": num(pb, 3) if pb is not None else None,
+        "pb_max": MURAH_PB_MAX,
+        "pb_reason": pb_reason,
+        "pe": (num(close / float(eps), 2) if (eps and eps > 0) else None),
+        "roe_pct": (num(float(ni) / float(equity) * 100, 2)
+                    if (ni is not None and equity and equity > 0) else None),
+        "net_income_growth_pct": (num((float(ni) - float(prev_ni)) / abs(float(prev_ni)) * 100, 2)
+                                  if (ni is not None and prev_ni not in (None, 0)) else None),
+        "data_age_days": _fund_age_days(store),
+    }
+    # Gerbang kualitas SENGAJA tidak dipakai: diukur, "P/B <= 1 DAN ROE >= 10%"
+    # menghasilkan tanda yang berbeda antara rata-rata (-0,70%) dan ukuran tahan-outlier
+    # (+0,57%). ROE tetap DILAPORKAN sebagai konteks, bukan syarat — supaya pemakai bisa
+    # menilai sendiri dan angkanya tidak menghilang dari tampilan.
+    out["quality_gate_note"] = ("ROE & pertumbuhan ditampilkan sebagai KONTEKS saja. Gerbang "
+                               "kualitas TIDAK dipakai karena hasil ukurnya berbeda tanda "
+                               "(rata-rata -0,70% vs tahan-outlier +0,57%).")
+    if out["data_age_days"] is not None and out["data_age_days"] > MURAH_STALE_DAYS:
+        out["stale_warning"] = (f"Snapshot laporan berumur {out['data_age_days']} hari "
+                                f"(> {MURAH_STALE_DAYS}). Jalankan "
+                                f"research/fundamentals_pull.py --export untuk menyegarkan.")
+    return out
+
+
+def _fund_age_days(store: dict) -> Optional[int]:
+    """Umur snapshot saham dalam hari (dari tanggal penarikannya, bukan tanggal server)."""
+    as_of = ((store.get("meta") or {}).get("shares_as_of")) if isinstance(store, dict) else None
+    if not as_of:
+        return None
+    import datetime as _dt          # konvensi berkas ini: impor lokal, bukan di kepala modul
+    try:
+        d = _dt.datetime.strptime(str(as_of), "%Y-%m-%d").date()
+    except ValueError:
+        return None
+    return max(0, (_dt.datetime.utcnow().date() - d).days)
+
+
 def run_screener(df: pd.DataFrame, criteria: str = "all",
                  bandar_values: Optional[List[float]] = None) -> dict:
     """Kriteria preset screener Coachinvestasi (halaman awal buku).
@@ -5509,6 +5640,10 @@ def _preclose_snapshot(ticker: str) -> Optional[dict]:
 #     LIVE_BAR_OVERRIDE) sehingga fungsi sinyal PRODUKSI apa adanya yang menilai,
 #     bukan salinannya. Bedanya penting: jalur ini memerlukan riwayat harian per
 #     emiten, jadi ia memakai kuota penyedia riwayat (IDX Edge) seperti pemindaian biasa.
+# Kriteria yang didukung mode pra-tutup. `murah` SENGAJA TIDAK ada di sini: jalur
+# pra-tutup tidak mengenal P/B, sehingga permintaan itu akan jatuh ke logika MOMENTUM
+# dan hasilnya terlabel momentum — salah tanpa kelihatan salah. Pengukuran kriteria itu
+# juga close-to-close ~1 bulan, bukan harga intraday pra-tutup.
 PRECLOSE_CRITERIA = ("momentum", "momentumkuat", "breakout", "launchpad", "volsr", "pola")
 PRECLOSE_PATTERN_CRITERIA = ("breakout", "launchpad", "volsr", "pola")
 
@@ -6303,6 +6438,24 @@ def _scan_worker(tk: str, criteria: str, period: str, include_signal: bool,
         _attach_plan(pola_ok, act=str(item.get("signal") or "BUY"))
         return {"tk": tk, "skipped": False, "item": item,
                 "eligible": pola_ok, "bandar_used": bandar_used}
+
+    if criteria == "murah":
+        # NILAI BUKU (P/B <= 0,5). Bukti & tiga batasnya ada di docstring kriteria
+        # `/api/screener` dan di research/fundamental_study.py bagian F (ambang ditulis
+        # SEBELUM diukur, lalu yang lolos bar proyek dipasang — bukan cari yang terbaik).
+        # P/B dihitung dari HARGA LIVE bar ini dan ekuitas tahunan, jadi peringkatnya ikut
+        # bergerak bersama harga tanpa perlu memperbarui berkas laporan.
+        finfo = fundamental_value_info(df, tk)
+        pb = finfo.get("pb")
+        murah_ok = bool(pb is not None and pb <= MURAH_PB_MAX)
+        item["fundamental_info"] = finfo
+        item["criteria_met"] = ([f"MURAH: P/B {float(pb):.2f}"] if murah_ok else [])
+        # Horizonnya ~1 bulan; rencana aksi (SL/TP) tetap dari jalur yang sama dengan
+        # kriteria lain supaya tidak ada dua definisi risiko. Sinyalnya sendiri tetap
+        # dihitung dari harga (momentum) — kriteria ini soal NILAI, bukan soal momentum.
+        _attach_plan(murah_ok, act=str(item.get("signal") or "BUY"))
+        return {"tk": tk, "skipped": False, "item": item,
+                "eligible": murah_ok, "bandar_used": bandar_used}
 
     if criteria == "reversal":
         # ROLE REVERSAL S&R (buku Bab 1.4): resistance yang sudah ditembus kini jadi
@@ -8801,7 +8954,7 @@ def cron_alerts(request: Request, secret: str = Query("")):
 
 @app.get("/api/backtest")
 def backtest(
-    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|momentumkuat|swing|buy|all|breakout|launchpad|reversal|volsr|pola)$"),
+    criteria: str = Query("swing", pattern="^(scalping|bsjp|momentum|momentumkuat|swing|buy|all|breakout|launchpad|reversal|volsr|pola|murah)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(20, ge=1, le=100),
@@ -8991,7 +9144,7 @@ def backtest(
 
 @app.get("/api/backtest/matrix")
 def backtest_matrix(
-    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr|pola)$"),
+    criteria: str = Query("buy", pattern="^(scalping|bsjp|swing|buy|all|breakout|launchpad|reversal|volsr|pola|murah)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     years: int = Query(2, ge=1, le=5),
     limit: int = Query(15, ge=1, le=100),
@@ -9075,7 +9228,7 @@ def screener_tickers(universe: str = Query("all", pattern="^(all|liquid)$")):
 
 @app.get("/api/screener")
 def screener(
-    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|momentumkuat|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr|pola)$"),
+    criteria: str = Query("all", pattern="^(all|swing|scalping|bsjp|momentum|momentumkuat|bandar|buy|buykuat|koreksi|rs|breakout|silent|launchpad|reversal|volsr|pola|murah)$"),
     universe: str = Query("liquid", pattern="^(all|liquid)$"),
     limit: int = Query(20, ge=1, le=300),
     offset: int = Query(0, ge=0),
@@ -9292,6 +9445,44 @@ def screener(
     berhalaman, dan gabungan seluruh halaman dijamin menutup semua emiten tepat
     sekali. Sebelumnya spread=true selalu mengembalikan satu sampel dengan
     next_offset=null, sehingga pemindaian "semua saham" mentok di sebesar limit.
+    Kriteria "pola" mencari POLA CHART KLASIK (buku Edianto Ong Bab 20-21): pemicunya
+    adalah PENEMBUSAN harga PENUTUPAN dari bentuk yang sudah terbentuk sebelumnya
+    (Bab 7: "penembusan sah = harga penutupan di luar garis"), bukan sentuhan intraday.
+    Diukur di 989 emiten x 1,36 juta saham-hari atas fungsi yang SAMA dengan produksi
+    (research/chart_pattern_study.py): enam pola lolos ambang proyek ini (Symmetrical
+    Triangle +1,86% blok t +3,63; Falling Wedge +1,85% t +2,71; Inverse H&S +1,80%
+    t +5,63; Ascending Triangle +1,73% t +4,53; Flag +1,71% t +4,92; Cup & Handle +0,97%
+    t +6,75 — semuanya positif di kedua paruh dan setelah biaya 0,3%), sementara
+    Double Bottom (+0,45%, t +1,64), Rectangle (+0,07%) dan gap naik (+0,08%) DITOLAK.
+    Dua pola bearish yang terukur MENURUNKAN hasil (Head & Shoulders -1,27%, Descending
+    Triangle -0,68%, keduanya negatif di 6 dari 7 tahun) dilaporkan sebagai peringatan
+    di pattern_info.avoid — aplikasi ini tidak bisa short, jadi itu tanda MENGHINDAR.
+    Catatan penting: pola ini JALUR MASUK ALTERNATIF, bukan penyaring momentum —
+    digabung momentum+breakout hasilnya TIDAK lebih baik (+2,58% vs +2,90%).
+    Batas kejujurannya: pengukurannya GEOMETRIS (puncak/dasar tiap sepertiga jendela +
+    penembusan penutupan), bukan pengenalan gambar.
+    Kriteria "murah" mengurutkan NILAI BUKU: P/B (harga x saham beredar ÷ ekuitas
+    terakhir) <= 0,5 — diukur di ~931 emiten x 1,29 juta saham-hari
+    (research/fundamental_study.py, point-in-time: laporan FY baru dipakai setelah
+    30 April tahun berikutnya, jumlah saham dari snapshot terakhir): alpha 20 hari
+    +0,69% lawan kelas likuiditas yang sama (blok t +28,2, kedua paruh +0,68/+0,71,
+    positif 4 dari 4 tahun). Hasilnya juga diperiksa dengan ukuran tahan-outlier
+    (selisih median): +0,43% (t +14,9) — jadi bukan ekor keuntungan.
+    TIGA BATAS YANG HARUS DIBACA SEBELUM MEMAKAI:
+      (1) horizonnya ~1 BULAN, bukan harian: di 5 hari hasilnya +0,15% dan paruh
+          pertamanya masih -0,01% (ukuran tahan-outlier). Jangan dipakai sebagai
+          sinyal besok pagi.
+      (2) GERBANG KUALITAS DITOLAK. "P/B <= 1 DAN ROE >= 10%" yang terdengar lebih
+          masuk akal justru TIDAK dipakai: rata-ratanya -0,70% sementara ukuran
+          tahan-outlier +0,57% — dua ukuran berbeda tanda, artinya hasilnya
+          ditentukan beberapa saham ekstrem. ROE >= 15% sendirian juga -0,72%.
+          Karena itu kriterianya murni nilai buku, bukan "murah + sehat".
+      (3) UNGKAPANNYA TERKONSENTRASI DI SAHAM KURANG LIKUID. "P/B <= 1 dan kelas
+          CUKUP+" hasilnya ~0 (+0,00%). Saham murah yang likuid TIDAK punya alpha di
+          sampel ini, jadi daftarnya memang condong ke emiten kecil — periksa
+          liquidity_grade dan pertimbangkan penyaring tiket sebelum membeli.
+    Jumlahnya BANYAK (~167 emiten/hari dari 932), jadi kriteria ini sebuah daftar
+    penyisiran luas, bukan daftar beli pendek.
     """
     if require_regime is None:
         # buykuat = kombinasi yang diuji audit (skor>=70 + tiket + REZIM BULL), jadi
