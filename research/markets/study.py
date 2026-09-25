@@ -51,6 +51,19 @@ HORIZONS = (1, 5, 20)
 COST = {"us": 0.003, "crypto": 0.005}
 MIN_VALUE_USD = 1_000_000     # saring nama yang tidak bisa dieksekusi (~Rp15 M/hari)
 
+# Batas potong (winsorize) return ke depan, dalam persen. WAJIB untuk crypto dan
+# dipakai juga di AS supaya perlakuannya sama.
+#
+# Kenapa ada: pembandingnya adalah RATA-RATA lintas-aset pada tanggal yang sama.
+# Di crypto, ekor return sangat gemuk (tidak ada auto-reject seperti bursa saham) —
+# satu koin yang naik ribuan persen dalam 20 hari membuat rata-rata se-pasar ~+700%,
+# sehingga SEMUA koin lain tampak -700% dan tabelnya jadi omong kosong (angka
+# pertama yang keluar: a20 -2530%). Itu cacat alat ukur, bukan temuan pasar —
+# persis pelajaran yang dulu melahirkan ukuran tahan-outlier di audit IDX.
+# Potongan ini membatasi pengaruh satu aset pada rata-rata, dan ambangnya
+# DITULIS di kepala laporan supaya tidak tersembunyi.
+WINSOR_PCT = 100.0
+
 
 # ---------------------------------------------------------------------------
 # Indikator lokal (sengaja tidak mengimpor api/index.py: skrip ini harus bisa
@@ -148,7 +161,8 @@ def build_frame(panel: pd.DataFrame, market: str) -> pd.DataFrame:
             d[k] = v.to_numpy()
         d["v20"] = v20.to_numpy()
         for h in HORIZONS:
-            d[f"fwd{h}"] = (close.shift(-h) / close - 1.0).to_numpy() * 100.0
+            raw = (close.shift(-h) / close - 1.0) * 100.0
+            d[f"fwd{h}"] = raw.clip(-WINSOR_PCT, WINSOR_PCT).to_numpy()
         rows.append(d)
         if (i + 1) % 500 == 0:
             print(f"  ... {i + 1}/{len(codes)} ticker")
@@ -202,7 +216,8 @@ def report(S: pd.DataFrame, market: str, signals: List[str]) -> pd.DataFrame:
     tab["putusan"] = tab.apply(verdict, axis=1)
     print(f"\n=== {market.upper()} · {S['code'].nunique()} ticker · "
           f"{len(S):,} baris · {S['date'].min().date()} -> {S['date'].max().date()} · "
-          f"biaya {COST.get(market, 0.003) * 100:.1f}%")
+          f"biaya {COST.get(market, 0.003) * 100:.1f}% · "
+          f"return dipotong di +/-{WINSOR_PCT:.0f}%")
     print(f"{'aturan':<32}{'n':>8}  {'a5':>7}{'t5':>7}  {'a20':>7}{'m20':>7}{'t20':>7}"
           f"  {'net20':>7}  {'paruh20':>14}  putusan")
     for _, r in tab.sort_values("a20", ascending=False).iterrows():

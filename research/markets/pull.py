@@ -146,6 +146,77 @@ def pull_yfinance(tickers: List[str], period: str, chunk: int = 80,
     return out
 
 
+def yahoo_daily(symbol: str, period: str = "5y", timeout: int = 25) -> Optional[pd.DataFrame]:
+    """OHLCV harian dari Yahoo chart API via curl_cffi (impersonasi browser).
+
+    KENAPA JALUR INI, BUKAN yfinance: yfinance dari IP datacenter cepat ditolak
+    (terukur: batch 250 ticker gagal SELURUHNYA, dan penarikan berhenti di ~23 dari
+    99 potongan). Repo ini sudah membuktikan jalur curl_cffi LOLOS blokir itu untuk
+    kutipan intraday (lihat `_yahoo_chart_cffi` di api/index.py). Jalur yang sama
+    dipakai di sini dengan interval harian, satu simbol per permintaan.
+
+    Harga disesuaikan (adjclose/close) supaya split & dividen tidak jadi lompatan
+    palsu di pengukuran — setara `auto_adjust=True` milik yfinance.
+    """
+    try:
+        from curl_cffi import requests as cr
+    except Exception:
+        return None
+    url = (f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}"
+           f"?range={period}&interval=1d&events=div%2Csplit")
+    try:
+        r = cr.get(url, impersonate="chrome", timeout=timeout)
+        if r.status_code != 200:
+            return None
+        res = ((r.json().get("chart") or {}).get("result") or [])
+        if not res:
+            return None
+        res = res[0]
+        ts = res.get("timestamp") or []
+        ind = res.get("indicators") or {}
+        q = (ind.get("quote") or [{}])[0]
+        if not ts or not q.get("close"):
+            return None
+        idx = pd.to_datetime(ts, unit="s", utc=True).tz_convert(None).normalize()
+        df = pd.DataFrame({"Open": q.get("open"), "High": q.get("high"),
+                           "Low": q.get("low"), "Close": q.get("close"),
+                           "Volume": q.get("volume")}, index=idx)
+        adj = (ind.get("adjclose") or [{}])
+        adjclose = adj[0].get("adjclose") if adj else None
+        if adjclose:
+            factor = pd.Series(adjclose, index=idx) / df["Close"]
+            for c in ("Open", "High", "Low", "Close"):
+                df[c] = df[c] * factor
+        df = df.dropna(subset=["Open", "High", "Low", "Close"])
+        df["Volume"] = pd.to_numeric(df["Volume"], errors="coerce").fillna(0.0)
+        df.index.name = None
+        return df if len(df) >= 60 else None
+    except Exception:
+        return None
+
+
+def pull_via_yahoo(codes: List[str], period: str,
+                   code_to_yahoo: Dict[str, str], sleep: float = 0.12,
+                   retries: int = 2) -> Dict[str, pd.DataFrame]:
+    """Tarik satu-satu lewat Yahoo chart API (curl_cffi). Kunci hasil = nama panel."""
+    out: Dict[str, pd.DataFrame] = {}
+    n = len(codes)
+    for i, code in enumerate(codes):
+        sym = code_to_yahoo.get(code, code)
+        df = None
+        for attempt in range(retries):
+            df = yahoo_daily(sym, period)
+            if df is not None:
+                break
+            time.sleep(0.5 * (attempt + 1))
+        if df is not None:
+            out[code] = df
+        if (i + 1) % 200 == 0:
+            print(f"    yahoo: {i + 1}/{n} — dapat {len(out)}")
+        time.sleep(sleep)
+    return out
+
+
 def kraken_ohlc(pair: str, days: int = 730) -> Optional[pd.DataFrame]:
     """OHLCV harian dari Kraken (cadangan crypto, tanpa kunci API).
 
@@ -198,7 +269,7 @@ def kraken_ohlc(pair: str, days: int = 730) -> Optional[pd.DataFrame]:
 
 def pull_market(market: str, limit: Optional[int], period: str, days: int,
                 top: int, chunk: int, force: bool = False,
-                sweep_max: int = 60) -> None:
+                sweep_max: int = 60, source: str = "yahoo") -> None:
     """Tarik satu pasar, simpan per potongan, lalu gabungkan menjadi panel panjang."""
     pdir = _parts_dir(market)
     # code = nama yang DIPAKAI di panel (BTC, AAPL); yahoo = simbol yang diunduh
@@ -213,8 +284,12 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
         tickers = [r["symbol"] for r in rows]
         code_to_yahoo = {r["symbol"]: r["yahoo"] for r in rows}
     yahoo_to_code = {v: k for k, v in code_to_yahoo.items()}
-    if limit:
-        tickers = tickers[:limit]
+    if limit and limit < len(tickers):
+        # Ambil sampel TERSEBAR MERATA, bukan `limit` pertama. Daftar NASDAQ Trader
+        # terurut abjad, jadi "800 pertama" hanya berisi emiten A-C dan kesimpulannya
+        # tidak mewakili pasar. Cara yang sama dipakai `spread_pick` di api/index.py.
+        step = len(tickers) / limit
+        tickers = [tickers[int(i * step)] for i in range(limit)]
     if not tickers:
         raise SystemExit(f"Universe {market} kosong — periksa koneksi ke sumber.")
 
@@ -229,9 +304,13 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
             continue
         print(f"  [{i}] menarik {len(group)} ticker ...")
         dl = [code_to_yahoo.get(t, t) for t in group]
-        frames = pull_yfinance(dl, period, chunk=len(dl))
-        # kembalikan kunci frame ke nama panel (BTC-USD -> BTC)
-        frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
+        if source == "yahoo":
+            # Jalur utama: curl_cffi per simbol (terbukti lolos blokir datacenter).
+            frames = pull_via_yahoo(group, period, code_to_yahoo)
+        else:
+            frames = pull_yfinance(dl, period, chunk=len(dl))
+            # kembalikan kunci frame ke nama panel (BTC-USD -> BTC)
+            frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
         # Crypto: isi yang gagal dengan Kraken (bila pair-nya ada dan terjangkau).
         if market == "crypto" and krk_idx:
             missing = [t for t in group if t not in frames]
@@ -269,9 +348,12 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
             sp = os.path.join(pdir, f"sweep_{i:03d}.pkl")
             if os.path.exists(sp) and not force:
                 continue
-            dl = [code_to_yahoo.get(t, t) for t in group]
-            frames = pull_yfinance(dl, period, chunk=len(dl), retries=1)
-            frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
+            if source == "yahoo":
+                frames = pull_via_yahoo(group, period, code_to_yahoo, sleep=0.3, retries=1)
+            else:
+                dl = [code_to_yahoo.get(t, t) for t in group]
+                frames = pull_yfinance(dl, period, chunk=len(dl), retries=1)
+                frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
             if frames:
                 with open(sp, "wb") as fh:
                     pickle.dump({"frames": frames, "period": period}, fh)
@@ -326,6 +408,9 @@ def main() -> int:
     ap.add_argument("--chunk", type=int, default=250,
                     help="ticker per potongan (lebih besar = lebih sedikit permintaan = "
                          "lebih jarang ditolak)")
+    ap.add_argument("--source", choices=["yahoo", "yfinance"], default="yahoo",
+                    help="jalur penarikan: 'yahoo' (curl_cffi, tahan blokir datacenter) "
+                         "atau 'yfinance' (batch)")
     ap.add_argument("--force", action="store_true", help="timpa checkpoint yang ada")
     ap.add_argument("--sweep-max", type=int, default=60,
                     help="batas kelompok (x15 ticker) yang dicoba ulang di SWEEP; "
@@ -338,7 +423,7 @@ def main() -> int:
     else:
         pull_market(args.market, args.limit, args.period, args.days,
                     args.top, args.chunk, force=args.force,
-                    sweep_max=args.sweep_max)
+                    sweep_max=args.sweep_max, source=args.source)
     return 0
 
 
