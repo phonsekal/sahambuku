@@ -90,11 +90,11 @@
     <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
       <div class="flex flex-wrap items-center gap-3 mb-3">
         <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">📈 Pemindai Saham AS</h2>
+        <!-- Pilihan kriteria DIISI SAAT MUAT dari /api/markets/study (registry +
+             lolos_bar pasar ini), bukan diketik di sini — supaya aturan baru yang lolos
+             bar muncul sendiri tanpa perlu menyunting dashboard. -->
         <select id="mkUsCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
-          <option value="all">Semua aturan AS (3)</option>
-          <option value="pullback_uptrend">Pullback di uptrend</option>
-          <option value="above_sma200">Di atas SMA200</option>
-          <option value="near_high52">Dekat puncak 52 minggu</option>
+          <option value="all">Memuat aturan…</option>
         </select>
         <button id="btnMkUsScan" onclick="scanMarketUS()" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-5 py-2 text-sm shadow-lg shadow-sky-500/25 transition">Pindai</button>
         <span class="text-[11px] text-slate-500">Dari keadaan turunan per emiten (bukan panel penuh). Ini FILTER KEADAAN — daftar kandidat, bukan sinyal beli.</span>
@@ -105,11 +105,9 @@
     <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
       <div class="flex flex-wrap items-center gap-3 mb-3">
         <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">🧺 Pemindai ETF</h2>
+        <!-- Sama seperti AS: diisi saat muat, hanya aturan yang LOLOS BAR di ETF sendiri. -->
         <select id="mkEtfCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
-          <option value="all">Semua aturan ETF yang lolos bar</option>
-          <option value="pullback_uptrend">Pullback di uptrend</option>
-          <option value="above_sma200">Di atas SMA200</option>
-          <option value="near_high52">Dekat puncak 52 minggu</option>
+          <option value="all">Memuat aturan…</option>
         </select>
         <button id="btnMkEtfScan" onclick="scanMarketETF()" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-5 py-2 text-sm shadow-lg shadow-sky-500/25 transition">Pindai</button>
         <span class="text-[11px] text-slate-500">ETF diukur TERPISAH dari saham biasa. Hanya aturan yang lolos bar di ETF sendiri yang muncul.</span>
@@ -3453,6 +3451,30 @@ const mkSgn = (v, d) => v == null ? "—" : ((v > 0 ? "+" : "") + Number(v).toFi
 const mkHalves = h => !h ? "—" : h.map(x => (x > 0 ? "+" : "") + Number(x).toFixed(2)).join("/");
 const mkPrice = v => v == null ? "—" : (v >= 100 ? fmt(v, 2) : v >= 1 ? fmt(v, 3) : fmt(v, 5));
 
+/* Isi <select> kriteria AS/ETF dari registry + `lolos_bar` pasar itu.
+   Hanya aturan yang PUNYA kolom di keadaan turunan DAN lolos bar di pasar ini yang
+   muncul; ETF yang belum punya aturan lolos tampil kosong dan dinonaktifkan — itu
+   keadaan yang benar, bukan bug. */
+function populateStateCriteria(market, selectId, d) {
+  const sel = $("#" + selectId);
+  if (!sel) return;
+  const ms = ((d.markets || {})[market]) || {};
+  const lolos = new Set(ms.lolos_bar || []);
+  const reg = d.state_rules || {};
+  const avail = Object.keys(reg).filter(k => lolos.has(reg[k].rule));
+  const label = k => (reg[k].label || reg[k].rule || k);
+  if (!avail.length) {
+    sel.innerHTML = '<option value="all">Belum ada aturan yang lolos bar di ' +
+      market.toUpperCase() + '</option>';
+    sel.disabled = true;
+    return;
+  }
+  sel.innerHTML = '<option value="all">Semua aturan ' + market.toUpperCase() +
+    ' (' + avail.length + ')</option>' +
+    avail.map(k => '<option value="' + esc(k) + '">' + esc(label(k)) + '</option>').join("");
+  sel.disabled = false;
+}
+
 async function loadMarkets(force) {
   const holder = $("#mkStudy");
   if (!holder) return;
@@ -3470,6 +3492,9 @@ async function loadMarkets(force) {
   }
   const ms = d.markets || {};
   const inst = d.installed || {};
+  // Daftar kriteria pemindai AS/ETF mengikuti registry ini (bukan diketik tetap).
+  populateStateCriteria("us", "mkUsCriteria", d);
+  populateStateCriteria("etf", "mkEtfCriteria", d);
   // Cakupan & umur data ditampilkan APA ADANYA: "74 dari 100" tidak boleh terbaca
   // sebagai "seluruh universe", dan snapshot lama tidak boleh terbaca sebagai
   // keadaan hari ini.

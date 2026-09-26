@@ -11,6 +11,7 @@ Jalankan:
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import unittest
@@ -202,6 +203,43 @@ class TestSchemaConsistency(unittest.TestCase):
         self.assertEqual(IDX._state_registry(None),
                          {k: {"rule": v, "desc": IDX.STATE_CRITERIA_FALLBACK[k]}
                           for k, v in IDX.STATE_RULES_FALLBACK.items()})
+
+
+class TestCommittedArtifacts(unittest.TestCase):
+    """Uji pada BERKAS NYATA yang di-commit (bukan payload buatan).
+
+    Registry bisa benar di payload palsu tetapi salah di JSON yang sebenarnya
+    dipakai produksi, jadi berkas nyata ikut diperiksa. Bila berkas belum ada
+    (mis. checkout bersih sebelum pipeline pernah jalan), ujinya DILEWATI, bukan
+    gagal — supaya uji ini tidak bergantung pada artefak yang dihasilkan CI.
+    """
+
+    STUDY = os.path.join(ROOT, "api", "market_study.json")
+
+    def test_committed_study_exposes_registry_produksi_baca(self):
+        if not os.path.exists(self.STUDY):
+            self.skipTest("api/market_study.json belum ada (dibuat pipeline CI)")
+        with open(self.STUDY, "r", encoding="utf-8") as fh:
+            study = json.load(fh)
+        reg = IDX._state_registry(study)
+        self.assertEqual(sorted(reg), sorted(SR.STATE_KEYS))
+        for key, rule in EXP.US_STATE_RULES:
+            self.assertEqual(reg[key]["rule"], rule)
+        # `lolos_bar` tiap pasar harus berupa nama aturan yang ada di registry.
+        known = set(SR.RULE_NAMES.values())
+        for m in ("us", "etf"):
+            lolos = ((study.get("markets") or {}).get(m) or {}).get("lolos_bar") or []
+            self.assertTrue(set(lolos) <= known,
+                            f"aturan lolos_bar {m} di luar registry: {set(lolos) - known}")
+
+    def test_committed_state_csv_punya_semua_kolom_aturan(self):
+        for m in ("us", "etf"):
+            path = os.path.join(ROOT, "api", f"market_{m}_state.csv")
+            if not os.path.exists(path):
+                self.skipTest(f"{path} belum ada (dibuat pipeline CI)")
+            cols = pd.read_csv(path, nrows=1).columns
+            missing = [k for k in SR.STATE_KEYS if k not in cols]
+            self.assertEqual(missing, [], f"kolom aturan hilang di keadaan {m}: {missing}")
 
 
 class TestEtfUniverse(unittest.TestCase):
