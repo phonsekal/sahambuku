@@ -243,9 +243,12 @@ manual, dan dipisahkan dari pengukuran:
   slippage. Karena itu ia dipasang sebagai **daftar kandidat** (filter keadaan), dengan
   angka verifikasi eksekusi ikut tampil; bukan sebagai sinyal beli hari ini.
 
-* **ETF** — 20 aturan diukur di panel ETF SENDIRI, lalu yang **lolos bar di ETF**
-  dipasang **otomatis** oleh `summary.py` (tidak boleh ada aturan ETF yang tampil tanpa
-  pengukuran ETF). Selama belum ada aturan yang lolos bar di data ETF, menu ETF
+* **ETF** — 20 aturan diukur di panel ETF SENDIRI dan terhadap **benchmark pasar SPY**
+  (`study.py --market etf --benchmark SPY`), bukan rata-rata lintas-ETF: universe ETF
+  heterogen (leveraged, inverse, komoditas, obligasi) sehingga rata-rata lintas-ETF
+  condong ke produk berleverage dan membuat semua aturan tampak negatif. Setelah itu,
+  yang **lolos bar di ETF** dipasang **otomatis** oleh `summary.py` (tidak boleh ada
+  aturan ETF yang tampil tanpa pengukuran ETF). Selama belum ada aturan yang lolos bar di data ETF, menu ETF
   **sengaja kosong** dan API menjawab 503 beserta alasannya — itu keadaan yang benar,
   bukan kekurangan data. Semua kandidat aturan kini punya kolom di keadaan turunan,
   jadi aturan mana pun yang lolos bar di ETF langsung bisa disajikan **tanpa mengubah

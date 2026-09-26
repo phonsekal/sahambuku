@@ -145,8 +145,17 @@ def signals_for(df: pd.DataFrame) -> Dict[str, pd.Series]:
     return out
 
 
-def build_frame(panel: pd.DataFrame, market: str) -> pd.DataFrame:
-    """Satu baris per (kode, tanggal) berisi semua sinyal + return ke depan + excg."""
+def build_frame(panel: pd.DataFrame, market: str,
+                benchmark: Optional[str] = None) -> pd.DataFrame:
+    """Satu baris per (kode, tanggal) berisi semua sinyal + return ke depan + excg.
+
+    `benchmark` (kode di dalam panel, mis. SPY untuk ETF): bila diisi, return-lebih
+    dihitung terhadap BENCHMARK PASAR itu, bukan terhadap rata-rata lintas-aset pada
+    tanggal yang sama. Untuk universe yang heterogen (ETF: leveraged, inverse,
+    komoditas, obligasi), rata-rata lintas-ETF bukan 'pasar' — ia campuran yang
+    condong ke produk berleverage, sehingga SEMUA aturan tampak negatif. Benchmark
+    pasar (SPY) adalah pembanding yang dimaksud proyek ini (lihat universe.BENCHMARK).
+    """
     rows: List[pd.DataFrame] = []
     # groupby, BUKAN `panel[panel["code"] == code]` di dalam loop. Versi lama
     # memfilter SELURUH panel untuk tiap ticker (O(n x jumlah ticker)); di panel IDX
@@ -176,9 +185,23 @@ def build_frame(panel: pd.DataFrame, market: str) -> pd.DataFrame:
     if not rows:
         raise SystemExit("Panel terlalu pendek untuk diukur (butuh >=60 bar/ticker).")
     S = pd.concat(rows, ignore_index=True)
-    # Pembanding: rata-rata SELURUH panel pada tanggal yang sama (satu kelas).
-    for h in HORIZONS:
-        S[f"excg{h}"] = S[f"fwd{h}"] - S.groupby("date")[f"fwd{h}"].transform("mean")
+    if benchmark:
+        # Pembanding PASAR: return benchmark pada tanggal yang sama. Ia harus ada di
+        # panel; kalau tidak, pengukurannya tidak bisa dipertanggungjawabkan — jadi
+        # GAGAL TERANG-TERANGAN, bukan diam-diam kembali ke rata-rata lintas-aset.
+        bp = panel.loc[panel["code"].astype(str) == benchmark, ["date", "close"]]
+        if bp.empty:
+            raise SystemExit(f"Benchmark '{benchmark}' tidak ada di panel {market} — "
+                             "tidak bisa diukur terhadapnya.")
+        bclose = bp.sort_values("date").set_index("date")["close"].astype(float)
+        bclose = bclose[~bclose.index.duplicated(keep="last")]
+        for h in HORIZONS:
+            bfwd = ((bclose.shift(-h) / bclose - 1.0) * 100.0).clip(-WINSOR_PCT, WINSOR_PCT)
+            S[f"excg{h}"] = S[f"fwd{h}"] - S["date"].map(bfwd)
+    else:
+        # Pembanding: rata-rata SELURUH panel pada tanggal yang sama (satu kelas).
+        for h in HORIZONS:
+            S[f"excg{h}"] = S[f"fwd{h}"] - S.groupby("date")[f"fwd{h}"].transform("mean")
     _ = market
     return S
 
@@ -218,13 +241,16 @@ def verdict(row: pd.Series) -> str:
     return "RAPUH"
 
 
-def report(S: pd.DataFrame, market: str, signals: List[str]) -> pd.DataFrame:
+def report(S: pd.DataFrame, market: str, signals: List[str],
+           benchmark: Optional[str] = None) -> pd.DataFrame:
     tab = measure(S, market, signals)
     tab["putusan"] = tab.apply(verdict, axis=1)
+    pembanding = (f"pembanding {benchmark} (pasar)" if benchmark
+                  else "pembanding rata-rata lintas-aset pada tanggal yang sama")
     print(f"\n=== {market.upper()} · {S['code'].nunique()} ticker · "
           f"{len(S):,} baris · {S['date'].min().date()} -> {S['date'].max().date()} · "
           f"biaya {COST.get(market, 0.003) * 100:.1f}% · "
-          f"return dipotong di +/-{WINSOR_PCT:.0f}%")
+          f"return dipotong di +/-{WINSOR_PCT:.0f}% · {pembanding}")
     print(f"{'aturan':<32}{'n':>8}  {'a5':>7}{'t5':>7}  {'a20':>7}{'m20':>7}{'t20':>7}"
           f"  {'net20':>7}  {'paruh20':>14}  putusan")
     for _, r in tab.sort_values("a20", ascending=False).iterrows():
@@ -275,16 +301,19 @@ def main() -> int:
     ap.add_argument("--selftest", action="store_true", help="uji tanpa jaringan")
     ap.add_argument("--min-value", type=float, default=MIN_VALUE_USD,
                     help="saringan nilai transaksi harian (USD); 0 = tanpa saringan")
+    ap.add_argument("--benchmark", default=None,
+                    help="kode benchmark di panel (mis. SPY untuk ETF): return-lebih "
+                         "dihitung terhadap benchmark pasar itu, bukan rata-rata lintas-aset")
     args = ap.parse_args()
     if args.selftest:
         return selftest()
     panel = _load_panel(args.market)
     print(f"Panel {args.market}: {len(panel):,} saham-hari · "
           f"{panel['code'].nunique()} ticker")
-    S = build_frame(panel, args.market)
+    S = build_frame(panel, args.market, benchmark=args.benchmark)
     sigs = [c for c in S.columns if c not in ("code", "date", "v20")
             and not c.startswith(("fwd", "excg"))]
-    report(S, args.market, sigs)
+    report(S, args.market, sigs, benchmark=args.benchmark)
     return 0
 
 

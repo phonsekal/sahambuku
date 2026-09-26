@@ -93,11 +93,15 @@ INSTALL_NOTE: Dict[str, str] = {
     "crypto": ("7 aturan lolos bar, 3 dipasang. Aturan tren yang lolos bar tetapi "
                "paruh pertamanya negatif (tembus high50, tren naik + tembus high20, "
                "puncak 52m baru) sengaja tidak dipakai."),
-    "etf": ("ETF diukur TERPISAH dari saham biasa (keranjang, bukan emiten tunggal). "
-            "SEMUA aturan keadaan yang bisa disajikan diuji, dan hanya yang LOLOS BAR "
-            "di pasar ETF sendiri yang dipasang (diisi otomatis oleh summary.py) — jadi "
-            "angka saham biasa tidak pernah dipinjam untuk ETF. Bila tidak ada yang "
-            "lolos, menu ETF sengaja kosong dan itu ditampilkan apa adanya."),
+    "etf": ("ETF diukur TERPISAH dari saham biasa (keranjang, bukan emiten tunggal), "
+            "dan terhadap BENCHMARK PASAR SPY — bukan rata-rata lintas-ETF. Alasannya: "
+            "universe ETF heterogen (leveraged, inverse, komoditas, obligasi), sehingga "
+            "rata-rata lintas-ETF condong ke produk berleverage dan membuat SEMUA aturan "
+            "tampak negatif; itu cacat pembanding, bukan temuan pasar. SEMUA aturan "
+            "keadaan yang bisa disajikan diuji, dan hanya yang LOLOS BAR di pasar ETF "
+            "sendiri yang dipasang (diisi otomatis oleh summary.py) — angka saham biasa "
+            "tidak pernah dipinjam untuk ETF. Bila tidak ada yang lolos, menu ETF "
+            "sengaja kosong dan itu ditampilkan apa adanya."),
 }
 
 _ROW_RE = re.compile(

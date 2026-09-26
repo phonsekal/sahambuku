@@ -106,6 +106,9 @@ def main() -> int:
     ap.add_argument("--min-value", type=float, default=ST.MIN_VALUE_USD,
                     help="saringan nilai transaksi harian (USD); 0 = tanpa saringan")
     ap.add_argument("--h", type=int, default=20, help="horizon hari (default 20)")
+    ap.add_argument("--benchmark", default=None,
+                    help="kode benchmark di panel (mis. SPY untuk ETF), HARUS sama "
+                         "dengan yang dipakai study.py agar angkanya bisa dibandingkan")
     ap.add_argument("--all-rules", action="store_true",
                     help="uji SEMUA sinyal, bukan hanya yang disajikan screener "
                          "(dipakai untuk memeriksa keputusan 'menu kosong', mis. ETF)")
@@ -129,7 +132,7 @@ def main() -> int:
     panel = _load_panel(args.market, args.panel)
     print(f"Panel {args.market}: {len(panel):,} baris · {panel['code'].nunique()} ticker "
           f"· {panel['date'].min().date()} -> {panel['date'].max().date()}")
-    S = ST.build_frame(panel, args.market)
+    S = ST.build_frame(panel, args.market, benchmark=args.benchmark)
     if args.all_rules:
         rules = [c for c in S.columns if c not in ("code", "date", "v20")
                  and not c.startswith(("fwd", "excg"))]
@@ -154,9 +157,11 @@ def main() -> int:
               "pada jalur ini; tarik panel yang sama (pull.py) lalu jalankan ulang.")
 
     h = args.h
+    pembanding_hdr = (f" · pembanding {args.benchmark}" if args.benchmark
+                      else " · pembanding rata-rata lintas-aset")
     print(f"\n=== BACKTEST SCREENER · {args.market.upper()} · {S['code'].nunique()} ticker "
           f"· biaya {ST.COST.get(args.market, 0.003) * 100:.1f}% · "
-          f"min nilai {args.min_value:,.0f} USD · horizon {h} hari")
+          f"min nilai {args.min_value:,.0f} USD · horizon {h} hari{pembanding_hdr}")
     print(f"{'aturan':<34}{'n':>8}  {'a20':>7}{'m20':>7}{'t20':>6}"
           f"  {'net20':>7}  {'hit20':>6}  paruh        vs study")
 
@@ -188,13 +193,16 @@ def main() -> int:
                         "match_study": match, "half20": r.get("p20"),
                         "putusan": r.get("putusan")})
 
-    print("\nCatatan: a/m20 = excess return vs rata-rata pasar pada tanggal yang sama "
+    pembanding = (f"benchmark pasar {args.benchmark}" if args.benchmark
+                  else "rata-rata lintas-aset pada tanggal yang sama")
+    print(f"\nCatatan: a/m20 = excess return vs {pembanding} "
           "(median = tahan-outlier). net20 sudah dikurangi biaya. hit20 = bagian "
           "hari-sinyal dengan excess positif. Angka HARUS sama dengan study.py; "
           "\"BEDA\" berarti ada yang menyimpang.")
 
     out = {"market": args.market, "tickers": int(S["code"].nunique()),
            "rows": int(len(S)), "horizon": h, "min_value_usd": args.min_value,
+           "benchmark": args.benchmark or "cross_section_mean",
            "panel_sama_dengan_study": bool(panel_sama), "provenance": provenance,
            "rules": results, "all_match_study": bool(all_match and panel_sama),
            "note": ("Backtest walk-forward aturan yang disajikan screener; mesin ukur "

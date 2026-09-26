@@ -56,8 +56,13 @@ MIN_VALUE_USD = 1_000_000
 LIQUID_BUCKETS = (1_000_000.0, 5_000_000.0, 20_000_000.0)
 
 
-def build_exec_frame(panel: pd.DataFrame, min_value_usd: float) -> pd.DataFrame:
-    """Satu baris per (kode, tanggal) berisi sinyal + return (close & open) + v20."""
+def build_exec_frame(panel: pd.DataFrame, min_value_usd: float,
+                     benchmark: Optional[str] = None) -> pd.DataFrame:
+    """Satu baris per (kode, tanggal) berisi sinyal + return (close & open) + v20.
+
+    `benchmark` harus SAMA dengan yang dipakai study.py untuk pasar ini (ETF: SPY),
+    supaya angka return-lebih di sini tidak dihitung terhadap pembanding yang berbeda.
+    """
     frames: List[pd.DataFrame] = []
     groups = panel.sort_values(["code", "date"]).groupby("code", sort=False)
     n_codes = panel["code"].nunique()
@@ -86,10 +91,27 @@ def build_exec_frame(panel: pd.DataFrame, min_value_usd: float) -> pd.DataFrame:
     if not frames:
         raise SystemExit("Panel terlalu pendek untuk diverifikasi (butuh >=60 bar/ticker).")
     S = pd.concat(frames, ignore_index=True)
-    # Pembanding pasar: rata-rata seluruh panel pada tanggal yang sama (kelas tunggal,
-    # sama seperti study.py) supaya angkanya bisa dibandingkan langsung.
-    for col in ("fwd20", "open20"):
-        S[f"exc_{col}"] = S[col] - S.groupby("date")[col].transform("mean")
+    if benchmark:
+        # Pembanding PASAR yang sama dengan study.py (mis. SPY untuk ETF).
+        bp = panel.loc[panel["code"].astype(str) == benchmark,
+                       ["date", "open", "close"]].sort_values("date")
+        if bp.empty:
+            raise SystemExit(f"Benchmark '{benchmark}' tidak ada di panel — "
+                             "tidak bisa diukur terhadapnya.")
+        bp = bp.set_index("date")
+        bclose = bp["close"].astype(float)
+        bopen = bp["open"].astype(float) if "open" in bp else bclose
+        bclose = bclose[~bclose.index.duplicated(keep="last")]
+        bopen = bopen[~bopen.index.duplicated(keep="last")]
+        bfwd = (bclose.shift(-20) / bclose - 1.0).mul(100.0).clip(-100, 100)
+        bopen20 = (bclose.shift(-20) / bopen.shift(-1) - 1.0).mul(100.0).clip(-100, 100)
+        S["exc_fwd20"] = S["fwd20"] - S["date"].map(bfwd)
+        S["exc_open20"] = S["open20"] - S["date"].map(bopen20)
+    else:
+        # Pembanding pasar: rata-rata seluruh panel pada tanggal yang sama (kelas tunggal,
+        # sama seperti study.py) supaya angkanya bisa dibandingkan langsung.
+        for col in ("fwd20", "open20"):
+            S[f"exc_{col}"] = S[col] - S.groupby("date")[col].transform("mean")
     return S
 
 
@@ -168,6 +190,9 @@ def main() -> int:
     ap.add_argument("--market", choices=["us", "etf"], default="us")
     ap.add_argument("--min-value", type=float, default=MIN_VALUE_USD,
                     help="saringan nilai transaksi harian (USD); 0 = tanpa saringan")
+    ap.add_argument("--benchmark", default=None,
+                    help="kode benchmark di panel (mis. SPY untuk ETF), harus sama "
+                         "dengan yang dipakai study.py")
     args = ap.parse_args()
 
     path = os.path.join(CACHE_DIR, f"{args.market}_panel.pkl")
@@ -178,7 +203,7 @@ def main() -> int:
     print(f"Panel {args.market}: {len(panel):,} baris · {panel['code'].nunique()} ticker")
 
     cost_pct = ST.COST.get(args.market, 0.003) * 100.0
-    S = build_exec_frame(panel, args.min_value)
+    S = build_exec_frame(panel, args.min_value, benchmark=args.benchmark)
     res = measure(S, cost_pct)
     text = report_text(res, args.market, int(panel["code"].nunique()),
                        int(len(panel)), cost_pct)
@@ -194,6 +219,7 @@ def main() -> int:
         "cost_pct": cost_pct,
         "slippage_pct_tested": list(SLIPPAGE_PCT),
         "min_value_usd": args.min_value,
+        "benchmark": args.benchmark or "cross_section_mean",
         "bars": int(len(S)),
         "note": ("Verifikasi eksekusi, BUKAN pemasangan. Menjawab likuiditas, sisa alpha "
                  "setelah slippage, dan apakah alpha bertahan bila masuk di open besok."),
