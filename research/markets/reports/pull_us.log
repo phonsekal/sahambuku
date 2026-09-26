@@ -23,7 +23,7 @@
   [21] checkpoint ada — dilewati
   [22] checkpoint ada — dilewati
   [23] checkpoint ada — dilewati
-  SWEEP: 98 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
+  SWEEP: 97 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
   SWEEP selesai — total dapat 5801 ticker
 [us] panel: 6,325,620 saham-hari · 5801 ticker · 2021-09-27 -> 2026-09-25
 [us] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/us_panel.pkl
