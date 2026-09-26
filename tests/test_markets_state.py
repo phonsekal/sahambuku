@@ -17,6 +17,7 @@ import sys
 import unittest
 from unittest import mock
 
+import numpy as np
 import pandas as pd
 from fastapi import HTTPException
 
@@ -152,6 +153,74 @@ class TestScreenerRouting(unittest.TestCase):
     def test_unknown_market_is_422(self):
         with self.assertRaises(HTTPException) as cm:
             IDX.markets_screener("jp", "all", 3)
+        self.assertEqual(cm.exception.status_code, 422)
+
+
+class TestMarketAnalyze(unittest.TestCase):
+    """Analisis pasar luar IDX: us/etf dari keadaan, crypto dari snapshot OHLCV."""
+
+    def test_state_analysis_lists_active_rules(self):
+        df = state_frame([{"code": "NVDA", "pullback_uptrend": 1, "above_sma200": 1,
+                           "near_high52": 1, "v20_usd": 5_000_000.0}])
+        study = study_payload("us", ["pullback di uptrend", "di atas SMA200",
+                                     "dekat puncak 52m"])
+        with mock.patch.object(IDX, "load_state", return_value=df), \
+             mock.patch.object(IDX, "_read_json_cached", return_value=study):
+            out = IDX._analyze_state_market("us", "NVDA")
+        self.assertEqual(out["ticker"], "NVDA")
+        self.assertEqual(sorted(x["key"] for x in out["active_rules"]),
+                         ["above_sma200", "near_high52", "pullback_uptrend"])
+        self.assertTrue(out["analysis"])
+        self.assertIn("dist_high52_pct", out["indicators"])
+
+    def test_state_analysis_only_counts_served_rules(self):
+        # Aturan menyala tetapi BELUM lolos bar -> tidak masuk active_rules.
+        df = state_frame([{"code": "AAA", "mom5d_ge_10": 1, "above_sma200": 1}])
+        with mock.patch.object(IDX, "load_state", return_value=df), \
+             mock.patch.object(IDX, "_read_json_cached",
+                               return_value=study_payload("us", ["di atas SMA200"])):
+            out = IDX._analyze_state_market("us", "AAA")
+        self.assertEqual([x["key"] for x in out["active_rules"]], ["above_sma200"])
+
+    def test_state_analysis_unknown_ticker_is_404(self):
+        df = state_frame([{"code": "AAA"}])
+        with mock.patch.object(IDX, "load_state", return_value=df), \
+             mock.patch.object(IDX, "_read_json_cached", return_value={}):
+            with self.assertRaises(HTTPException) as cm:
+                IDX._analyze_state_market("us", "ZZZZ")
+        self.assertEqual(cm.exception.status_code, 404)
+
+    def test_crypto_analysis_has_full_indicators(self):
+        n = 260
+        close = pd.Series(np.linspace(100.0, 200.0, n))
+        g = pd.DataFrame({"code": "BTC", "date": pd.date_range("2025-01-01", periods=n),
+                          "open": close, "high": close * 1.01, "low": close * 0.99,
+                          "close": close, "volume": 1_000_000.0})
+        with mock.patch.object(IDX, "load_market_panel", return_value=g), \
+             mock.patch.object(IDX, "_read_json_cached", return_value={}):
+            out = IDX._analyze_crypto("BTC")
+        self.assertEqual(out["market"], "crypto")
+        for k in ("rsi14", "macd", "macd_signal", "atr_pct", "sma200"):
+            self.assertIsNotNone(out["indicators"][k], k)
+
+    def test_crypto_analysis_unknown_ticker_is_404(self):
+        g = pd.DataFrame({"code": "ETH", "date": pd.date_range("2025-01-01", periods=40),
+                          "open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0,
+                          "volume": 1.0})
+        with mock.patch.object(IDX, "load_market_panel", return_value=g):
+            with self.assertRaises(HTTPException) as cm:
+                IDX._analyze_crypto("BTC")
+        self.assertEqual(cm.exception.status_code, 404)
+
+    def test_routing_and_unknown_market(self):
+        with mock.patch.object(IDX, "_analyze_crypto", return_value={"ok": 1}) as mc:
+            self.assertEqual(IDX.markets_analyze("crypto", "btc")["ok"], 1)
+            mc.assert_called_once_with("BTC")
+        with mock.patch.object(IDX, "_analyze_state_market", return_value={"ok": 2}) as ms:
+            IDX.markets_analyze("etf", "spy")
+            ms.assert_called_once_with("etf", "SPY")
+        with self.assertRaises(HTTPException) as cm:
+            IDX.markets_analyze("jp", "AAA")
         self.assertEqual(cm.exception.status_code, 422)
 
 

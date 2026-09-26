@@ -119,6 +119,15 @@
   <!-- ======= TAB ANALISIS ======= -->
   <section id="tab-analyze">
     <div class="flex flex-wrap gap-3 items-center mb-5">
+      <!-- Pemilih PASAR: IDX lewat jalur penuh (IDX Edge), AS/ETF lewat keadaan
+           turunan, crypto lewat snapshot OHLCV. Semua tanpa jaringan untuk non-IDX. -->
+      <select id="anMarket" onchange="onAnMarketChange()"
+        class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+        <option value="idx" selected>🇮🇩 Saham IDX</option>
+        <option value="us">🇺🇸 Saham AS</option>
+        <option value="etf">🧺 ETF</option>
+        <option value="crypto">🪙 Crypto</option>
+      </select>
       <div class="relative">
         <input id="ticker" value="BBCA" placeholder="Kode saham, mis. BBCA / TLKM / AAPL"
           class="w-60 bg-slate-900/80 border border-slate-700 rounded-xl pl-10 pr-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500 focus:border-sky-500 placeholder-slate-500 shadow-inner">
@@ -774,11 +783,84 @@ function bbData(bars, period, mult, intraday) {
   return out;
 }
 
+const AN_MARKET_HINT = {
+  idx: "Kode IDX, mis. BBCA / TLKM (tanpa .JK juga boleh)",
+  us: "Kode saham AS, mis. AAPL / NVDA / TSLA",
+  etf: "Kode ETF AS, mis. SPY / QQQ / IWM",
+  crypto: "Kode crypto, mis. BTC / ETH / SOL",
+};
+function onAnMarketChange() {
+  const m = ($("#anMarket") || {}).value || "idx";
+  const inp = $("#ticker");
+  if (inp) inp.placeholder = AN_MARKET_HINT[m] || "";
+  const hint = $("#analyzeHint");
+  if (hint) hint.textContent = m === "idx" ? ""
+    : "Pasar luar IDX: dari keadaan/snapshot CI (0 kuota, tanpa jaringan).";
+}
+
+/* Analisis pasar luar IDX (AS/ETF = keadaan turunan, crypto = snapshot OHLCV). */
+function renderMarketAnalyze(d) {
+  const ind = d.indicators || {};
+  const LAB = { sma20: "SMA20", sma50: "SMA50", sma200: "SMA200", high52: "High 52m",
+    dist_high52_pct: "Jarak high52", high20: "High 20h", dist_high20_pct: "Jarak high20",
+    rsi14: "RSI14", macd: "MACD", macd_signal: "MACD sinyal", macd_hist: "MACD hist",
+    atr_pct: "ATR14", ret1_pct: "Return 1 hari", ret5_pct: "Return 5 hari",
+    vol_vs_ma20_x: "Volume / MA20", v20_usd: "Nilai 20 hari (USD)" };
+  const order = ["sma20", "sma50", "sma200", "high52", "dist_high52_pct", "high20",
+    "dist_high20_pct", "rsi14", "macd", "macd_signal", "macd_hist", "atr_pct",
+    "ret1_pct", "ret5_pct", "vol_vs_ma20_x", "v20_usd"];
+  const kv = (k, v) => '<div class="flex justify-between gap-3 py-1 border-b border-slate-800/60">' +
+    '<span class="text-slate-500">' + esc(k) + '</span>' +
+    '<span class="tabular text-slate-200">' + fmt(v, Math.abs(v) >= 1000 ? 0 : 4) + '</span></div>';
+  let h = '<div class="bg-slate-900/70 border border-slate-800/80 rounded-2xl p-5 mb-4">' +
+    '<div class="flex flex-wrap items-baseline gap-3 mb-2">' +
+    '<h2 class="text-lg font-bold text-slate-100">' + esc(d.ticker) + '</h2>' +
+    '<span class="text-xs px-2 py-0.5 rounded border border-sky-500/40 text-sky-300">' + esc(d.label || d.market) + '</span>' +
+    '<span class="text-[11px] text-slate-500">' + esc(d.kind === "ohlcv_snapshot"
+      ? "OHLCV snapshot — indikator penuh" : "keadaan turunan — nilai terakhir") + '</span>' +
+    '<span class="text-[11px] text-slate-500 ml-auto">as_of ' + esc(String(d.as_of)) + '</span></div>' +
+    '<div class="text-2xl font-bold tabular text-slate-100 mb-3">' + mkPrice(d.price) +
+    ' <span class="text-xs font-normal text-slate-500">' + esc(d.currency || "") + '</span></div>';
+  h += '<ul class="text-xs text-slate-300 space-y-1 mb-3">' +
+    (d.analysis || []).map(x => '<li>• ' + esc(x) + '</li>').join("") + '</ul>';
+  h += '<div class="grid sm:grid-cols-2 gap-x-6">';
+  order.forEach(k => { if (ind[k] != null) h += kv(LAB[k] || k, ind[k]); });
+  h += '</div>';
+  const active = d.active_rules || [];
+  h += '<div class="mt-3 text-xs"><b class="text-slate-400">Aturan yang menyala:</b> ' +
+    (active.length ? active.map(x => '<span class="inline-block mr-1 mb-1 px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300">' +
+      esc(x.label) + '</span>').join("") : '<span class="text-slate-500">tidak ada</span>') + '</div>';
+  const m = d.measurement || {};
+  Object.keys(m).forEach(k => {
+    const r = m[k];
+    if (!r || r.a20 == null) return;
+    h += '<div class="mt-2 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3 py-2">Bukti ukurnya: ' +
+      '<b class="text-sky-300">' + esc(r.aturan) + '</b> — rata-rata h20 ' + mkSgn(r.a20) + '%, tahan-outlier ' +
+      mkSgn(r.m20) + '%, blok t ' + mkSgn(r.t20, 1) + ', net20 ' + mkSgn(r.net20) + '%, paruh ' + mkHalves(r.halves) + '.</div>';
+  });
+  h += '<div class="mt-3 text-[11px] text-slate-500">' + esc(d.data_basis || "") + '</div>';
+  h += '<div class="mt-1 text-[11px] text-slate-500">' + (d.notes || []).map(esc).join(" · ") + '</div>';
+  h += '</div>';
+  $("#analyzeResult").innerHTML = h;
+}
+
 async function analyze() {
   const btn = $("#btnAnalyze"), period = $("#period").value;
+  const market = ($("#anMarket") || {}).value || "idx";
   let t = $("#ticker").value.trim().toUpperCase();
   if (!t) return;
   btn.disabled = true; btn.textContent = "Memuat…";
+  if (market !== "idx") {
+    $("#analyzeResult").innerHTML = spinner(`Menganalisis <b class="text-slate-200">${esc(t)}</b>…`);
+    try {
+      renderMarketAnalyze(await getJSON(`/api/markets/analyze/${market}/${encodeURIComponent(t)}`));
+    } catch (e) {
+      $("#analyzeResult").innerHTML = errorBox(e.message);
+    } finally {
+      btn.disabled = false; btn.textContent = "Analisis";
+    }
+    return;
+  }
   $("#analyzeResult").innerHTML = spinner(`Menganalisis <b class="text-slate-200">${esc(stripJK(t))}</b>…`);
 
   const tryFetch = tk => getJSON(`/api/analyze/${encodeURIComponent(tk)}?period=${period}`);
@@ -816,6 +898,8 @@ async function loadFundamentals(btn) {
     btn.disabled = false; btn.textContent = "📊 Muat Fundamental";
   }
 }
+
+onAnMarketChange();
 
 async function loadChart(tk, period, interval) {
   const holder = document.getElementById("chartHolder");
@@ -3585,7 +3669,7 @@ async function scanMarket() {
       h += '<div class="overflow-x-auto"><table class="w-full text-xs min-w-[640px]"><thead><tr class="text-[10px] uppercase text-slate-500 border-b border-slate-700/60">' +
         '<th class="text-left py-1.5">Koin</th><th class="text-right">Harga (USD)</th><th class="text-right">1 hari</th>' +
         '<th class="text-right">5 hari</th><th class="text-right">Jarak high20</th><th class="text-right">Vol×MA20</th></tr></thead><tbody>' +
-        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + esc(x.ticker) + '</td>' +
+        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker, "crypto") + '</td>' +
           '<td class="text-right tabular">' + mkPrice(x.price) + '</td>' +
           '<td class="text-right tabular ' + ((x.ret1_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.ret1_pct) + '%</td>' +
           '<td class="text-right tabular text-emerald-400">' + mkSgn(x.ret5_pct) + '%</td>' +
@@ -3638,7 +3722,7 @@ async function scanMarketUS() {
         '<th class="text-left py-1.5">Ticker</th><th class="text-right">Harga</th><th class="text-right">SMA200</th>' +
         '<th class="text-right">Jarak SMA200</th><th class="text-right">Jarak high52</th><th class="text-right">5 hari</th>' +
         '<th class="text-right">Nilai 20h (USD)</th></tr></thead><tbody>' +
-        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker) + '</td>' +
+        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker, "us") + '</td>' +
           '<td class="text-right tabular">' + mkPrice(x.price) + '</td>' +
           '<td class="text-right tabular text-slate-500">' + mkPrice(x.sma200) + '</td>' +
           '<td class="text-right tabular ' + ((x.dist_sma200_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.dist_sma200_pct) + '%</td>' +
@@ -3658,15 +3742,17 @@ async function scanMarketUS() {
 
 /* Link ticker -> buka tab Analisis dan jalankan analisisnya (ETF/saham AS masuk akal
 di sini karena /api/analyze/{ticker} menerima ticker AS/ETF apa adanya). */
-function tickLink(code) {
+function tickLink(code, market) {
   const c = esc(String(code));
-  return '<a href="#" onclick="openAnalyze(\'' + c + '\');return false;" ' +
+  const mp = market ? "'" + market + "'" : "null";
+  return '<a href="#" onclick="openAnalyze(\'' + c + '\',' + mp + ');return false;" ' +
     'class="hover:text-sky-300 underline decoration-dotted">' + c + '</a>';
 }
 
-function openAnalyze(code) {
+function openAnalyze(code, market) {
   const tab = document.querySelector('.tab[data-tab="analyze"]');
   if (tab) tab.click();
+  if (market && $("#anMarket")) { $("#anMarket").value = market; onAnMarketChange(); }
   const inp = $("#ticker");
   if (inp) inp.value = code;
   if (typeof analyze === "function") analyze();
@@ -3708,7 +3794,7 @@ async function scanMarketETF() {
         '<th class="text-left py-1.5">ETF</th><th class="text-right">Harga</th><th class="text-right">SMA200</th>' +
         '<th class="text-right">Jarak SMA200</th><th class="text-right">Jarak high52</th><th class="text-right">5 hari</th>' +
         '<th class="text-right">Nilai 20h (USD)</th></tr></thead><tbody>' +
-        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker) + '</td>' +
+        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker, "etf") + '</td>' +
           '<td class="text-right tabular">' + mkPrice(x.price) + '</td>' +
           '<td class="text-right tabular text-slate-500">' + mkPrice(x.sma200) + '</td>' +
           '<td class="text-right tabular ' + ((x.dist_sma200_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.dist_sma200_pct) + '%</td>' +

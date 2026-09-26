@@ -158,6 +158,29 @@ jobs:
           fi
           python research/markets/summary.py 2>&1 | tee -a research/markets/reports/export.log || true
 
+      # Backtest AKURASI screener: mengukur ulang aturan yang DISAJIKAN screener pada
+      # panel yang SAMA yang dipakai study, lalu membandingkan angkanya dengan
+      # api/market_study.json. Kalau tidak sama, ada yang menyimpang antara yang
+      # disajikan dan yang diukur. ETF diuji --all-rules supaya keputusan "menu
+      # kosong" punya buktinya, bukan hanya dipercaya.
+      - name: Backtest akurasi screener
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ -f research/.cache/markets/us_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market us \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+          if [ -f research/.cache/markets/etf_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market etf --all-rules \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market crypto \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+
       # Selalu jalan: laporan pasar yang berhasil tidak boleh hilang karena pasar lain gagal.
       - name: Simpan laporan ukur ke repo
         if: always()

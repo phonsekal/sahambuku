@@ -34,6 +34,8 @@ aturan yang lolos bar **di data ETF** — angka saham biasa tidak dipinjam untuk
 | `universe.py` | daftar universe: saham AS + **ETF** + crypto top-N, plus penolakan pair Kraken |
 | `pull.py` | tarik OHLCV harian ke cache lokal, per potongan, dengan checkpoint (crypto: Yahoo → Kraken → CoinGecko) |
 | `study.py` | ukur strategi kandidat dengan DUA ukuran (rata-rata + tahan-outlier) untuk `us`, `etf`, `crypto` |
+| `state_rules.py` | **satu sumber** daftar aturan keadaan (kunci kolom, nama aturan, label, deskripsi) |
+| `backtest_screener.py` | backtest AKURASI: ukur ulang aturan yang disajikan screener, bandingkan dengan `api/market_study.json` |
 | `execute_us.py` | verifikasi EKSEKUSI aturan AS/ETF (`--market us|etf`): likuiditas, slippage, masuk-di-open |
 | `export.py` | ekspor snapshot ringkas crypto + **keadaan turunan** AS & ETF (satu baris/ticker) |
 | `summary.py` | ringkas laporan teks → `api/market_study.json` + putusan lolos-bar |
@@ -259,13 +261,34 @@ Permukaan produksi:
 | `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota) |
 | `GET /api/markets/us/screener?criteria=…` | pemindai AS dari keadaan turunan (`all` atau salah satu kunci aturan yang lolos bar, mis. `pullback_uptrend`) |
 | `GET /api/markets/etf/screener?criteria=…` | pemindai **ETF** dari keadaan turunan ETF; kriterianya hanya yang lolos bar di ETF |
+| `GET /api/markets/analyze/{market}/{ticker}` | analisis satu emiten pasar luar IDX (`us`/`etf` = keadaan turunan, `crypto` = indikator penuh dari snapshot OHLCV); 0 kuota, tanpa jaringan |
 | `api/market_crypto.csv` | snapshot 220 bar × 91 koin (di-commit pipeline CI) |
 | `api/market_crypto_meta.json` | cakupan: berapa ticker dapat dari berapa + dari sumber mana |
 | `api/market_us_state.csv` | keadaan turunan AS, satu baris/emiten (ratusan KB, di-commit pipeline CI) |
 | `api/market_etf_state.csv` | keadaan turunan ETF, satu baris/ETF (kolom sama seperti AS) |
 | `api/market_us_exec.json` / `api/market_etf_exec.json` | verifikasi eksekusi AS & ETF (likuiditas, slippage, masuk-di-open) |
 | `api/market_study.json` | ringkasan hasil ukur + `installed` + `age_days`/`stale` (di-commit pipeline CI) |
-| tab **🌐 AS & Crypto** di dashboard | status data, tabel hasil ukur, pemindai crypto, AS, & ETF (klik ticker → buka tab Analisis) |
+| tab **🌐 AS & Crypto** di dashboard | status data, tabel hasil ukur, pemindai crypto, AS, & ETF (klik ticker → buka tab Analisis dengan pasar yang benar) |
+| tab **🔎 Analisis** di dashboard | pemilih pasar IDX / AS / ETF / Crypto; IDX lewat jalur penuh, AS/ETF lewat keadaan turunan, crypto lewat snapshot OHLCV |
+
+### Backtest akurasi screener
+
+`backtest_screener.py` mengukur ulang aturan yang DISAJIKAN screener pada panel yang
+SAMA yang dipakai `study.py` (mesin ukur dipakai ulang, bukan ditulis ulang), lalu
+membandingkan `a20`/`m20`/`net20` dengan `api/market_study.json`. Hasilnya ditulis ke
+`reports/backtest_<pasar>.json` dan dijalankan otomatis di pipeline CI:
+
+```bash
+.venv/bin/python research/markets/backtest_screener.py --market crypto
+.venv/bin/python research/markets/backtest_screener.py --market us
+.venv/bin/python research/markets/backtest_screener.py --market etf --all-rules  # uji semua aturan (menu ETF kosong)
+```
+
+Yang diukur: n sinyal, rata-rata & median return 20 hari ke depan (excess vs rata-rata
+pasar pada tanggal yang sama), blok t, net setelah biaya, kedua paruh waktu, dan
+**hit rate** (bagian hari-sinyal dengan excess positif). Kolom "vs study" menyatakan
+COCOK/BEDA; bila panel lokal berbeda dari yang diukur CI, kecocokan **tidak diuji**
+(itulah sebabnya CI yang menjalankannya, karena hanya di sana panelnya lengkap).
 
 ### Cakupan data: 91 dari 100 (disebut apa adanya)
 

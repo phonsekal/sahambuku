@@ -8466,6 +8466,224 @@ def state_screen(market: str, criteria: str, limit: int) -> dict:
 MARKET_STALE_DAYS = 5
 
 
+MARKET_LABEL = {"us": "Saham AS", "etf": "ETF", "crypto": "Crypto"}
+
+
+def _mf(v) -> Optional[float]:
+    """float atau None (NaN ikut jadi None) — dipakai analisis pasar luar IDX."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f
+
+
+def _pct_text(v: Optional[float]) -> str:
+    return "—" if v is None else f"{v:+.2f}%"
+
+
+def _analyze_state_market(market: str, ticker: str) -> dict:
+    """Analisis SAHAM AS / ETF dari KEADAAN TURUNAN (0 kuota, tanpa jaringan).
+
+    Batasnya jujur: repo hanya menyimpan satu baris nilai TERAKHIR per emiten
+    (close, SMA20/50/200, high52, ret1/ret5, nilai transaksi), bukan OHLCV. Jadi di
+    sini TIDAK ada RSI/MACD/candlestick — itu akan menuntut panel penuh (puluhan MB)
+    yang memang tidak boleh masuk repo. Yang bisa dijawab: posisi harga terhadap tren,
+    jarak ke puncak 52m, momentum pendek, likuiditas, dan aturan mana yang menyala.
+    """
+    df = load_state(market)
+    if df is None or df.empty:
+        raise HTTPException(503, (
+            f"Keadaan turunan '{market}' belum ada di server "
+            f"(api/market_{market}_state.csv). Pipeline CI yang menulisnya."))
+    hit = df[df["code"].astype(str).str.upper() == ticker]
+    if hit.empty:
+        raise HTTPException(404, (
+            f"'{ticker}' tidak ada di keadaan {market.upper()}. Cari kandidat lewat "
+            f"/api/markets/{market}/screener."))
+    r = hit.iloc[0]
+    study = _read_json_cached(MARKET_STUDY_PATH)
+    reg = _state_registry(study)
+    lolos = set((((study or {}).get("markets") or {}).get(market) or {})
+                .get("lolos_bar") or [])
+
+    price = _mf(r.get("close"))
+    sma20, sma50, sma200 = _mf(r.get("sma20")), _mf(r.get("sma50")), _mf(r.get("sma200"))
+    high52 = _mf(r.get("high52"))
+    dist_high52 = _mf(r.get("dist_high52_pct"))
+    ret1, ret5 = _mf(r.get("ret1_pct")), _mf(r.get("ret5_pct"))
+    v20 = _mf(r.get("v20_usd"))
+
+    rules = []
+    for key, meta in reg.items():
+        if key not in df.columns:
+            continue
+        rules.append({
+            "key": key, "label": meta.get("label") or key,
+            "rule": meta.get("rule"), "desc": meta.get("desc"),
+            "met": int(r.get(key) or 0) == 1,
+            "served": meta.get("rule") in lolos,
+        })
+    active = [x for x in rules if x["met"] and x["served"]]
+
+    lines: List[str] = []
+    if price is not None and sma200 is not None:
+        lines.append(f"Harga {'di atas' if price > sma200 else 'di bawah'} SMA200 "
+                     f"({sma200:.4g}) — {'tren naik' if price > sma200 else 'tren turun'}.")
+    if price is not None and sma20 is not None and sma50 is not None:
+        lines.append(f"Posisi vs SMA20/SMA50: {price:.4g} / {sma20:.4g} / {sma50:.4g}.")
+    if dist_high52 is not None:
+        lines.append(f"Jarak ke puncak 52 minggu: {_pct_text(dist_high52)}.")
+    if ret5 is not None:
+        lines.append(f"Momentum: 1 hari {_pct_text(ret1)}, 5 hari {_pct_text(ret5)}.")
+    if v20 is not None:
+        lines.append(f"Likuiditas 20 hari: {v20:,.0f} USD/hari.")
+    if active:
+        lines.append("Aturan yang menyala: " + ", ".join(x["label"] for x in active) + ".")
+    else:
+        lines.append("Tidak ada aturan keadaan yang lolos bar dan menyala pada snapshot ini.")
+
+    return {
+        "market": market, "ticker": str(r.get("code")), "label": MARKET_LABEL[market],
+        "as_of": str(r.get("date")), "price": num(price, 4), "currency": "USD",
+        "kind": "derived_state",
+        "indicators": {"sma20": num(sma20, 4), "sma50": num(sma50, 4),
+                       "sma200": num(sma200, 4), "high52": num(high52, 4),
+                       "dist_high52_pct": num(dist_high52, 2),
+                       "ret1_pct": num(ret1, 2), "ret5_pct": num(ret5, 2),
+                       "v20_usd": num(v20, 0)},
+        "rules": rules,
+        "active_rules": active,
+        "measurement": {x["key"]: _state_measured(study, market, x["key"]) for x in active},
+        "analysis": lines,
+        "execution": _read_json_cached(os.path.join(_API_DIR, f"market_{market}_exec.json")),
+        "data_basis": ("Keadaan turunan per emiten (nilai TERAKHIR), bukan panel penuh — "
+                       "RSI/MACD tidak tersedia di jalur ini. Harga = close harian CI."),
+        "notes": [n for n in (STATE_BASIS.get(market),) if n] + [
+            "Aturan ini FILTER KEADAAN — daftar kandidat, bukan sinyal beli hari ini.",
+            "Harga dari snapshot harian CI (bukan real-time); `as_of` di atas."],
+        "disclaimer": DISCLAIMER,
+    }
+
+
+def _analyze_crypto(ticker: str) -> dict:
+    """Analisis CRYPTO dari snapshot OHLCV ringkas (api/market_crypto.csv, 0 kuota).
+
+    Crypto punya OHLCV 220 bar di repo, jadi di sini bisa dihitung indikator penuh
+    (RSI14, MACD, ATR14, SMA) — beda dengan jalur AS/ETF yang hanya keadaan turunan.
+    """
+    df = load_market_panel("crypto")
+    if df is None or df.empty:
+        raise HTTPException(503, ("Snapshot crypto belum ada di server "
+                                  "(api/market_crypto.csv). Pipeline CI yang menulisnya."))
+    g = df[df["code"].astype(str).str.upper() == ticker].sort_values("date")
+    if g.empty or len(g) < 30:
+        raise HTTPException(404, (
+            f"'{ticker}' tidak ada di snapshot crypto (atau bar-nya kurang). "
+            "Cari kandidat lewat /api/markets/crypto/screener."))
+    close = g["close"].astype(float).reset_index(drop=True)
+    high = g["high"].astype(float).reset_index(drop=True)
+    low = g["low"].astype(float).reset_index(drop=True)
+    vol = g["volume"].astype(float).reset_index(drop=True)
+    price = float(close.iloc[-1])
+
+    s20 = _mf(sma(close, 20).iloc[-1])
+    s50 = _mf(sma(close, 50).iloc[-1])
+    s200 = _mf(sma(close, 200).iloc[-1])
+    r14 = _mf(rsi(close, 14).iloc[-1])
+    ml, ms, mh = macd(close)
+    macd_line, macd_sig, macd_hist = _mf(ml.iloc[-1]), _mf(ms.iloc[-1]), _mf(mh.iloc[-1])
+    atr14 = _mf(atr(pd.DataFrame({"High": high, "Low": low, "Close": close}), 14).iloc[-1])
+    ret1 = (price / close.iloc[-2] - 1) * 100 if len(close) > 1 and close.iloc[-2] else None
+    ret5 = (price / close.iloc[-6] - 1) * 100 if len(close) > 5 and close.iloc[-6] else None
+    hi20 = float(high.iloc[-21:-1].max()) if len(high) > 21 else None
+    vol_ma20 = float(vol.iloc[-21:-1].mean()) if len(vol) > 21 else None
+    vol_x = (float(vol.iloc[-1]) / vol_ma20) if vol_ma20 else None
+    dist_high20 = (price / hi20 - 1) * 100 if hi20 else None
+    atr_pct = (atr14 / price * 100) if atr14 and price else None
+
+    study = _read_json_cached(MARKET_STUDY_PATH)
+    rules = []
+    for key, meta in CRYPTO_CRITERIA.items():
+        rules.append({"key": key, "label": meta, "rule": CRYPTO_RULE_NAME.get(key),
+                      "met": False, "served": True})
+    hit_keys = []
+    if ret5 is not None and ret5 >= 10.0:
+        hit_keys.append("momentum")
+    if hi20 is not None and price > hi20:
+        hit_keys.append("breakout")
+    if "momentum" in hit_keys and "breakout" in hit_keys:
+        hit_keys.append("momentum_breakout")
+    for x in rules:
+        x["met"] = x["key"] in hit_keys
+    active = [x for x in rules if x["met"]]
+
+    lines: List[str] = []
+    if s200 is not None:
+        lines.append(f"Harga {'di atas' if price > s200 else 'di bawah'} SMA200 "
+                     f"({s200:.6g}) — {'tren naik' if price > s200 else 'tren turun'}.")
+    if r14 is not None:
+        zone = ("jenuh beli" if r14 >= 70 else "jenuh jual" if r14 <= 30 else "netral")
+        lines.append(f"RSI14: {r14:.1f} ({zone}).")
+    if macd_line is not None and macd_sig is not None:
+        lines.append(f"MACD {'di atas' if macd_line > macd_sig else 'di bawah'} "
+                     f"garis sinyal (hist {macd_hist:+.4g}).")
+    if dist_high20 is not None:
+        lines.append(f"Jarak ke high 20 hari: {_pct_text(dist_high20)}.")
+    if ret5 is not None:
+        lines.append(f"Momentum: 1 hari {_pct_text(ret1)}, 5 hari {_pct_text(ret5)}.")
+    if atr_pct is not None:
+        lines.append(f"Volatilitas ATR14: {atr_pct:.2f}% dari harga.")
+    lines.append("Aturan yang menyala: " +
+                 (", ".join(x["label"] for x in active) if active else "tidak ada") + ".")
+
+    return {
+        "market": "crypto", "ticker": str(g["code"].iloc[-1]), "label": MARKET_LABEL["crypto"],
+        "as_of": str(pd.to_datetime(g["date"].iloc[-1]).date()), "price": num(price, 6),
+        "currency": "USD", "kind": "ohlcv_snapshot",
+        "indicators": {"sma20": num(s20, 6), "sma50": num(s50, 6), "sma200": num(s200, 6),
+                       "rsi14": num(r14, 2), "macd": num(macd_line, 6),
+                       "macd_signal": num(macd_sig, 6), "macd_hist": num(macd_hist, 6),
+                       "atr14": num(atr14, 6), "atr_pct": num(atr_pct, 2),
+                       "high20": num(hi20, 6), "dist_high20_pct": num(dist_high20, 2),
+                       "ret1_pct": num(ret1, 2), "ret5_pct": num(ret5, 2),
+                       "vol_vs_ma20_x": num(vol_x, 2)},
+        "rules": rules,
+        "active_rules": active,
+        "measurement": {x["key"]: _crypto_measured(study, x["key"]) for x in active},
+        "analysis": lines,
+        "data_basis": ("Snapshot OHLCV ringkas 220 bar terakhir dari pipeline CI "
+                       "(bukan real-time). Crypto diperdagangkan 24/7."),
+        "notes": [
+            "Crypto diukur terpisah dari saham (volatilitas & biaya berbeda).",
+            "Aturan ini FILTER KEADAAN — daftar kandidat, bukan sinyal beli hari ini.",
+            "Harga dari snapshot harian CI (bukan real-time); `as_of` di atas.",
+        ],
+        "disclaimer": DISCLAIMER,
+    }
+
+
+@app.get("/api/markets/analyze/{market}/{ticker}")
+def markets_analyze(market: str, ticker: str):
+    """Analisis satu emiten di pasar luar IDX: `us`, `etf`, atau `crypto`.
+
+    - `us`/`etf`: dari KEADAAN TURUNAN (nilai terakhir per emiten) — tanpa RSI/MACD.
+    - `crypto`  : dari snapshot OHLCV — indikator penuh.
+
+    Endpoint ini TIDAK memanggil jaringan (0 kuota) dan tidak menyentuh jalur IDX:
+    saham IDX tetap dianalisis lewat /api/analyze/{ticker}.
+    """
+    m = (market or "").strip().lower()
+    tk = (ticker or "").strip().upper()
+    if not tk:
+        raise HTTPException(422, "Ticker kosong.")
+    if m == "crypto":
+        return _analyze_crypto(tk)
+    if m in ("us", "etf"):
+        return _analyze_state_market(m, tk)
+    raise HTTPException(422, f"Pasar '{market}' tidak dikenal. Pilih: us, etf, crypto.")
+
+
 @app.get("/api/markets/study")
 def markets_study():
     """Hasil ukur pasar AS & crypto + daftar aturan yang benar-benar dipasang.
