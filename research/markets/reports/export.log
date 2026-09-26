@@ -23,3 +23,10 @@
 [us] 5801 ticker · 20 aturan diukur · 3 lolos bar · 3 dipasang · cakupan 5801/5898 ticker
 [etf] 5333 ticker · 20 aturan diukur · 0 lolos bar · 0 dipasang · cakupan 5333/5696 ticker
 -> /home/runner/work/sahambuku/sahambuku/api/market_study.json (23.5 KB)
+[crypto] 19,972 baris · 91 dari 100 ticker · 2026-09-25 · 1.86 MB -> /home/runner/work/sahambuku/sahambuku/api/market_crypto.csv
+[us] keadaan turunan: 5801 emiten · 2026-09-25 · 672 KB -> /home/runner/work/sahambuku/sahambuku/api/market_us_state.csv
+[etf] keadaan turunan: 5333 emiten · 2026-09-25 · 618 KB -> /home/runner/work/sahambuku/sahambuku/api/market_etf_state.csv
+[crypto] 91 ticker · 20 aturan diukur · 8 lolos bar · 3 dipasang · cakupan 91/100 ticker
+[us] 5801 ticker · 20 aturan diukur · 3 lolos bar · 3 dipasang · cakupan 5801/5898 ticker
+[etf] 5333 ticker · 20 aturan diukur · 0 lolos bar · 0 dipasang · cakupan 5333/5696 ticker
+-> /home/runner/work/sahambuku/sahambuku/api/market_study.json (23.9 KB)

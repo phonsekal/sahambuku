@@ -11,7 +11,7 @@ Panel us: 6,325,620 saham-hari · 5801 ticker
   ... 5000/5801 ticker
   ... 5500/5801 ticker
 
-=== US · 5801 ticker · 6,325,620 baris · 2021-09-27 -> 2026-09-25 · biaya 0.3% · return dipotong di +/-100%
+=== US · 5801 ticker · 6,325,620 baris · 2021-09-27 -> 2026-09-25 · biaya 0.3% · return dipotong di +/-100% · pembanding rata-rata lintas-aset pada tanggal yang sama
 aturan                                 n       a5     t5      a20    m20    t20    net20         paruh20  putusan
 pullback di uptrend              836,533    +0.09  +21.4    +0.54  +0.64  +30.2    +0.42     +0.47/+0.61  SEPAKAT
 di atas SMA200                  1,918,759    +0.06  +16.7    +0.47  +0.54  +30.8    +0.28     +0.32/+0.62  SEPAKAT
