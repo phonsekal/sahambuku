@@ -323,6 +323,22 @@ class TestEtfUniverse(unittest.TestCase):
     def test_benchmark_for_etf_is_set(self):
         self.assertIn("etf", UNI.BENCHMARK)
 
+    def test_equity_only_buang_etf_non_ekuitas(self):
+        rows = [
+            {"symbol": "SPY", "name": "SPDR S&P 500 ETF Trust", "etf": True},
+            {"symbol": "QQQ", "name": "Invesco QQQ Trust", "etf": True},
+            {"symbol": "TQQQ", "name": "ProShares UltraPro QQQ 3x", "etf": True},
+            {"symbol": "SHV", "name": "iShares Short Treasury Bond ETF", "etf": True},
+            {"symbol": "GLD", "name": "SPDR Gold Shares", "etf": True},
+            {"symbol": "UUP", "name": "Invesco DB US Dollar Index Bullish Fund", "etf": True},
+            {"symbol": "AAPL", "name": "Apple Inc.", "etf": False},
+        ]
+        with mock.patch.object(UNI, "us_universe", return_value=rows):
+            eq = {r["symbol"] for r in UNI.etf_universe()}
+            full = {r["symbol"] for r in UNI.etf_universe(equity_only=False)}
+        self.assertEqual(eq, {"SPY", "QQQ"})
+        self.assertEqual(full, {"SPY", "QQQ", "TQQQ", "SHV", "GLD", "UUP"})
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)

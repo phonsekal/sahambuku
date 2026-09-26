@@ -496,11 +496,18 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
             time.sleep(2)
         print(f"  SWEEP selesai — total dapat {len(_covered_codes(pdir))} ticker")
 
-    merge_parts(market)
+    # Saring ke universe SAAT INI: cache checkpoint bisa berisi ticker yang sudah
+    # TIDAK lagi masuk universe (mis. setelah universe ETF dipersempit ke ekuitas),
+    # dan tanpa saringan ini mereka diam-diam ikut terukur lagi.
+    merge_parts(market, keep=set(str(k) for k in code_to_yahoo.keys()))
 
 
-def merge_parts(market: str) -> pd.DataFrame:
-    """Gabungkan semua checkpoint potongan jadi satu panel panjang + simpan .pkl."""
+def merge_parts(market: str, keep: Optional[set] = None) -> pd.DataFrame:
+    """Gabungkan semua checkpoint potongan jadi satu panel panjang + simpan .pkl.
+
+    `keep` (opsional): himpunan kode yang masih masuk universe saat ini. Bila diisi,
+    checkpoint lama yang tickernya sudah di luar universe DIBUANG dari panel.
+    """
     pdir = _parts_dir(market)
     files = sorted(f for f in os.listdir(pdir) if f.endswith(".pkl"))
     if not files:
@@ -527,6 +534,15 @@ def merge_parts(market: str) -> pd.DataFrame:
     panel = pd.concat(long_rows, ignore_index=True)
     panel["date"] = pd.to_datetime(panel["date"])
     panel = panel.dropna(subset=["close"]).sort_values(["code", "date"]).reset_index(drop=True)
+    if keep is not None:
+        before = panel["code"].nunique()
+        panel = panel[panel["code"].astype(str).isin(keep)].reset_index(drop=True)
+        dropped = before - panel["code"].nunique()
+        if dropped:
+            print(f"[{market}] {dropped} ticker dari cache lama di luar universe "
+                  "saat ini — dibuang (universe berubah).")
+        if panel.empty:
+            raise SystemExit("Setelah disaring ke universe saat ini, panel kosong.")
     # Catat CAKUPAN (berapa dari berapa) supaya "74 koin" tidak pernah terbaca
     # sebagai "100 koin". Ditulis terpisah karena yang menarik hanya tickernya.
     try:

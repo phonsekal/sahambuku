@@ -248,7 +248,15 @@ manual, dan dipisahkan dari pengukuran:
   heterogen (leveraged, inverse, komoditas, obligasi) sehingga rata-rata lintas-ETF
   condong ke produk berleverage dan membuat semua aturan tampak negatif. Setelah itu,
   yang **lolos bar di ETF** dipasang **otomatis** oleh `summary.py` (tidak boleh ada
-  aturan ETF yang tampil tanpa pengukuran ETF). Selama belum ada aturan yang lolos bar di data ETF, menu ETF
+  aturan ETF yang tampil tanpa pengukuran ETF).
+
+  Universe ETF juga **dipersempit ke ETF EKUITAS** (`etf_universe(equity_only=True)`):
+  leveraged/inverse, obligasi, komoditas, dan valuta dibuang, sehingga aturan teknikal
+  diukur pada keranjang ekuitas tempat tren/breakout punya arti (5.696 → ~3.822).
+  **CATATAN JUJUR:** penyaringan ini berbasis KATA pada nama (NASDAQ Trader tidak
+  memberi kategori resmi), jadi ada kemungkinan salah buang/salah simpan. `pull.py`
+  juga menyaring hasil merge ke universe SAAT INI, supaya checkpoint lama yang di luar
+  universe tidak diam-diam ikut terukur lagi. Selama belum ada aturan yang lolos bar di data ETF, menu ETF
   **sengaja kosong** dan API menjawab 503 beserta alasannya — itu keadaan yang benar,
   bukan kekurangan data. Semua kandidat aturan kini punya kolom di keadaan turunan,
   jadi aturan mana pun yang lolos bar di ETF langsung bisa disajikan **tanpa mengubah

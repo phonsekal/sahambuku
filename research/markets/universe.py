@@ -51,6 +51,27 @@ _SKIP_NAME = re.compile(
     re.IGNORECASE,
 )
 
+# ETF yang BUKAN ekuitas: leveraged/inverse, obligasi, komoditas, valuta, volatilitas.
+# KENAPA DIBUANG: aturan teknikal (tren, breakout, SMA) hanya bermakna pada keranjang
+# EKUITAS. Pada ETF berleverage/inverse, obligasi, komoditas, atau valuta, harga
+# ditentukan hal lain (leverage harian, suku bunga, harga komoditas) sehingga aturan
+# harga nyaris tidak bermakna — dan universe campur membuat pembandingnya keruh.
+#
+# CATATAN JUJUR: NASDAQ Trader hanya memberi simbol + nama (tanpa kategori), jadi
+# penyaringan ini berbasis KATA pada nama, bukan klasifikasi resmi. Artinya ada
+# kemungkinan salah buang/salah simpan (mis. ETF ekuitas yang kebetulan memuat kata
+# "Short"). Batasan itu ditulis di README, bukan disembunyikan.
+_NON_EQUITY_ETF = re.compile(
+    r"\b(2x|3x|4x|leveraged|ultra|inverse|bear|short)\b"
+    r"|bond|treasury|treasuries|fixed income|corporate|municipal|\bmbs\b|\btips\b"
+    r"|high yield|investment grade|aggregate|duration|credit|securitized|\bloan\b"
+    r"|gold|silver|platinum|palladium|copper|commodit|crude|\boil\b|natural gas"
+    r"|agricultur|livestock|physical"
+    r"|currency|dollar|\byen\b|\beuro\b|forex|\bfx\b"
+    r"|vix|volatility",
+    re.IGNORECASE,
+)
+
 # Benchmark tiap pasar. Sengaja dicatat di sini supaya studi memakai pembanding
 # yang sama dengan yang ditampilkan aplikasi (bukan indeks yang berbeda-beda).
 BENCHMARK = {"us": "SPY", "etf": "SPY", "crypto": "BTC-USD"}
@@ -146,7 +167,7 @@ def us_universe(include_etf: bool = False, include_test: bool = False) -> List[d
     return uniq
 
 
-def etf_universe() -> List[dict]:
+def etf_universe(equity_only: bool = True) -> List[dict]:
     """ETF terdaftar di AS, HANYA baris yang ditandai ETF oleh NASDAQ Trader.
 
     KENAPA DIPISAH dari `us_universe`: ETF dan saham biasa punya perilaku berbeda
@@ -155,11 +176,20 @@ def etf_universe() -> List[dict]:
     saham biasa. Fungsi ini hanya menyediakan daftarnya; menunya (screener) baru
     muncul setelah ada aturan yang lolos bar di pasar ini.
 
+    `equity_only=True` (default) membuang ETF NON-EKUITAS (leveraged/inverse,
+    obligasi, komoditas, valuta, volatilitas) lewat `_NON_EQUITY_ETF`, supaya aturan
+    teknikal diukur pada keranjang ekuitas tempat tren/breakout punya arti. Sebelum
+    semester 2026, universe penuh (5.696 ETF) membuat SEMUA aturan tampak negatif —
+    bukan karena strateginya, tetapi karena pembandingnya campuran produk leverage.
+
     Wadah/ETN dengan kata "notes"/"units"/"warrant" tetap dibuang lewat
     `_SKIP_NAME` — sama seperti saham biasa — supaya yang tersisa benar-benar ETF
     yang diperdagangkan seperti saham.
     """
-    return [r for r in us_universe(include_etf=True) if r.get("etf") is True]
+    rows = [r for r in us_universe(include_etf=True) if r.get("etf") is True]
+    if equity_only:
+        rows = [r for r in rows if not _NON_EQUITY_ETF.search(str(r.get("name", "")))]
+    return rows
 
 
 def crypto_universe(top: int = 100) -> List[dict]:
