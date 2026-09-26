@@ -1,4 +1,4 @@
-[etf] 5696 ticker · period=5y · chunk=250
+[etf] 3822 ticker · period=5y · chunk=250
   [0] checkpoint ada — dilewati
   [1] checkpoint ada — dilewati
   [2] checkpoint ada — dilewati
@@ -15,14 +15,8 @@
   [13] checkpoint ada — dilewati
   [14] checkpoint ada — dilewati
   [15] checkpoint ada — dilewati
-  [16] checkpoint ada — dilewati
-  [17] checkpoint ada — dilewati
-  [18] checkpoint ada — dilewati
-  [19] checkpoint ada — dilewati
-  [20] checkpoint ada — dilewati
-  [21] checkpoint ada — dilewati
-  [22] checkpoint ada — dilewati
-  SWEEP: 363 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
+  SWEEP: 222 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
   SWEEP selesai — total dapat 5333 ticker
-[etf] panel: 4,122,434 saham-hari · 5333 ticker · 2021-09-27 -> 2026-09-25
+[etf] 1733 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
+[etf] panel: 2,890,729 saham-hari · 3600 ticker · 2021-09-27 -> 2026-09-25
 [etf] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/etf_panel.pkl

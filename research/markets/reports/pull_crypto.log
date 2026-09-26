@@ -8,7 +8,7 @@
   CoinGecko gagal untuk bitway: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk hashnote-usyc: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk blockchain-capital: HTTP Error 429: Too Many Requests
   CoinGecko gagal untuk eutbl: HTTP Error 429: Too Many Requests
   CoinGecko gagal untuk superstate-short-duration-us-government-securities-fund-ustb: HTTP Error 429: Too Many Requests
