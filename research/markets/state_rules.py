@@ -78,9 +78,11 @@ STATE_RULES: List[Dict[str, str]] = [
     {"key": "drop5d_above_sma200", "rule": "turun 5d>=10% di atas SMA200",
      "label": "Turun 5 hari >= 10% tapi di atas SMA200",
      "desc": "ret 5 hari <= -10% DAN close masih di atas SMA200"},
+    # `control` = pembanding arah pasar, BUKAN kandidat beli. Ditandai supaya ia tidak
+    # pernah ditawarkan sebagai penyaring di mode "belum lolos bar" (lihat api/index.py).
     {"key": "new_low52_control", "rule": "dasar 52m baru (kontrol)",
      "label": "Dasar 52 minggu baru (kontrol)",
-     "desc": "close <= low 52 minggu (kontrol arah pasar)"},
+     "desc": "close <= low 52 minggu (kontrol arah pasar)", "control": True},
 ]
 
 STATE_KEYS: List[str] = [r["key"] for r in STATE_RULES]
@@ -88,6 +90,15 @@ RULE_NAMES: Dict[str, str] = {r["key"]: r["rule"] for r in STATE_RULES}
 
 
 def as_registry() -> Dict[str, Dict[str, str]]:
-    """Bentuk yang ditulis/dibaca JSON: kunci kolom -> {rule, label, desc}."""
-    return {r["key"]: {"rule": r["rule"], "label": r["label"], "desc": r["desc"]}
-            for r in STATE_RULES}
+    """Bentuk yang ditulis/dibaca JSON: kunci kolom -> {rule, label, desc, control?}.
+
+    `control: True` hanya ditulis bila ada — penanda bahwa aturan itu pembanding arah
+    pasar, bukan kandidat beli.
+    """
+    out: Dict[str, Dict[str, str]] = {}
+    for r in STATE_RULES:
+        meta = {"rule": r["rule"], "label": r["label"], "desc": r["desc"]}
+        if r.get("control"):
+            meta["control"] = True
+        out[r["key"]] = meta
+    return out

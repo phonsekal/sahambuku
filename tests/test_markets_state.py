@@ -104,6 +104,31 @@ class TestStateScreen(unittest.TestCase):
                 IDX.state_screen("etf", "all", 10)
         self.assertEqual(cm.exception.status_code, 503)
 
+    def test_filter_mode_when_market_measured_but_nothing_passes(self):
+        # ETF sudah diukur tetapi tak ada aturan lolos bar -> tetap bisa dipakai
+        # sebagai PENYARING, dengan peringatan dan tanpa aturan kontrol.
+        df = state_frame([
+            {"code": "SPY", "above_sma200": 1, "v20_usd": 9_000_000.0},
+            {"code": "AAA", "near_high52": 1, "v20_usd": 1_000_000.0},
+            {"code": "ZZZ", "new_low52_control": 1, "v20_usd": 1_000_000.0},
+        ])
+        study = {"markets": {"etf": {"lolos_bar": [], "rules": [{"aturan": "di atas SMA200", "n": 5}]}}}
+        p1, p2 = self._patched(df, study)
+        with p1, p2:
+            res = IDX.state_screen("etf", "all", 10)
+        self.assertFalse(res["validated"])
+        self.assertIn("BELUM lolos bar", res["warning"])
+        self.assertEqual({r["ticker"] for r in res["results"]}, {"SPY", "AAA"})
+
+    def test_filter_mode_still_422_for_unknown_criteria(self):
+        df = state_frame([{"code": "SPY", "above_sma200": 1}])
+        study = {"markets": {"etf": {"lolos_bar": [], "rules": []}}}
+        p1, p2 = self._patched(df, study)
+        with p1, p2:
+            with self.assertRaises(HTTPException) as cm:
+                IDX.state_screen("etf", "tidak_ada", 10)
+        self.assertEqual(cm.exception.status_code, 422)
+
     def test_422_for_unknown_criteria_lists_choices(self):
         df = state_frame([{"code": "SPY", "above_sma200": 1}])
         p1, p2 = self._patched(df, study_payload("etf", ["di atas SMA200"]))
@@ -222,6 +247,36 @@ class TestMarketAnalyze(unittest.TestCase):
         with self.assertRaises(HTTPException) as cm:
             IDX.markets_analyze("jp", "AAA")
         self.assertEqual(cm.exception.status_code, 422)
+
+
+class TestStateOptions(unittest.TestCase):
+    """`_state_options` = apa yang AKAN diterima endpoint screener (server-driven)."""
+
+    def test_filter_mode_excludes_control_rules(self):
+        study = {"markets": {"etf": {"lolos_bar": [], "rules": []}},
+                 "state_rules": SR.as_registry()}
+        validated, opts = IDX._state_options(study, "etf")
+        self.assertFalse(validated)
+        self.assertIn("above_sma200", opts)
+        self.assertNotIn("new_low52_control", opts)
+
+    def test_validated_mode_only_lists_bar_passing_rules(self):
+        study = {"markets": {"us": {"lolos_bar": ["di atas SMA200"], "rules": []}},
+                 "state_rules": SR.as_registry()}
+        validated, opts = IDX._state_options(study, "us")
+        self.assertTrue(validated)
+        self.assertEqual(list(opts), ["above_sma200"])
+
+    def test_unmeasured_market_offers_nothing(self):
+        self.assertEqual(IDX._state_options({"markets": {}}, "etf"), (True, {}))
+
+    def test_study_endpoint_exposes_screener_options(self):
+        data = {"markets": {"etf": {"lolos_bar": [], "rules": []}},
+                "state_rules": SR.as_registry()}
+        with mock.patch.object(IDX, "_read_json_cached", return_value=data):
+            out = IDX.markets_study()
+        self.assertFalse(out["state_screener"]["etf"]["validated"])
+        self.assertIn("above_sma200", out["state_screener"]["etf"]["criteria"])
 
 
 class TestSummaryEtfInstall(unittest.TestCase):

@@ -3542,20 +3542,31 @@ const mkPrice = v => v == null ? "—" : (v >= 100 ? fmt(v, 2) : v >= 1 ? fmt(v,
 function populateStateCriteria(market, selectId, d) {
   const sel = $("#" + selectId);
   if (!sel) return;
-  const ms = ((d.markets || {})[market]) || {};
-  const lolos = new Set(ms.lolos_bar || []);
   const reg = d.state_rules || {};
-  const avail = Object.keys(reg).filter(k => lolos.has(reg[k].rule));
-  const label = k => (reg[k].label || reg[k].rule || k);
+  // Server memberi tahu opsi yang benar-benar diterima (state_screener). Bila belum
+  // ada, dashboard menghitungnya sendiri dari registry + lolos_bar.
+  const s = (d.state_screener || {})[market];
+  let avail, validated;
+  if (s) {
+    avail = Object.keys(s.criteria || {});
+    validated = s.validated !== false;
+  } else {
+    const lolos = new Set((((d.markets || {})[market]) || {}).lolos_bar || []);
+    avail = Object.keys(reg).filter(k => lolos.has(reg[k].rule));
+    validated = avail.length > 0;
+  }
+  const label = k => (s && s.criteria[k]) || (reg[k] && (reg[k].label || reg[k].rule)) || k;
   if (!avail.length) {
-    sel.innerHTML = '<option value="all">Belum ada aturan yang lolos bar di ' +
+    sel.innerHTML = '<option value="all">Belum ada aturan yang tersedia di ' +
       market.toUpperCase() + '</option>';
     sel.disabled = true;
     return;
   }
-  sel.innerHTML = '<option value="all">Semua aturan ' + market.toUpperCase() +
-    ' (' + avail.length + ')</option>' +
-    avail.map(k => '<option value="' + esc(k) + '">' + esc(label(k)) + '</option>').join("");
+  const allTxt = (validated ? 'Semua aturan ' : '⚠ Semua penyaring ') +
+    market.toUpperCase() + ' (' + avail.length + ')';
+  const prefix = validated ? "" : "⚠ ";
+  sel.innerHTML = '<option value="all">' + allTxt + '</option>' +
+    avail.map(k => '<option value="' + esc(k) + '">' + esc(prefix + label(k)) + '</option>').join("");
   sel.disabled = false;
 }
 
@@ -3765,7 +3776,12 @@ async function scanMarketETF() {
     const r = await fetch("/api/markets/etf/screener?criteria=" + encodeURIComponent(crit) + "&limit=60");
     const j = await r.json();
     if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
-    let h = '<div class="mb-2 text-slate-400">Keadaan <b class="text-slate-300">' + esc(j.as_of) +
+    let h = "";
+    if (j.validated === false) {
+      h += '<div class="mb-3 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2">⚠ ' +
+        esc(j.warning || "Belum ada aturan ETF yang lolos bar — ini penyaring keadaan, bukan klaim alpha.") + '</div>';
+    }
+    h += '<div class="mb-2 text-slate-400">Keadaan <b class="text-slate-300">' + esc(j.as_of) +
       '</b> · ' + esc(String(j.scanned)) + ' ETF · <b class="text-slate-200">' + esc(String(j.total_matched)) +
       '</b> lolos · kriteria: ' + esc(j.criteria_label || j.criteria) + '</div>';
     const m = j.measurement || {};

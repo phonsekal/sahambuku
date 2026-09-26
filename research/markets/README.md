@@ -256,7 +256,14 @@ manual, dan dipisahkan dari pengukuran:
   **CATATAN JUJUR:** penyaringan ini berbasis KATA pada nama (NASDAQ Trader tidak
   memberi kategori resmi), jadi ada kemungkinan salah buang/salah simpan. `pull.py`
   juga menyaring hasil merge ke universe SAAT INI, supaya checkpoint lama yang di luar
-  universe tidak diam-diam ikut terukur lagi. Selama belum ada aturan yang lolos bar di data ETF, menu ETF
+  universe tidak diam-diam ikut terukur lagi.
+
+  Karena **tetap tidak ada aturan ETF yang lolos bar** (semua kalah dari SPY), menu
+  ETF disajikan sebagai **alat penyaring keadaan berlabel** — bukan aturan terpasang.
+  Respons `/api/markets/etf/screener` membawa `validated: false` + `warning`
+  ("BELUM lolos bar — daftar kandidat, bukan klaim alpha"), aturan kontrol dibuang
+  (ditandai `control: true` di `state_rules.py`), dan angka ukur tiap aturan tetap
+  ditampilkan. Dashboard menampilkan banner yang sama di atas hasil. Selama belum ada aturan yang lolos bar di data ETF, menu ETF
   **sengaja kosong** dan API menjawab 503 beserta alasannya — itu keadaan yang benar,
   bukan kekurangan data. Semua kandidat aturan kini punya kolom di keadaan turunan,
   jadi aturan mana pun yang lolos bar di ETF langsung bisa disajikan **tanpa mengubah

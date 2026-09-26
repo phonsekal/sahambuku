@@ -8303,6 +8303,15 @@ STATE_CRITERIA_FALLBACK = {
 }
 STATE_ALL_LABEL = "salah satu dari aturan keadaan yang lolos bar di pasar ini"
 
+# Dipakai saat pasar SUDAH diukur tetapi TIDAK ada aturan yang lolos bar (mis. ETF:
+# semuanya kalah dari SPY). Menunya tetap bisa dipakai sebagai penyaring keadaan,
+# tetapi wajib membawa peringatan ini di setiap respons — supaya penyaring tidak
+# pernah terbaca sebagai aturan yang terbukti.
+STATE_FILTER_WARNING = (
+    "BELUM lolos bar: tidak ada aturan {market} yang mengalahkan pembanding pasar. "
+    "Menu ini ALAT PENYARING KEADAAN — daftar kandidat, BUKAN klaim alpha; angka "
+    "ukurnya ditampilkan apa adanya pada tiap baris.")
+
 
 def _state_registry(study: Optional[dict]) -> Dict[str, dict]:
     """Registry aturan keadaan (kunci -> {rule, label, desc}) untuk pasar us/etf.
@@ -8364,6 +8373,28 @@ def _state_measured(study: Optional[dict], market: str, key: str) -> Optional[di
     return None
 
 
+def _state_options(study: Optional[dict], market: str) -> tuple:
+    """(validated, {kunci: label}) — opsi yang AKAN diterima endpoint screener.
+
+    `validated=True`  : ada aturan yang lolos bar di pasar ini (disajikan sebagai aturan).
+    `validated=False` : pasar SUDAH diukur tetapi tak ada yang lolos bar -> disajikan
+                        sebagai PENYARING KEADAAN (aturan kontrol dibuang), dengan
+                        peringatan. Pasar yang belum diukur sama sekali -> kosong.
+    """
+    ms = ((study or {}).get("markets") or {}).get(market) or {}
+    measured = ("rules" in ms) or ("lolos_bar" in ms)
+    reg = _state_registry(study)
+    lolos = set(ms.get("lolos_bar") or [])
+    validated = {k: (m.get("label") or k) for k, m in reg.items()
+                 if m.get("rule") in lolos}
+    if validated:
+        return True, validated
+    if measured:
+        return False, {k: (m.get("label") or k) for k, m in reg.items()
+                       if not m.get("control")}
+    return True, {}
+
+
 def _state_allowed(study: Optional[dict], market: str, df: pd.DataFrame) -> Dict[str, str]:
     """Aturan keadaan yang BOLEH disajikan: LOLOS BAR di pasar ini DAN punya kolom.
 
@@ -8393,12 +8424,17 @@ def state_screen(market: str, criteria: str, limit: int) -> dict:
             f"(api/market_{market}_state.csv). Pipeline CI yang menulisnya — "
             "lihat /api/markets/study untuk status."))
     study = _read_json_cached(MARKET_STUDY_PATH)
-    allowed = _state_allowed(study, market, df)
+    validated, opts = _state_options(study, market)  # True = lolos bar; False = penyaring
+    reg = _state_registry(study)
+    # Yang benar-benar bisa disajikan: opsi di atas yang kolomnya ADA di snapshot.
+    allowed = {k: (reg[k].get("desc") or reg[k].get("rule")) for k in opts
+               if k in df.columns}
     if not allowed:
         raise HTTPException(503, (
-            f"Pasar '{market}' belum punya aturan yang LOLOS BAR dan bisa disajikan, "
-            "jadi tidak ada yang ditampilkan. Lihat /api/markets/study untuk hasil "
-            "ukurnya — ini disengaja, bukan kekurangan data."))
+            f"Keadaan turunan '{market}' belum bisa disaring: belum ada aturan yang "
+            "bisa disajikan (pasar belum diukur, atau snapshot belum punya kolomnya). "
+            "Lihat /api/markets/study untuk status."))
+    warning = None if validated else STATE_FILTER_WARNING.replace("{market}", market.upper())
     if criteria == "all":
         hit_cols = list(allowed)
     elif criteria in allowed:
@@ -8432,7 +8468,7 @@ def state_screen(market: str, criteria: str, limit: int) -> dict:
     out.sort(key=lambda x: (x.get("v20_usd") or 0), reverse=True)
     measured = {c: _state_measured(study, market, c) for c in hit_cols}
     ms = ((study or {}).get("markets") or {}).get(market) or {}
-    notes = [n for n in (STATE_BASIS.get(market), ) if n]
+    notes = [n for n in (warning, STATE_BASIS.get(market)) if n]
     if ms.get("tickers"):
         notes.append(
             f"Diukur penuh: {ms['tickers']:,} ticker, {ms.get('rows', 0):,} baris "
@@ -8444,6 +8480,8 @@ def state_screen(market: str, criteria: str, limit: int) -> dict:
     return {
         "market": market,
         "criteria": criteria,
+        "validated": validated,
+        "warning": warning,
         "criteria_label": (STATE_ALL_LABEL if criteria == "all"
                             else allowed.get(criteria)),
         "universe": STATE_UNIVERSE.get(market, market),
@@ -8712,7 +8750,14 @@ def markets_study():
             v["age_days"] = None
         v["stale"] = bool(v["age_days"] is not None and v["age_days"] > MARKET_STALE_DAYS)
         markets[name] = v
-    return {**data, "markets": markets,
+    # Opsi screener per pasar diberitahukan SERVER (bukan dihitung ulang dashboard),
+    # supaya dropdown tidak bisa menyimpang dari apa yang benar-benar diterima
+    # endpoint /api/markets/<pasar>/screener.
+    state_screener: Dict[str, dict] = {}
+    for _m in ("us", "etf"):
+        _v, _o = _state_options(data, _m)
+        state_screener[_m] = {"validated": _v, "criteria": _o}
+    return {**data, "markets": markets, "state_screener": state_screener,
             "stale_days_threshold": MARKET_STALE_DAYS,
             "disclaimer": DISCLAIMER}
 
