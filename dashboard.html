@@ -798,6 +798,67 @@ function onAnMarketChange() {
     : "Pasar luar IDX: dari keadaan/snapshot CI (0 kuota, tanpa jaringan).";
 }
 
+/* Grafik harga + SMA dari snapshot OHLCV (crypto). Bukan real-time. */
+function mkLineChart(series) {
+  const close = series.close || [], n = close.length;
+  if (n < 2) return "";
+  const dates = series.dates || [];
+  const lines = [
+    { k: "close", color: "#e2e8f0", w: 1.6, label: "Harga" },
+    { k: "sma20", color: "#38bdf8", w: 1.1, label: "SMA20" },
+    { k: "sma50", color: "#f59e0b", w: 1.1, label: "SMA50" },
+    { k: "sma200", color: "#a78bfa", w: 1.1, label: "SMA200" },
+  ];
+  const all = [];
+  lines.forEach(l => (series[l.k] || []).forEach(v => { if (v != null) all.push(v); }));
+  if (all.length < 2) return "";
+  const lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+  const W = 640, H = 180, pad = 6;
+  const px = i => pad + i * (W - 2 * pad) / (n - 1);
+  const py = v => H - pad - (v - lo) / ((hi - lo) || 1) * (H - 2 * pad);
+  let paths = "";
+  lines.forEach(l => {
+    const vals = series[l.k] || [];
+    let d = "", started = false;
+    vals.forEach((v, i) => {
+      if (v == null) { started = false; return; }
+      d += (started ? " L" : " M") + px(i).toFixed(1) + " " + py(v).toFixed(1);
+      started = true;
+    });
+    if (d) paths += '<path d="' + d + '" fill="none" stroke="' + l.color + '" stroke-width="' + l.w + '"/>';
+  });
+  const legend = lines.map(l => '<span class="inline-flex items-center gap-1 mr-3"><span style="display:inline-block;width:10px;height:2px;background:' +
+    l.color + '"></span>' + l.label + '</span>').join("");
+  return '<div class="mt-3"><svg viewBox="0 0 ' + W + ' ' + H +
+    '" class="w-full h-44 bg-slate-950/40 border border-slate-800 rounded-xl">' + paths + '</svg>' +
+    '<div class="text-[11px] text-slate-500 mt-1">' + legend + ' · ' + esc(dates[0] || "") + ' → ' +
+    esc(dates[n - 1] || "") + ' · ' + n + ' bar terakhir (snapshot CI)</div></div>';
+}
+
+/* Gauge posisi harga vs SMA/High52 — jalur AS/ETF tidak punya riwayat OHLCV di repo,
+   jadi yang bisa ditampilkan adalah posisi terhadap titik acuan, bukan grafik harga. */
+function mkLevelGauge(ind) {
+  const price = ind.price;
+  const marks = [["sma20", "#38bdf8"], ["sma50", "#f59e0b"],
+                 ["sma200", "#a78bfa"], ["high52", "#34d399"]];
+  const vals = [price].concat(marks.map(m => ind[m[0]])).filter(v => v != null && v > 0);
+  if (vals.length < 2 || price == null) return "";
+  const lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  const pos = v => ((v - lo) / ((hi - lo) || 1) * 100).toFixed(1);
+  let h = '<div class="mt-3"><div class="text-[11px] text-slate-500 mb-1">Posisi harga terhadap acuan ' +
+    '(tanpa riwayat harga — jalur AS/ETF tidak menyimpan OHLCV):</div>' +
+    '<div class="relative h-8 bg-slate-950/40 border border-slate-800 rounded-xl">' +
+    '<div class="absolute top-0 bottom-0 w-0.5 bg-slate-200" style="left:' + pos(price) + '%"></div>';
+  marks.forEach(m => {
+    if (ind[m[0]] != null) h += '<div class="absolute top-0 bottom-0 w-0.5" style="left:' +
+      pos(ind[m[0]]) + '%;background:' + m[1] + '"></div>';
+  });
+  h += '</div><div class="text-[11px] text-slate-500 mt-1"><span class="inline-block w-2 h-2 rounded-full bg-slate-200 mr-1"></span>Harga ' +
+    mkPrice(price) + marks.map(m => ' · <span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:' +
+      m[1] + '"></span> ' + m[0].toUpperCase() + ' ' + mkPrice(ind[m[0]])).join("") + '</div></div>';
+  return h;
+}
+
 /* Analisis pasar luar IDX (AS/ETF = keadaan turunan, crypto = snapshot OHLCV). */
 function renderMarketAnalyze(d) {
   const ind = d.indicators || {};
@@ -826,6 +887,8 @@ function renderMarketAnalyze(d) {
   h += '<div class="grid sm:grid-cols-2 gap-x-6">';
   order.forEach(k => { if (ind[k] != null) h += kv(LAB[k] || k, ind[k]); });
   h += '</div>';
+  if (d.series) h += mkLineChart(d.series);          // crypto: OHLCV ada di repo
+  else if (d.levels) h += mkLevelGauge(d.levels);    // us/etf: hanya titik acuan
   const active = d.active_rules || [];
   h += '<div class="mt-3 text-xs"><b class="text-slate-400">Aturan yang menyala:</b> ' +
     (active.length ? active.map(x => '<span class="inline-block mr-1 mb-1 px-2 py-0.5 rounded border border-emerald-500/40 text-emerald-300">' +
@@ -3651,7 +3714,30 @@ async function loadMarkets(force) {
         '<td class="text-right tabular text-slate-400">' + mkHalves(r.halves) + '</td>' +
         '<td class="text-center"><span class="text-[10px] px-1.5 py-0.5 rounded border ' + (MK_CLS[r.putusan] || "text-slate-400 border-slate-600") + '">' + esc(r.putusan) + '</span></td></tr>').join("") +
       '</tbody></table><div class="text-[11px] text-slate-500 mt-2">' + esc(d.bar_note || "") +
-      ' <b>Putusan:</b> SEPAKAT = dua ukuran sepakat kuat · TIPIS = positif tapi kecil · EKOR = rata-rata positif tetapi median negatif (ditarik beberapa nama) · RAPUH = lemah/negatif.</div></div>';
+      ' <b>Putusan:</b> SEPAKAT = dua ukuran sepakat kuat · TIPIS = positif tapi kecil · EKOR = rata-rata positif tetapi median negatif (ditarik beberapa nama) · RAPUH = lemah/negatif.</div>';
+    // Backtest AKURASI: angka walk-forward aturan yang DISAJIKAN screener + kecocokan
+    // dengan study. Ditampilkan supaya klaim screener bisa diperiksa, bukan dipercaya.
+    const bt = v.backtest;
+    if (bt && (bt.rules || []).length) {
+      h += '<div class="mt-4 border-t border-slate-800/60 pt-3">' +
+        '<div class="text-[11px] font-bold uppercase tracking-wider text-slate-500 mb-1">🎯 Backtest akurasi — ' + esc(m.toUpperCase()) +
+        ' <span class="text-slate-600 normal-case">(' + esc(String(bt.tickers)) + ' ticker · horizon ' + esc(String(bt.horizon)) +
+        ' hari · ' + (bt.benchmark && bt.benchmark !== "cross_section_mean" ? 'pembanding ' + esc(bt.benchmark) : 'pembanding rata-rata lintas-aset') + ')</span></div>' +
+        '<table class="w-full text-xs min-w-[720px]"><thead><tr class="text-[10px] uppercase text-slate-500 border-b border-slate-700/60">' +
+        '<th class="text-left py-1.5">aturan</th><th class="text-right">n</th><th class="text-right">a20</th>' +
+        '<th class="text-right">m20</th><th class="text-right">blok t</th><th class="text-right">net20</th>' +
+        '<th class="text-right">hit20</th><th class="text-center">vs study</th></tr></thead><tbody>' +
+        bt.rules.map(r => '<tr class="border-b border-slate-800/60"><td class="py-1.5 text-slate-300">' + esc(r.aturan) + '</td>' +
+          '<td class="text-right tabular text-slate-500">' + fmt(r.n, 0) + '</td>' +
+          '<td class="text-right tabular ' + ((r.a20 == null ? 0 : r.a20) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(r.a20) + '%</td>' +
+          '<td class="text-right tabular ' + ((r.m20 == null ? 0 : r.m20) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(r.m20) + '%</td>' +
+          '<td class="text-right tabular text-slate-400">' + mkSgn(r.t20, 1) + '</td>' +
+          '<td class="text-right tabular ' + ((r.net20 == null ? 0 : r.net20) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(r.net20) + '%</td>' +
+          '<td class="text-right tabular text-slate-400">' + (r.hit20_pct == null ? "—" : Number(r.hit20_pct).toFixed(1) + "%") + '</td>' +
+          '<td class="text-center">' + (r.match_study ? '<span class="text-[10px] text-emerald-400">COCOK</span>' : '<span class="text-[10px] text-amber-300">BEDA</span>') + '</td></tr>').join("") +
+        '</tbody></table><div class="text-[11px] text-slate-500 mt-1">Backtest mengukur ULANG aturan yang disajikan screener pada panel yang sama dengan study — "COCOK" berarti angka yang tampil tidak menyimpang.</div></div>';
+    }
+    h += '</div>';
   });
   holder.innerHTML = h;
   holder.dataset.loaded = "1";

@@ -244,7 +244,9 @@ manual, dan dipisahkan dari pengukuran:
   angka verifikasi eksekusi ikut tampil; bukan sebagai sinyal beli hari ini.
 
 * **ETF** — 20 aturan diukur di panel ETF SENDIRI dan terhadap **benchmark pasar SPY**
-  (`study.py --market etf --benchmark SPY`), bukan rata-rata lintas-ETF: universe ETF
+  (`study.py --market etf --benchmark SPY --min-value 20000000`), bukan rata-rata
+  lintas-ETF, dan pada ambang likuiditas LEBIH TINGGI ($20 juta/hari) supaya aturan
+  hanya diukur pada ETF yang benar-benar bisa dieksekusi. Universe ETF
   heterogen (leveraged, inverse, komoditas, obligasi) sehingga rata-rata lintas-ETF
   condong ke produk berleverage dan membuat semua aturan tampak negatif. Setelah itu,
   yang **lolos bar di ETF** dipasang **otomatis** oleh `summary.py` (tidak boleh ada
@@ -279,7 +281,7 @@ Permukaan produksi:
 | `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota) |
 | `GET /api/markets/us/screener?criteria=…` | pemindai AS dari keadaan turunan (`all` atau salah satu kunci aturan yang lolos bar, mis. `pullback_uptrend`) |
 | `GET /api/markets/etf/screener?criteria=…` | pemindai **ETF** dari keadaan turunan ETF; kriterianya hanya yang lolos bar di ETF |
-| `GET /api/markets/analyze/{market}/{ticker}` | analisis satu emiten pasar luar IDX (`us`/`etf` = keadaan turunan, `crypto` = indikator penuh dari snapshot OHLCV); 0 kuota, tanpa jaringan |
+| `GET /api/markets/analyze/{market}/{ticker}` | analisis satu emiten pasar luar IDX (`us`/`etf` = keadaan turunan, `crypto` = indikator penuh dari snapshot OHLCV); 0 kuota, tanpa jaringan. `crypto` menyertakan `series` (harga+SMA) untuk grafik; `us`/`etf` menyertakan `levels` untuk gauge posisi |
 | `api/market_crypto.csv` | snapshot 220 bar × 91 koin (di-commit pipeline CI) |
 | `api/market_crypto_meta.json` | cakupan: berapa ticker dapat dari berapa + dari sumber mana |
 | `api/market_us_state.csv` | keadaan turunan AS, satu baris/emiten (ratusan KB, di-commit pipeline CI) |
@@ -294,7 +296,9 @@ Permukaan produksi:
 `backtest_screener.py` mengukur ulang aturan yang DISAJIKAN screener pada panel yang
 SAMA yang dipakai `study.py` (mesin ukur dipakai ulang, bukan ditulis ulang), lalu
 membandingkan `a20`/`m20`/`net20` dengan `api/market_study.json`. Hasilnya ditulis ke
-`reports/backtest_<pasar>.json` dan dijalankan otomatis di pipeline CI:
+`reports/backtest_<pasar>.json` dan dijalankan otomatis di pipeline CI (langkah ini
+berjalan SEBELUM ringkasan ukur, sehingga angkanya ikut dilampirkan ke
+`api/market_study.json` pada `markets.<pasar>.backtest` dan ditampilkan di dashboard):
 
 ```bash
 .venv/bin/python research/markets/backtest_screener.py --market crypto

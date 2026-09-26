@@ -197,6 +197,10 @@ class TestMarketAnalyze(unittest.TestCase):
                          ["above_sma200", "near_high52", "pullback_uptrend"])
         self.assertTrue(out["analysis"])
         self.assertIn("dist_high52_pct", out["indicators"])
+        # Titik acuan untuk gauge posisi (tanpa riwayat harga di jalur AS/ETF).
+        self.assertEqual(sorted(out["levels"]),
+                         ["high52", "price", "sma20", "sma200", "sma50"])
+        self.assertEqual(out["levels"]["sma200"], out["indicators"]["sma200"])
 
     def test_state_analysis_only_counts_served_rules(self):
         # Aturan menyala tetapi BELUM lolos bar -> tidak masuk active_rules.
@@ -227,6 +231,11 @@ class TestMarketAnalyze(unittest.TestCase):
         self.assertEqual(out["market"], "crypto")
         for k in ("rsi14", "macd", "macd_signal", "atr_pct", "sma200"):
             self.assertIsNotNone(out["indicators"][k], k)
+        # Riwayat untuk grafik: panjang seri harus konsisten dengan daftar tanggal.
+        ser = out["series"]
+        self.assertEqual(len(ser["dates"]), len(ser["close"]))
+        self.assertEqual(set(ser), {"dates", "close", "sma20", "sma50", "sma200"})
+        self.assertEqual(len(ser["sma200"]), len(ser["close"]))
 
     def test_crypto_analysis_unknown_ticker_is_404(self):
         g = pd.DataFrame({"code": "ETH", "date": pd.date_range("2025-01-01", periods=40),

@@ -8590,6 +8590,11 @@ def _analyze_state_market(market: str, ticker: str) -> dict:
                        "dist_high52_pct": num(dist_high52, 2),
                        "ret1_pct": num(ret1, 2), "ret5_pct": num(ret5, 2),
                        "v20_usd": num(v20, 0)},
+        # "levels" = titik acuan untuk gauge posisi harga (dashboard). Bukan riwayat:
+        # jalur AS/ETF tidak punya OHLCV di repo, jadi tidak ada grafik harga.
+        "levels": {"price": num(price, 4), "sma20": num(sma20, 4),
+                   "sma50": num(sma50, 4), "sma200": num(sma200, 4),
+                   "high52": num(high52, 4)},
         "rules": rules,
         "active_rules": active,
         "measurement": {x["key"]: _state_measured(study, market, x["key"]) for x in active},
@@ -8675,6 +8680,19 @@ def _analyze_crypto(ticker: str) -> dict:
     lines.append("Aturan yang menyala: " +
                  (", ".join(x["label"] for x in active) if active else "tidak ada") + ".")
 
+    # Riwayat ringkas untuk grafik (dari snapshot CI, bukan real-time). Dibatasi 180
+    # bar terakhir supaya payload tetap kecil.
+    _tail = 180
+
+    def _ser(s):
+        return [None if v != v else round(float(v), 6) for v in list(s)[-_tail:]]
+
+    series = {
+        "dates": [str(d) for d in pd.to_datetime(g["date"]).dt.strftime("%Y-%m-%d")[-_tail:]],
+        "close": _ser(close), "sma20": _ser(sma(close, 20)),
+        "sma50": _ser(sma(close, 50)), "sma200": _ser(sma(close, 200)),
+    }
+
     return {
         "market": "crypto", "ticker": str(g["code"].iloc[-1]), "label": MARKET_LABEL["crypto"],
         "as_of": str(pd.to_datetime(g["date"].iloc[-1]).date()), "price": num(price, 6),
@@ -8686,6 +8704,8 @@ def _analyze_crypto(ticker: str) -> dict:
                        "high20": num(hi20, 6), "dist_high20_pct": num(dist_high20, 2),
                        "ret1_pct": num(ret1, 2), "ret5_pct": num(ret5, 2),
                        "vol_vs_ma20_x": num(vol_x, 2)},
+        # Riwayat harga ringkas untuk grafik (crypto punya OHLCV di repo).
+        "series": series,
         "rules": rules,
         "active_rules": active,
         "measurement": {x["key"]: _crypto_measured(study, x["key"]) for x in active},

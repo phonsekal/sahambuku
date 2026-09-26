@@ -210,6 +210,17 @@ def main() -> int:
             # diketik manual — supaya tidak mungkin memasang aturan yang belum diukur.
             if market == "etf":
                 INSTALLED["etf"] = installed_for_state_market(rep.get("lolos_bar"))
+            # Backtest AKURASI (bila ada): angka walk-forward aturan yang DISAJIKAN
+            # screener (a20/m20/t20/net20 + hit rate + kecocokan dengan study).
+            # Dilampirkan ke JSON ini supaya dashboard bisa menampilkannya tanpa
+            # membaca folder riset (folder itu tidak ikut di-deploy).
+            bt_path = os.path.join(REPORTS, f"backtest_{market}.json")
+            if os.path.exists(bt_path):
+                try:
+                    with open(bt_path, "r", encoding="utf-8") as fh:
+                        rep["backtest"] = json.load(fh)
+                except Exception:
+                    pass
             # Verifikasi EKSEKUSI (bila ada) ditempelkan ke pasar AS: likuiditas,
             # slippage, dan masuk-di-open — supaya pemasangan bisa diperiksa hasilnya,
             # bukan hanya lolos bar statistik.

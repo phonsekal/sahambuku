@@ -108,9 +108,13 @@ jobs:
             # ETF diukur terhadap BENCHMARK PASAR (SPY), bukan rata-rata lintas-ETF:
             # universe ETF heterogen (leveraged/inverse/komoditas/obligasi), jadi
             # rata-rata lintas-ETF BUKAN pasar dan membuat semua aturan tampak negatif.
-            python research/markets/study.py --market etf --benchmark SPY 2>&1 | tee research/markets/reports/report_etf.txt || true
-            # Verifikasi EKSEKUSI ETF (likuiditas, slippage, masuk-di-open), pembanding sama.
-            python research/markets/execute_us.py --market etf --benchmark SPY 2>&1 | tee research/markets/reports/report_etf_exec.txt || true
+            # Plus ambang likuiditas LEBIH TINGGI ($20 jt/hari): aturan hanya diukur
+            # pada ETF yang benar-benar bisa dieksekusi dalam jumlah wajar.
+            python research/markets/study.py --market etf --benchmark SPY --min-value 20000000 \
+              2>&1 | tee research/markets/reports/report_etf.txt || true
+            # Verifikasi EKSEKUSI ETF (likuiditas, slippage, masuk-di-open), pembanding & ambang sama.
+            python research/markets/execute_us.py --market etf --benchmark SPY --min-value 20000000 \
+              2>&1 | tee research/markets/reports/report_etf_exec.txt || true
           else
             echo "Panel ETF tidak terbentuk — laporan dilewati (lihat pull_etf.log)" \
               | tee research/markets/reports/report_etf.txt
@@ -130,6 +134,30 @@ jobs:
           else
             echo "Panel crypto tidak terbentuk — laporan dilewati (lihat pull_crypto.log)" \
               | tee research/markets/reports/report_crypto.txt
+          fi
+
+      # Backtest AKURASI screener: mengukur ulang aturan yang DISAJIKAN screener pada
+      # panel yang SAMA yang dipakai study, lalu membandingkan angkanya dengan
+      # api/market_study.json. Kalau tidak sama, ada yang menyimpang antara yang
+      # disajikan dan yang diukur. Dijalankan SEBELUM ringkasan ukur supaya angka
+      # backtest yang segar ikut dilampirkan ke api/market_study.json (dipakai
+      # dashboard). ETF diuji --all-rules supaya keputusan menunya punya buktinya.
+      - name: Backtest akurasi screener
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ -f research/.cache/markets/us_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market us \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+          if [ -f research/.cache/markets/etf_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market etf --all-rules --benchmark SPY --min-value 20000000 \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market crypto \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
           fi
 
       # Ekspor yang dibutuhkan runtime: snapshot harga ringkas (crypto) + KEADAAN
@@ -160,29 +188,6 @@ jobs:
             echo "Panel ETF tidak ada — keadaan turunan dilewati" | tee -a research/markets/reports/export.log
           fi
           python research/markets/summary.py 2>&1 | tee -a research/markets/reports/export.log || true
-
-      # Backtest AKURASI screener: mengukur ulang aturan yang DISAJIKAN screener pada
-      # panel yang SAMA yang dipakai study, lalu membandingkan angkanya dengan
-      # api/market_study.json. Kalau tidak sama, ada yang menyimpang antara yang
-      # disajikan dan yang diukur. ETF diuji --all-rules supaya keputusan "menu
-      # kosong" punya buktinya, bukan hanya dipercaya.
-      - name: Backtest akurasi screener
-        if: always()
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          if [ -f research/.cache/markets/us_panel.pkl ]; then
-            python research/markets/backtest_screener.py --market us \
-              2>&1 | tee -a research/markets/reports/backtest.log || true
-          fi
-          if [ -f research/.cache/markets/etf_panel.pkl ]; then
-            python research/markets/backtest_screener.py --market etf --all-rules --benchmark SPY \
-              2>&1 | tee -a research/markets/reports/backtest.log || true
-          fi
-          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
-            python research/markets/backtest_screener.py --market crypto \
-              2>&1 | tee -a research/markets/reports/backtest.log || true
-          fi
 
       # Selalu jalan: laporan pasar yang berhasil tidak boleh hilang karena pasar lain gagal.
       - name: Simpan laporan ukur ke repo
