@@ -5,8 +5,8 @@
   [3] checkpoint ada — dilewati
   SWEEP: 9 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
   CoinGecko gagal untuk rain: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk bitway: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk hashnote-usyc: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk bitway: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 429: Too Many Requests
   CoinGecko gagal untuk blockchain-capital: HTTP Error 429: Too Many Requests

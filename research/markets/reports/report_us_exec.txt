@@ -1,10 +1,10 @@
-Panel us: 6,325,560 baris · 5800 ticker
-  ... 1000/5800 ticker
-  ... 2000/5800 ticker
-  ... 3000/5800 ticker
-  ... 4000/5800 ticker
-  ... 5000/5800 ticker
-=== VERIFIKASI EKSEKUSI US · 5800 ticker · 6,325,560 baris · biaya 0.3% · return dipotong +/-100%
+Panel us: 6,325,620 baris · 5801 ticker
+  ... 1000/5801 ticker
+  ... 2000/5801 ticker
+  ... 3000/5801 ticker
+  ... 4000/5801 ticker
+  ... 5000/5801 ticker
+=== VERIFIKASI EKSEKUSI US · 5801 ticker · 6,325,620 baris · biaya 0.3% · return dipotong +/-100%
 Pertanyaan: apakah alpha study BERTAHAN saat likuiditas, slippage, dan masuk-di-open diperhitungkan?
 aturan                         n    v20 median  >=5jt   net close  net open   open +slip 0,5%
 pullback di uptrend      836,533        24.8jt    75%       +0.42     +0.37             -0.13

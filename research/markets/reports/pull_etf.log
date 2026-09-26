@@ -1,73 +1,28 @@
 [etf] 5696 ticker · period=5y · chunk=250
-  [0] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 231
-  [0] tersimpan 231 ticker
-  [1] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 243
-  [1] tersimpan 243 ticker
-  [2] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 232
-  [2] tersimpan 232 ticker
-  [3] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 237
-  [3] tersimpan 237 ticker
-  [4] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 231
-  [4] tersimpan 231 ticker
-  [5] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 221
-  [5] tersimpan 221 ticker
-  [6] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 235
-  [6] tersimpan 235 ticker
-  [7] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 237
-  [7] tersimpan 237 ticker
-  [8] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 234
-  [8] tersimpan 234 ticker
-  [9] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 243
-  [9] tersimpan 243 ticker
-  [10] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 242
-  [10] tersimpan 242 ticker
-  [11] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 237
-  [11] tersimpan 237 ticker
-  [12] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 232
-  [12] tersimpan 232 ticker
-  [13] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 241
-  [13] tersimpan 241 ticker
-  [14] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 230
-  [14] tersimpan 230 ticker
-  [15] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 216
-  [15] tersimpan 216 ticker
-  [16] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 231
-  [16] tersimpan 231 ticker
-  [17] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 232
-  [17] tersimpan 232 ticker
-  [18] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 230
-  [18] tersimpan 230 ticker
-  [19] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 240
-  [19] tersimpan 240 ticker
-  [20] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 232
-  [20] tersimpan 232 ticker
-  [21] menarik 250 ticker ...
-    yahoo: 250/250 — dapat 241
-  [21] tersimpan 241 ticker
-  [22] menarik 196 ticker ...
-  [22] tersimpan 176 ticker
+  [0] checkpoint ada — dilewati
+  [1] checkpoint ada — dilewati
+  [2] checkpoint ada — dilewati
+  [3] checkpoint ada — dilewati
+  [4] checkpoint ada — dilewati
+  [5] checkpoint ada — dilewati
+  [6] checkpoint ada — dilewati
+  [7] checkpoint ada — dilewati
+  [8] checkpoint ada — dilewati
+  [9] checkpoint ada — dilewati
+  [10] checkpoint ada — dilewati
+  [11] checkpoint ada — dilewati
+  [12] checkpoint ada — dilewati
+  [13] checkpoint ada — dilewati
+  [14] checkpoint ada — dilewati
+  [15] checkpoint ada — dilewati
+  [16] checkpoint ada — dilewati
+  [17] checkpoint ada — dilewati
+  [18] checkpoint ada — dilewati
+  [19] checkpoint ada — dilewati
+  [20] checkpoint ada — dilewati
+  [21] checkpoint ada — dilewati
+  [22] checkpoint ada — dilewati
   SWEEP: 372 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
-  SWEEP selesai — total dapat 5324 ticker
-[etf] panel: 4,121,894 saham-hari · 5324 ticker · 2021-09-27 -> 2026-09-25
+  SWEEP selesai — total dapat 5333 ticker
+[etf] panel: 4,122,434 saham-hari · 5333 ticker · 2021-09-27 -> 2026-09-25
 [etf] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/etf_panel.pkl
