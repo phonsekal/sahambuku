@@ -217,3 +217,74 @@ mom5d>=10%                          10,615    +2.72  +3.09  +5.3    +1.92   48.3
 Catatan: a/m20 = excess return vs rata-rata lintas-aset pada tanggal yang sama (median = tahan-outlier). net20 sudah dikurangi biaya. hit20 = bagian hari-sinyal dengan excess positif. Angka HARUS sama dengan study.py; "BEDA" berarti ada yang menyimpang.
 -> /home/runner/work/sahambuku/sahambuku/research/markets/reports/backtest_crypto.json
 KECOCOKAN study.py: SEMUA COCOK
+Panel us: 6,325,620 baris · 5801 ticker · 2021-09-27 -> 2026-09-25
+  ... 500/5801 ticker
+  ... 1000/5801 ticker
+  ... 1500/5801 ticker
+  ... 2000/5801 ticker
+  ... 2500/5801 ticker
+  ... 3000/5801 ticker
+  ... 3500/5801 ticker
+  ... 4000/5801 ticker
+  ... 4500/5801 ticker
+  ... 5000/5801 ticker
+  ... 5500/5801 ticker
+Provenans: panel backtest 5801 ticker / 6,325,620 baris vs study 5801 ticker / 6325620 baris
+
+=== BACKTEST SCREENER · US · 5801 ticker · biaya 0.3% · min nilai 1,000,000 USD · horizon 20 hari · pembanding rata-rata lintas-aset
+aturan                                   n      a20    m20   t20    net20   hit20  paruh        vs study
+pullback di uptrend                836,533    +0.54  +0.64 +30.2    +0.42   62.7%  +0.47/+0.61  COCOK
+di atas SMA200                    1,918,759    +0.47  +0.54 +30.8    +0.28   66.0%  +0.32/+0.62  COCOK
+dekat puncak 52m                   742,415    +0.20  +0.44  +6.4    +0.04   57.4%  +0.08/+0.32  COCOK
+
+Catatan: a/m20 = excess return vs rata-rata lintas-aset pada tanggal yang sama (median = tahan-outlier). net20 sudah dikurangi biaya. hit20 = bagian hari-sinyal dengan excess positif. Angka HARUS sama dengan study.py; "BEDA" berarti ada yang menyimpang.
+-> /home/runner/work/sahambuku/sahambuku/research/markets/reports/backtest_us.json
+KECOCOKAN study.py: SEMUA COCOK
+Panel etf: 2,890,729 baris · 3600 ticker · 2021-09-27 -> 2026-09-25
+  ... 500/3600 ticker
+  ... 1000/3600 ticker
+  ... 1500/3600 ticker
+  ... 2000/3600 ticker
+  ... 2500/3600 ticker
+  ... 3000/3600 ticker
+  ... 3500/3600 ticker
+Provenans: panel backtest 3600 ticker / 2,890,729 baris vs study 3600 ticker / 2890729 baris
+
+=== BACKTEST SCREENER · ETF · 3600 ticker · biaya 0.3% · min nilai 20,000,000 USD · horizon 20 hari · pembanding SPY
+aturan                                   n      a20    m20   t20    net20   hit20  paruh        vs study
+mom1d>=3%                           10,609    -1.26  -1.03  -2.7    +0.49   42.2%  -0.74/-1.79  BEDA
+mom1d>=5%                            3,322    -1.18  -0.99  -2.0    +0.92   41.5%  -1.28/-1.09  BEDA
+mom5d>=10%                           3,498    +0.02  +0.24  +0.0    +1.82   45.2%  -0.77/+0.81  BEDA
+tembus high20                       39,845    -0.50  -0.09  -3.4    +0.44   41.3%  -0.19/-0.81  BEDA
+tembus high50                       29,137    -0.62  -0.33  -6.5    +0.39   42.3%  -0.66/-0.57  BEDA
+di atas SMA20                      212,320    -0.52  -0.20 -11.7    +0.30   40.5%  -0.40/-0.64  BEDA
+di atas SMA50                      218,441    -0.69  -0.36 -14.3    +0.27   41.5%  -0.74/-0.64  COCOK
+di atas SMA200                     237,346    -0.45  +0.01 -12.1    +0.71   39.6%  -0.72/-0.19  BEDA
+tren naik (SMA20>50)               146,790    -0.84  -0.60 -13.5    +0.16   41.2%  -0.91/-0.77  BEDA
+golden cross 50/200                    802    -0.07  +0.46  -0.2    +1.08   49.4%  -0.99/+0.84  BEDA
+RSI<30 (jenuh jual)                  8,323    -1.18  -0.77  -4.0    +2.60   43.0%  -0.69/-1.66  BEDA
+RSI pulih >30                        3,514    -1.30  -0.98  -3.5    +1.69   39.3%  -1.20/-1.39  BEDA
+dekat puncak 52m                   177,311    -0.86  -0.45 -19.2    +0.48   35.5%  -1.30/-0.41  BEDA
+volume 2x MA20                      15,084    -0.27  +0.06  -4.7    +1.32   44.3%  -0.46/-0.08  BEDA
+pullback di uptrend                150,927    -0.65  -0.23 -12.4    +0.58   34.3%  -0.86/-0.44  BEDA
+mom5d>=10% + tembus high20           1,382    -0.99  -0.81  -1.6    +1.88   41.7%  -2.59/+0.61  BEDA
+tren naik + tembus high20           29,331    -0.63  -0.31  -6.7    +0.23   41.8%  -0.66/-0.59  BEDA
+turun 5d>=10% di atas SMA200           757    -0.75  -0.50  -0.5    +0.44   46.0%  -1.72/+0.22  BEDA
+puncak 52m baru                     34,750    -0.76  -0.54 -10.2    +0.42   39.8%  -0.77/-0.75  BEDA
+dasar 52m baru (kontrol)             4,728    -1.91  -1.47  -6.1    +2.50   40.7%  -2.32/-1.50  BEDA
+
+Catatan: a/m20 = excess return vs benchmark pasar SPY (median = tahan-outlier). net20 sudah dikurangi biaya. hit20 = bagian hari-sinyal dengan excess positif. Angka HARUS sama dengan study.py; "BEDA" berarti ada yang menyimpang.
+-> /home/runner/work/sahambuku/sahambuku/research/markets/reports/backtest_etf.json
+KECOCOKAN study.py: ADA YANG BEDA
+Panel crypto: 122,370 baris · 91 ticker · 2021-09-25 -> 2026-09-25
+Provenans: panel backtest 91 ticker / 122,370 baris vs study 91 ticker / 122370 baris
+
+=== BACKTEST SCREENER · CRYPTO · 91 ticker · biaya 0.5% · min nilai 1,000,000 USD · horizon 20 hari · pembanding rata-rata lintas-aset
+aturan                                   n      a20    m20   t20    net20   hit20  paruh        vs study
+mom5d>=10% + tembus high20           2,897    +5.52  +7.52  +8.6    +6.41   48.5%  +1.46/+9.58  COCOK
+tembus high20                        4,778    +3.67  +5.41  +7.6    +5.07   51.2%  +0.36/+6.98  COCOK
+mom5d>=10%                          10,615    +2.72  +3.09  +5.3    +1.92   48.3%  +1.42/+4.01  COCOK
+
+Catatan: a/m20 = excess return vs rata-rata lintas-aset pada tanggal yang sama (median = tahan-outlier). net20 sudah dikurangi biaya. hit20 = bagian hari-sinyal dengan excess positif. Angka HARUS sama dengan study.py; "BEDA" berarti ada yang menyimpang.
+-> /home/runner/work/sahambuku/sahambuku/research/markets/reports/backtest_crypto.json
+KECOCOKAN study.py: SEMUA COCOK
