@@ -1,0 +1,16 @@
+Panel us: 6,325,560 baris · 5800 ticker
+  ... 1000/5800 ticker
+  ... 2000/5800 ticker
+  ... 3000/5800 ticker
+  ... 4000/5800 ticker
+  ... 5000/5800 ticker
+=== VERIFIKASI EKSEKUSI US · 5800 ticker · 6,325,560 baris · biaya 0.3% · return dipotong +/-100%
+Pertanyaan: apakah alpha study BERTAHAN saat likuiditas, slippage, dan masuk-di-open diperhitungkan?
+aturan                         n    v20 median  >=5jt   net close  net open   open +slip 0,5%
+pullback di uptrend      836,533        24.8jt    75%       +0.42     +0.37             -0.13
+di atas SMA200         1,918,759        23.7jt    76%       +0.28     +0.23             -0.27
+dekat puncak 52m         742,415        28.2jt    75%       +0.04     -0.01             -0.51
+
+Bacaan: 'net close' = seperti study (masuk di close hari sinyal). 'net open' = masuk di open besok (yang benar-benar bisa dibeli). Kalau 'net open' di slippage 0,5% sudah <= 0, aturan itu belum layak dipasang ke menu tanpa eksekusi yang jauh lebih baik.
+
+-> /home/runner/work/sahambuku/sahambuku/api/market_us_exec.json

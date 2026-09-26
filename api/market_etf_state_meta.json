@@ -1,0 +1,1 @@
+{"market":"etf","kind":"derived_state","bars":260,"as_of":"2026-09-25","scanned":5324,"universe":5696,"rules":{"pullback_uptrend":"pullback di uptrend","above_sma200":"di atas SMA200","near_high52":"dekat puncak 52m"},"note":"Satu baris per emiten = nilai TERAKHIR (bukan panel penuh). Panel penuh tidak diekspor karena puluhan MB.","generated_at":"2026-09-26T01:19:00Z"}

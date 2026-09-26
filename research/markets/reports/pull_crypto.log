@@ -1,35 +1,18 @@
 [crypto] 100 ticker · period=5y · chunk=25
-  [0] menarik 25 ticker ...
-    HYPE: diisi dari Kraken (HYPEUSD)
-    UNI: diisi dari Kraken (UNIUSD)
-    CC: diisi dari Kraken (CCUSD)
-    USD1: diisi dari Kraken (USD1USD)
-    SUI: diisi dari Kraken (SUIUSD)
-  [0] tersimpan 24 ticker
-  [1] menarik 25 ticker ...
-    TAO: diisi dari Kraken (TAOUSD)
-    MORPHO: diisi dari Kraken (MORPHOUSD)
-    ASTER: diisi dari Kraken (ASTERUSD)
-    PEPE: diisi dari Kraken (PEPEUSD)
-    PUMP: diisi dari Kraken (PUMPUSD)
-    WLFI: diisi dari Kraken (WLFIUSD)
-  [1] tersimpan 22 ticker
-  [2] menarik 25 ticker ...
-    U: diisi dari Kraken (UUSD)
-    VVV: diisi dari Kraken (VVVUSD)
-    LIT: diisi dari Kraken (LITUSD)
-    POL: diisi dari Kraken (POLUSD)
-    PI: diisi dari Kraken (PIUSD)
-  [2] tersimpan 23 ticker
-  [3] menarik 25 ticker ...
-    STABLE: diisi dari Kraken (STABLEUSD)
-    APT: diisi dari Kraken (APTUSD)
-    PENGU: diisi dari Kraken (PENGUUSD)
-    TRUMP: diisi dari Kraken (TRUMPUSD)
-    STX: diisi dari Kraken (STXUSD)
-    ZRO: diisi dari Kraken (ZROUSD)
-  [3] tersimpan 22 ticker
+  [0] checkpoint ada — dilewati
+  [1] checkpoint ada — dilewati
+  [2] checkpoint ada — dilewati
+  [3] checkpoint ada — dilewati
   SWEEP: 9 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
+  CoinGecko gagal untuk rain: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk bitway: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk hashnote-usyc: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk blockchain-capital: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk eutbl: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk superstate-short-duration-us-government-securities-fund-ustb: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk janus-henderson-anemoy-aaa-clo-fund: HTTP Error 429: Too Many Requests
   SWEEP selesai — total dapat 91 ticker
 [crypto] panel: 122,370 saham-hari · 91 ticker · 2021-09-25 -> 2026-09-25
 [crypto] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/crypto_panel.pkl
