@@ -8286,18 +8286,40 @@ def crypto_screen(criteria: str, limit: int) -> dict:
 # bukan emiten tunggal, sehingga angka saham biasa tidak pernah dipinjam untuk ETF.
 # Hanya aturan yang LOLOS BAR DI PASAR ITU yang disajikan; kuncinya sama dengan yang
 # ditulis research/markets/export.py --state supaya definisinya tidak bisa menyimpang.
-STATE_RULES = {
+# Cadangan 3 aturan lama. Dipakai HANYA bila api/market_study.json belum punya kunci
+# `state_rules` (mis. snapshot sangat lama). Daftar penuh dibaca dari JSON itu, yang
+# ditulis summary.py dari SATU sumber (research/markets/state_rules.py) — sehingga
+# aturan yang lolos bar di pasar mana pun bisa disajikan TANPA mengubah berkas ini.
+STATE_RULES_FALLBACK = {
     "pullback_uptrend": "pullback di uptrend",
     "above_sma200": "di atas SMA200",
     "near_high52": "dekat puncak 52m",
 }
-STATE_CRITERIA = {
+STATE_CRITERIA_FALLBACK = {
     "pullback_uptrend": ("close di atas SMA200 DAN |close/SMA20 - 1| <= 3% "
                          "DAN RSI14 antara 35-65"),
     "above_sma200": "close di atas SMA200",
     "near_high52": "close >= 95% dari high 52 minggu",
-    "all": "salah satu dari aturan keadaan yang lolos bar di pasar ini",
 }
+STATE_ALL_LABEL = "salah satu dari aturan keadaan yang lolos bar di pasar ini"
+
+
+def _state_registry(study: Optional[dict]) -> Dict[str, dict]:
+    """Registry aturan keadaan (kunci -> {rule, label, desc}) untuk pasar us/etf.
+
+    Dibaca dari `study['state_rules']` (ditulis `summary.py` dari registry bersama),
+    bukan diketik ulang di sini. Bila belum ada, jatuh ke 3 aturan lama supaya
+    endpoint tetap jalan dengan snapshot yang lebih tua.
+    """
+    reg = (study or {}).get("state_rules") or {}
+    out: Dict[str, dict] = {}
+    for key, meta in reg.items():
+        if isinstance(meta, dict) and meta.get("rule"):
+            out[key] = meta
+    if out:
+        return out
+    return {k: {"rule": v, "desc": STATE_CRITERIA_FALLBACK.get(k, v)}
+            for k, v in STATE_RULES_FALLBACK.items()}
 STATE_UNIVERSE = {
     "us": "saham biasa tercatat di AS (ETF/warrant/unit dibuang)",
     "etf": "ETF terdaftar di AS (bendera ETF NASDAQ Trader; warrant/unit dibuang)",
@@ -8332,7 +8354,7 @@ def load_state(market: str) -> Optional[pd.DataFrame]:
 
 def _state_measured(study: Optional[dict], market: str, key: str) -> Optional[dict]:
     """Baris hasil ukur pasar ini untuk sebuah aturan produksi (angka sama di UI & riset)."""
-    want = STATE_RULES.get(key)
+    want = (_state_registry(study).get(key) or {}).get("rule")
     if not study or not want:
         return None
     rows = ((study.get("markets") or {}).get(market) or {}).get("rules") or []
@@ -8351,8 +8373,9 @@ def _state_allowed(study: Optional[dict], market: str, df: pd.DataFrame) -> Dict
     """
     ms = (study or {}).get("markets") or {}
     lolos = set(((ms.get(market) or {}).get("lolos_bar")) or [])
-    return {k: STATE_CRITERIA[k] for k, rule in STATE_RULES.items()
-            if rule in lolos and k in df.columns}
+    return {k: (m.get("desc") or m.get("rule"))
+            for k, m in _state_registry(study).items()
+            if m.get("rule") in lolos and k in df.columns}
 
 
 def state_screen(market: str, criteria: str, limit: int) -> dict:
@@ -8387,7 +8410,7 @@ def state_screen(market: str, criteria: str, limit: int) -> dict:
     mask = df[hit_cols].fillna(0).astype(int).sum(axis=1) > 0
     out: List[dict] = []
     for r in df[mask].itertuples(index=False):
-        met = [STATE_CRITERIA[c] for c in hit_cols if int(getattr(r, c) or 0) == 1]
+        met = [allowed[c] for c in hit_cols if int(getattr(r, c) or 0) == 1]
         price = getattr(r, "close", None)
         if not price or float(price) <= 0:
             continue
@@ -8421,7 +8444,8 @@ def state_screen(market: str, criteria: str, limit: int) -> dict:
     return {
         "market": market,
         "criteria": criteria,
-        "criteria_label": STATE_CRITERIA.get(criteria),
+        "criteria_label": (STATE_ALL_LABEL if criteria == "all"
+                            else allowed.get(criteria)),
         "universe": STATE_UNIVERSE.get(market, market),
         "as_of": str(df["date"].max()),
         "scanned": int(len(df)),

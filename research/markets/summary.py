@@ -30,8 +30,11 @@ from typing import Dict, List, Optional
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 RESEARCH = os.path.dirname(HERE)
+sys.path.insert(0, HERE)          # supaya registry `state_rules` selalu bisa diimpor
 API_DIR = os.path.join(os.path.dirname(RESEARCH), "api")
 REPORTS = os.path.join(HERE, "reports")
+
+import state_rules as SR          # noqa: E402  <- SATU sumber daftar aturan keadaan
 
 # Bar proyek (sama dengan LAYAK di dokumen metode IDX).
 BAR_T20 = 2.0
@@ -39,6 +42,12 @@ BAR_T20 = 2.0
 # Kriteria yang BENAR-BENAR dipasang di produksi, per pasar. Sengaja daftar
 # eksplisit: "lolos bar" saja belum cukup — pemasangan adalah keputusan manusia
 # yang harus bisa ditelusuri, dan di sini ia dipisahkan dari pengukuran.
+# Aturan keadaan yang DIPASANG untuk saham AS. Ini keputusan MANUSIA (bukan dihitung):
+# tiga aturan yang lolos bar proyek. ETF tidak memakai daftar ini — pemasangannya
+# dihitung dari hasil ukur ETF sendiri. Diletakkan SEBELUM INSTALLED karena dipakai
+# di dalamnya (kalau dipindah ke bawah, import langsung NameError).
+US_STATE_INSTALLED = ("pullback_uptrend", "above_sma200", "near_high52")
+
 INSTALLED: Dict[str, List[dict]] = {
     "crypto": [
         {"key": "crypto_momentum_breakout", "label": "Momentum + Breakout (crypto)",
@@ -53,36 +62,21 @@ INSTALLED: Dict[str, List[dict]] = {
     # sekarang disajikan lewat KEADAAN TURUNAN (api/market_us_state.csv — satu baris
     # per emiten) sehingga bisa dipasang tanpa membengkakkan repo. Batasan yang tetap
     # dibaca: verifikasi eksekusi ada di `markets.us.execution`.
-    "us": [
-        {"key": "us_pullback_uptrend",
-         "label": "Pullback di uptrend (AS)",
-         "rule": "close > SMA200 DAN |close/SMA20 - 1| <= 3% DAN RSI14 antara 35-65"},
-        {"key": "us_above_sma200",
-         "label": "Di atas SMA200 (AS)",
-         "rule": "close di atas SMA200"},
-        {"key": "us_near_high52",
-         "label": "Dekat puncak 52 minggu (AS)",
-         "rule": "close >= 95% dari high 52 minggu"},
-    ],
+    # Label & deskripsi diambil dari registry bersama supaya tidak menyimpang.
+    "us": [{"key": r["key"], "label": r["label"] + " (AS)", "rule": r["desc"]}
+           for r in SR.STATE_RULES if r["key"] in US_STATE_INSTALLED],
     # ETF: diisi OTOMATIS di main() dari hasil ukur pasar ETF sendiri (lihat
     # STATE_RULE_CANDIDATES). Dibiarkan kosong di sini supaya tidak ada aturan ETF
     # yang tampil sebelum ada pengukurannya.
     "etf": [],
 }
 
-# Kandidat aturan KEADAAN yang punya kolom di api/market_<pasar>_state.csv (kunci
-# produksinya sama dengan US_RULES di api/index.py; definisinya di export.py).
-# Untuk ETF aturan ini dipasang otomatis HANYA bila lolos bar di pasar ETF — jadi
-# menu ETF tidak pernah menyajikan aturan yang belum diukur di ETF, dan angkanya
-# tidak diwarisi dari saham biasa (keranjang != emiten tunggal).
-STATE_RULE_CANDIDATES = [
-    {"key": "pullback_uptrend", "label": "Pullback di uptrend (ETF)",
-     "rule": "pullback di uptrend"},
-    {"key": "above_sma200", "label": "Di atas SMA200 (ETF)",
-     "rule": "di atas SMA200"},
-    {"key": "near_high52", "label": "Dekat puncak 52 minggu (ETF)",
-     "rule": "dekat puncak 52m"},
-]
+# SEMUA kandidat aturan keadaan (dari registry bersama), dalam bentuk yang dipakai
+# untuk memasang aturan ETF OTOMATIS: hanya yang lolos bar di pasar ETF sendiri yang
+# dipasang. Jadi menu ETF tidak pernah menyajikan aturan yang belum diukur di ETF, dan
+# angkanya tidak diwarisi dari saham biasa (keranjang != emiten tunggal).
+STATE_RULE_CANDIDATES = [{"key": r["key"], "label": r["label"] + " (ETF)",
+                          "rule": r["rule"]} for r in SR.STATE_RULES]
 
 # Kenapa aturan yang lolos bar belum tentu dipasang. Diukur dengan bar proyek,
 # tetapi pemasangan menuntut SATU hal lagi: aturan itu bisa DISAJIKAN dan sudah
@@ -100,8 +94,8 @@ INSTALL_NOTE: Dict[str, str] = {
                "paruh pertamanya negatif (tembus high50, tren naik + tembus high20, "
                "puncak 52m baru) sengaja tidak dipakai."),
     "etf": ("ETF diukur TERPISAH dari saham biasa (keranjang, bukan emiten tunggal). "
-            "Dari tiga aturan keadaan yang bisa disajikan, hanya yang LOLOS BAR di "
-            "pasar ETF sendiri yang dipasang (diisi otomatis oleh summary.py) — jadi "
+            "SEMUA aturan keadaan yang bisa disajikan diuji, dan hanya yang LOLOS BAR "
+            "di pasar ETF sendiri yang dipasang (diisi otomatis oleh summary.py) — jadi "
             "angka saham biasa tidak pernah dipinjam untuk ETF. Bila tidak ada yang "
             "lolos, menu ETF sengaja kosong dan itu ditampilkan apa adanya."),
 }
@@ -199,6 +193,10 @@ def main() -> int:
                      "tahan-outlier positif, blok t >= +2, net>0, kedua paruh positif."),
         "installed": INSTALLED,
         "install_note": INSTALL_NOTE,
+        # Registry aturan keadaan (kunci kolom -> nama aturan, label, deskripsi).
+        # Ditulis ke JSON supaya api/index.py bisa menyajikan aturan yang lolos bar
+        # TANPA menyalin daftarnya (sumber kebenarannya tetap state_rules.py).
+        "state_rules": SR.as_registry(),
         "markets": {},
     }
     for market in ("crypto", "us", "etf"):

@@ -50,16 +50,16 @@ CACHE_DIR = os.path.join(RESEARCH, ".cache", "markets")
 # ~90 MB; keadaan turunannya diekspor lewat `--state` (satu baris per emiten).
 BIG_MARKETS = {"us", "etf"}
 
-# Tanda aturan AS yang lolos bar proyek. Kunci produksi dipetakan ke NAMA aturan di
-# laporan ukur supaya angka yang ditampilkan bisa ditelusuri ke barisnya.
-US_STATE_RULES = [
-    ("pullback_uptrend", "pullback di uptrend"),
-    ("above_sma200", "di atas SMA200"),
-    ("near_high52", "dekat puncak 52m"),
-]
-US_STATE_COLS = ["code", "date", "close", "sma20", "sma50", "sma200", "high52",
-                 "dist_high52_pct", "ret5_pct", "ret1_pct", "v20_usd",
-                 "pullback_uptrend", "above_sma200", "near_high52"]
+# Tanda aturan keadaan. Daftar & namanya diambil dari registry bersama
+# (`state_rules.py`) supaya kunci kolom, nama aturan, dan deskripsinya tidak mungkin
+# berbeda antara yang ditulis di sini, yang diringkas `summary.py`, dan yang dibaca
+# `api/index.py`. Semua kandidat ditulis (bukan hanya 3 yang sudah lolos di AS) agar
+# aturan yang LOLOS BAR di pasar mana pun bisa langsung disajikan tanpa mengubah kode.
+import state_rules as SR          # noqa: E402
+
+US_STATE_RULES = [(r["key"], r["rule"]) for r in SR.STATE_RULES]
+US_STATE_COLS = (["code", "date", "close", "sma20", "sma50", "sma200", "high52",
+                  "dist_high52_pct", "ret5_pct", "ret1_pct", "v20_usd"] + SR.STATE_KEYS)
 
 
 def export_market(market: str, bars: int = 260) -> str:
@@ -201,9 +201,11 @@ def export_state(market: str, bars: int = 252) -> str:
         "as_of": max(r["date"] for r in rows),
         "scanned": len(rows),
         "universe": int(cov.get("universe") or len(rows)),
-        "rules": {key: rule for key, rule in US_STATE_RULES},
+        "rules": SR.as_registry(),
         "note": ("Satu baris per emiten = nilai TERAKHIR (bukan panel penuh). Panel penuh "
-                 "tidak diekspor karena puluhan MB."),
+                 "tidak diekspor karena puluhan MB. Kolom aturan = SEMUA kandidat "
+                 "keadaan; yang boleh DISAJIKAN tetap hanya yang lolos bar di pasar "
+                 "ini (disaring api/index.py)."),
         "generated_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
     }
     with open(os.path.join(API_DIR, f"market_{market}_state_meta.json"), "w",

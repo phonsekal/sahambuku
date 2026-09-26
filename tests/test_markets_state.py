@@ -25,10 +25,14 @@ sys.path.insert(0, os.path.join(ROOT, "research", "markets"))   # export/summary
 
 import export as EXP        # noqa: E402
 import index as IDX         # noqa: E402
+import state_rules as SR    # noqa: E402
 import summary as SUM       # noqa: E402
 import universe as UNI      # noqa: E402
 
-STATE_COLS = ("pullback_uptrend", "above_sma200", "near_high52")
+# Kunci kolom keadaan = SEMUA kandidat di registry bersama (bukan 3 yang sudah
+# lolos di AS). Kandidat yang belum lolos bar tetap punya kolom di CSV, tetapi
+# TIDAK disajikan endpoint sampai lolos bar di pasar itu.
+STATE_COLS = tuple(SR.STATE_KEYS)
 
 
 def state_frame(rows: list) -> pd.DataFrame:
@@ -152,19 +156,26 @@ class TestScreenerRouting(unittest.TestCase):
 
 class TestSummaryEtfInstall(unittest.TestCase):
 
-    def test_installs_only_bar_passing_state_rules(self):
-        got = SUM.installed_for_state_market(["di atas SMA200", "mom5d>=10%"])
+    def test_installs_only_registry_bar_passing_rules(self):
+        # Aturan yang lolos bar tetapi BUKAN bagian registry tidak boleh dipasang.
+        got = SUM.installed_for_state_market(["di atas SMA200", "aturan karangan"])
         self.assertEqual([c["key"] for c in got], ["above_sma200"])
         self.assertEqual(got[0]["rule"], "di atas SMA200")
+
+    def test_registry_candidate_installs_when_it_passes(self):
+        # Kandidat registry (mis. momentum) dipasang bila lolos bar di pasar itu.
+        got = SUM.installed_for_state_market(["mom5d>=10%"])
+        self.assertEqual([c["key"] for c in got], ["mom5d_ge_10"])
 
     def test_no_passing_rule_installs_nothing(self):
         self.assertEqual(SUM.installed_for_state_market([]), [])
         self.assertEqual(SUM.installed_for_state_market(None), [])
 
-    def test_all_three_can_install(self):
+    def test_us_three_install_in_registry_order(self):
         got = SUM.installed_for_state_market(
             ["pullback di uptrend", "di atas SMA200", "dekat puncak 52m"])
-        self.assertEqual([c["key"] for c in got], list(STATE_COLS))
+        self.assertEqual([c["key"] for c in got],
+                         ["pullback_uptrend", "above_sma200", "near_high52"])
 
 
 class TestSchemaConsistency(unittest.TestCase):
@@ -178,8 +189,19 @@ class TestSchemaConsistency(unittest.TestCase):
                          list(STATE_COLS))
 
     def test_export_rule_names_match_production_rule_names(self):
+        # Produksi membaca registry dari api/market_study.json (ditulis summary.py
+        # dari state_rules.py). Uji bahwa nama aturan di export == yang dibaca
+        # produksi, dan bahwa SEMUA kandidat registry bisa dibaca produksi.
+        reg = IDX._state_registry({"state_rules": SR.as_registry()})
+        self.assertEqual(sorted(reg), sorted(SR.STATE_KEYS))
         for key, rule in EXP.US_STATE_RULES:
-            self.assertEqual(IDX.STATE_RULES[key], rule)
+            self.assertEqual(reg[key]["rule"], rule)
+
+    def test_production_falls_back_to_legacy_three_rules(self):
+        # Snapshot lama tanpa kunci `state_rules` tetap menyajikan 3 aturan AS.
+        self.assertEqual(IDX._state_registry(None),
+                         {k: {"rule": v, "desc": IDX.STATE_CRITERIA_FALLBACK[k]}
+                          for k, v in IDX.STATE_RULES_FALLBACK.items()})
 
 
 class TestEtfUniverse(unittest.TestCase):

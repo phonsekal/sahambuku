@@ -106,19 +106,23 @@ aturan yang lolos bar **di data ETF** — angka saham biasa tidak dipinjam untuk
   turunan). Diuji lokal: kriteria tak dikenal → 422; saringan memilih emiten yang benar
   dan menyertakan bukti ukur tiap aturan.
 * `export.py --market us --state` diuji lokal pada panel sintetis: menulis satu baris
-  per emiten dengan SMA20/50/200, high52, ret5, dan tanda 3 aturan.
+  per emiten dengan SMA20/50/200, high52, ret5, dan tanda SEMUA kandidat aturan
+  keadaan (dari `state_rules.py`).
 * `execute_us.py` diuji lokal pada panel sintetis: mengukur likuiditas, net per tingkat
   slippage, dan net masuk-di-open tanpa error. Verifikasi yang sama dijalankan untuk
   `--market etf` (menulis `api/market_etf_exec.json`).
 * `export.py --market etf --state` diuji lokal pada panel sintetis: menulis
   `api/market_etf_state.csv` dengan kolom yang SAMA seperti AS (close, SMA20/50/200,
-  high52, ret5, tanda 3 aturan), tetapi dari panel ETF — bukan dari panel AS.
+  high52, ret5, tanda semua kandidat aturan keadaan), tetapi dari panel ETF — bukan
+  dari panel AS.
 * `summary.py` + `api/index.py` diuji lokal: aturan ETF yang **lolos bar di pasar ETF**
   otomatis muncul sebagai kriteria `/api/markets/etf/screener`; kriteria tak dikenal
   → 422 dan daftar pilihan yang benar ditampilkan; pasar tanpa aturan lolos → 503.
-* `tests/test_markets_state.py` **18 uji LULUS**: gerbang aturan keadaan (ETF tidak
-  meminjam angka AS), rute `/api/markets/etf/screener`, 503/422, dan kunci kolom
-  `export.py` disejajarkan dengan kandidat `summary.py`.
+* `tests/test_markets_state.py` **20 uji LULUS**: gerbang aturan keadaan (ETF tidak
+  meminjam angka AS), rute `/api/markets/etf/screener`, 503/422, kunci kolom
+  `export.py` disejajarkan dengan kandidat `summary.py`, dan registry produksi
+  (`api/index.py`) terbukti membaca SEMUA kandidat dari `api/market_study.json`
+  dengan cadangan 3 aturan lama bila JSON belum punya kunci `state_rules`.
 * `coingecko_daily()` diuji dengan balasan tiruan: 70 titik harian → 69 bar (hari
   terakhir dibuang), sumber ditandai `coingecko`.
 
@@ -224,7 +228,7 @@ manual, dan dipisahkan dari pengukuran:
   1. **Jalur penyajian.** Snapshot penuh AS (~5.800 ticker) tetap **tidak** diekspor.
      Yang diekspor hanya **keadaan turunan** (`api/market_us_state.csv`): satu baris
      per emiten berisi close, SMA20/50/200, high52, ret5, nilai transaksi 20 hari, dan
-     tanda ketiga aturan — ratusan KB, bukan puluhan MB. Karena aturan ini **filter
+     tanda aturan keadaan — ratusan KB, bukan puluhan MB. Karena aturan ini **filter
      keadaan** (bukan sinyal harian yang jarang), nilai terakhir per emiten sudah cukup
      untuk menyajikannya.
   2. **Verifikasi eksekusi** (`execute_us.py` → `api/market_us_exec.json`): likuiditas
@@ -241,9 +245,11 @@ manual, dan dipisahkan dari pengukuran:
   dipasang **otomatis** oleh `summary.py` (tidak boleh ada aturan ETF yang tampil tanpa
   pengukuran ETF). Selama belum ada aturan yang lolos bar di data ETF, menu ETF
   **sengaja kosong** dan API menjawab 503 beserta alasannya — itu keadaan yang benar,
-  bukan kekurangan data. Yang bisa disajikan hanya aturan yang punya kolom di keadaan
-  turunan (`pullback di uptrend`, `di atas SMA200`, `dekat puncak 52m`); aturan lain yang
-  lolos bar di ETF belum bisa disajikan sampai kolomnya ditambahkan.
+  bukan kekurangan data. Semua kandidat aturan kini punya kolom di keadaan turunan,
+  jadi aturan mana pun yang lolos bar di ETF langsung bisa disajikan **tanpa mengubah
+  kode**: `api/index.py` membaca daftarnya dari `state_rules` di `api/market_study.json`
+  (ditulis `summary.py` dari `state_rules.py`), dan hanya yang punya kolom + lolos bar
+  di pasar itu yang tampil.
 
 Permukaan produksi:
 
@@ -251,7 +257,7 @@ Permukaan produksi:
 |---|---|
 | `GET /api/markets/study` | hasil ukur tiap pasar + aturan yang DIPASANG & yang lolos bar + `install_note` + verifikasi eksekusi |
 | `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota) |
-| `GET /api/markets/us/screener?criteria=…` | pemindai AS dari keadaan turunan (`all|pullback_uptrend|above_sma200|near_high52`) |
+| `GET /api/markets/us/screener?criteria=…` | pemindai AS dari keadaan turunan (`all` atau salah satu kunci aturan yang lolos bar, mis. `pullback_uptrend`) |
 | `GET /api/markets/etf/screener?criteria=…` | pemindai **ETF** dari keadaan turunan ETF; kriterianya hanya yang lolos bar di ETF |
 | `api/market_crypto.csv` | snapshot 220 bar × 91 koin (di-commit pipeline CI) |
 | `api/market_crypto_meta.json` | cakupan: berapa ticker dapat dari berapa + dari sumber mana |
