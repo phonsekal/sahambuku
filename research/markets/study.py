@@ -22,6 +22,7 @@ ia mengalahkan saham sekelasnya".
 
 Jalankan:
     .venv/bin/python research/markets/study.py --market us
+    .venv/bin/python research/markets/study.py --market etf
     .venv/bin/python research/markets/study.py --market crypto
     .venv/bin/python research/markets/study.py --selftest      # tanpa jaringan
 """
@@ -48,7 +49,8 @@ CACHE_DIR = os.path.join(RESEARCH, ".cache", "markets")
 HORIZONS = (1, 5, 20)
 # Biaya round-trip: saham AS ~0,3% (sama dengan default /api/backtest); crypto
 # lebih mahal (taker Kraken ~0,26%/sisi + spread) sehingga dipakai 0,5%.
-COST = {"us": 0.003, "crypto": 0.005}
+# ETF diperlakukan seperti saham AS: komisi/spread sekuritas AS, jadi 0,3%.
+COST = {"us": 0.003, "etf": 0.003, "crypto": 0.005}
 MIN_VALUE_USD = 1_000_000     # saring nama yang tidak bisa dieksekusi (~Rp15 M/hari)
 
 # Batas potong (winsorize) return ke depan, dalam persen. WAJIB untuk crypto dan
@@ -269,7 +271,7 @@ def selftest() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Ukur strategi kandidat AS/crypto")
-    ap.add_argument("--market", choices=["us", "crypto"], default="us")
+    ap.add_argument("--market", choices=["us", "etf", "crypto"], default="us")
     ap.add_argument("--selftest", action="store_true", help="uji tanpa jaringan")
     ap.add_argument("--min-value", type=float, default=MIN_VALUE_USD,
                     help="saringan nilai transaksi harian (USD); 0 = tanpa saringan")

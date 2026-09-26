@@ -1,12 +1,17 @@
-# Pasar AS & crypto — pipeline UKUR + pemindai crypto
+# Pasar AS & ETF & crypto — pipeline UKUR + pemindai
 
-Folder ini adalah **tahap pengukuran** untuk screener saham AS dan crypto, sekaligus
-rumah pipeline yang menyajikan hasilnya. Sesuai keputusan proyek — *"ukur dulu, baru
-bangun menu"* — mesin ukur dibangun lebih dulu, lalu menu hanya dipasang untuk aturan
-yang **LOLOS pengukuran (dua ukuran sekaligus) DAN bisa disajikan**.
+Folder ini adalah **tahap pengukuran** untuk screener saham AS, ETF, dan crypto,
+sekaligus rumah pipeline yang menyajikan hasilnya. Sesuai keputusan proyek — *"ukur
+dulu, baru bangun menu"* — mesin ukur dibangun lebih dulu, lalu menu hanya dipasang
+untuk aturan yang **LOLOS pengukuran (dua ukuran sekaligus) DAN bisa disajikan**.
 
-Hasil akhirnya: **crypto punya 3 aturan terpasang**, **saham AS punya 3 aturan yang
-lolos bar tetapi belum dipasang** (alasannya di bagian "Yang sudah dipasang").
+Hasil akhirnya: **crypto punya 3 aturan terpasang** dan **saham AS punya 3 aturan
+terpasang**. AS disajikan lewat **keadaan turunan** (satu baris per emiten), bukan
+panel penuh — lihat bagian "Yang sudah dipasang".
+
+**ETF diperlakukan sebagai pasar TERSENDIRI** (bukan sebagian dari AS). ETF = keranjang,
+bukan emiten tunggal, jadi aturannya diukur sendiri; menu ETF hanya terisi bila ada
+aturan yang lolos bar **di data ETF** — angka saham biasa tidak dipinjam untuk ETF.
 
 ## Kenapa tidak langsung bikin menu
 
@@ -26,10 +31,11 @@ lolos bar tetapi belum dipasang** (alasannya di bagian "Yang sudah dipasang").
 
 | berkas | gunanya |
 |---|---|
-| `universe.py` | daftar universe: saham AS + crypto top-N, plus penolakan pair Kraken |
-| `pull.py` | tarik OHLCV harian ke cache lokal, per potongan, dengan checkpoint |
-| `study.py` | ukur strategi kandidat dengan DUA ukuran (rata-rata + tahan-outlier) |
-| `export.py` | ekspor snapshot ringkas ke `api/` (crypto; AS sengaja ditolak) |
+| `universe.py` | daftar universe: saham AS + **ETF** + crypto top-N, plus penolakan pair Kraken |
+| `pull.py` | tarik OHLCV harian ke cache lokal, per potongan, dengan checkpoint (crypto: Yahoo → Kraken → CoinGecko) |
+| `study.py` | ukur strategi kandidat dengan DUA ukuran (rata-rata + tahan-outlier) untuk `us`, `etf`, `crypto` |
+| `execute_us.py` | verifikasi EKSEKUSI aturan AS/ETF (`--market us|etf`): likuiditas, slippage, masuk-di-open |
+| `export.py` | ekspor snapshot ringkas crypto + **keadaan turunan** AS & ETF (satu baris/ticker) |
 | `summary.py` | ringkas laporan teks → `api/market_study.json` + putusan lolos-bar |
 | `.github/workflows/markets-data.yml` | penarik terjadwal + penulis laporan ke `reports/` |
 
@@ -40,30 +46,49 @@ lolos bar tetapi belum dipasang** (alasannya di bagian "Yang sudah dipasang").
   jadi ETF/warrant/units/rights dibuang lewat bendera & nama, bukan ditebak.
   Hasil: **~5.896 saham biasa** (ADR tetap dipertahankan).
   Harga: **Yahoo chart API via `curl_cffi`** (jalur utama), yfinance cadangan.
+* **ETF** — sumber universe yang SAMA (bendera ETF NASDAQ Trader), tetapi diambil
+  baris yang **bertanda ETF saja** (`etf_universe()`). ETF diukur terpisah dari saham
+  biasa; warrant/units/notes tetap dibuang lewat `_SKIP_NAME`.
 * **Crypto** — **CoinGecko** `/coins/markets` untuk peringkat kapitalisasi pasar
   (top-100). Stablecoin & token *wrapped/staked* dibuat eksplisit (daftar
   `_CRYPTO_SKIP`) karena harganya menempel ~1 atau menyalin koin lain.
-  Harga: **Yahoo chart API**, **Kraken OHLC** sebagai cadangan tanpa kunci.
+  Harga: **Yahoo chart API**, lalu **Kraken OHLC**, lalu **CoinGecko market_chart**
+  sebagai sumber ke-3 tanpa kunci. CoinGecko dipakai untuk koin yang tidak ada di
+  Yahoo maupun Kraken (mis. HYPE, WLFI, ASTER); batasannya bahwa ia hanya memberi
+  harga+volume harian (tanpa OHLC) ditulis di `coingecko_daily()` dan koin itu
+  ditandai `approx_close_only` di meta cakupan — bukan disembunyikan.
 
 ## Cara menjalankan
 
 ```bash
 # periksa universe (tanpa menarik harga)
 .venv/bin/python research/markets/universe.py --market us --limit 20
+.venv/bin/python research/markets/universe.py --market etf --limit 20
 .venv/bin/python research/markets/universe.py --market crypto --top 100 --limit 20
 
 # tarik harga (di CI; dari mesin lokal sering kena rate-limit Yahoo)
 .venv/bin/python research/markets/pull.py --market crypto --top 100 --chunk 25
 .venv/bin/python research/markets/pull.py --market us --chunk 250 --workers 6
+.venv/bin/python research/markets/pull.py --market etf --chunk 250  # universe ETF
 .venv/bin/python research/markets/pull.py --market us --merge      # gabung checkpoint
 
 # ukur
 .venv/bin/python research/markets/study.py --market us
+.venv/bin/python research/markets/study.py --market etf
 .venv/bin/python research/markets/study.py --selftest              # tanpa jaringan
+
+# verifikasi eksekusi aturan AS/ETF (likuiditas, slippage, masuk-di-open)
+.venv/bin/python research/markets/execute_us.py
+.venv/bin/python research/markets/execute_us.py --market etf
 
 # sajikan
 .venv/bin/python research/markets/export.py --market crypto --bars 220
+.venv/bin/python research/markets/export.py --market us --state   # keadaan turunan AS
+.venv/bin/python research/markets/export.py --market etf --state  # keadaan turunan ETF
 .venv/bin/python research/markets/summary.py
+
+# uji GERBANG aturan keadaan AS/ETF (tanpa jaringan, tanpa panel harga)
+.venv/bin/python -m unittest discover -s tests -t . -v
 ```
 
 ## Yang SUDAH terverifikasi (25 Sep 2026)
@@ -77,7 +102,25 @@ lolos bar tetapi belum dipasang** (alasannya di bagian "Yang sudah dipasang").
 * Ketahanan gagal: saat penarikan terputus, checkpoint kosong **tidak** disimpan
   dan jalankan ulang melanjutkan dari potongan yang sudah ada. **Terverifikasi.**
 * Produksi: `/api/markets/study` 200 (crypto 91 ticker + AS 5.794 ticker),
-  `/api/markets/crypto/screener` 200, `/api/markets/us/screener` 422 (sengaja ditolak).
+  `/api/markets/crypto/screener` 200, `/api/markets/us/screener` 200 (dari keadaan
+  turunan). Diuji lokal: kriteria tak dikenal → 422; saringan memilih emiten yang benar
+  dan menyertakan bukti ukur tiap aturan.
+* `export.py --market us --state` diuji lokal pada panel sintetis: menulis satu baris
+  per emiten dengan SMA20/50/200, high52, ret5, dan tanda 3 aturan.
+* `execute_us.py` diuji lokal pada panel sintetis: mengukur likuiditas, net per tingkat
+  slippage, dan net masuk-di-open tanpa error. Verifikasi yang sama dijalankan untuk
+  `--market etf` (menulis `api/market_etf_exec.json`).
+* `export.py --market etf --state` diuji lokal pada panel sintetis: menulis
+  `api/market_etf_state.csv` dengan kolom yang SAMA seperti AS (close, SMA20/50/200,
+  high52, ret5, tanda 3 aturan), tetapi dari panel ETF — bukan dari panel AS.
+* `summary.py` + `api/index.py` diuji lokal: aturan ETF yang **lolos bar di pasar ETF**
+  otomatis muncul sebagai kriteria `/api/markets/etf/screener`; kriteria tak dikenal
+  → 422 dan daftar pilihan yang benar ditampilkan; pasar tanpa aturan lolos → 503.
+* `tests/test_markets_state.py` **18 uji LULUS**: gerbang aturan keadaan (ETF tidak
+  meminjam angka AS), rute `/api/markets/etf/screener`, 503/422, dan kunci kolom
+  `export.py` disejajarkan dengan kandidat `summary.py`.
+* `coingecko_daily()` diuji dengan balasan tiruan: 70 titik harian → 69 bar (hari
+  terakhir dibuang), sumber ditandai `coingecko`.
 
 ## Hasil UKUR penuh
 
@@ -114,7 +157,9 @@ semua aturan momentum/breakout bahkan **negatif di kedua ukuran**, dan kontrol
 "dasar 52m baru" ikut negatif — artinya bukan sekadar arah pasar.
 
 Tiga aturan lolos bar proyek (`pullback di uptrend`, `di atas SMA200`,
-`dekat puncak 52m`), **tetapi belum ada yang dipasang** (lihat bagian berikutnya).
+`dekat puncak 52m`) dan **sudah dipasang** sejak 26 Sep 2026 (lihat bagian berikutnya).
+Aturan momentum/breakout yang gagal **tidak** dipasang — termasuk `tembus high20` yang di
+crypto justru menang.
 
 ### Crypto — tren/breakout MENANG; membeli jenuh jual GAGAL
 
@@ -171,37 +216,50 @@ manual, dan dipisahkan dari pengukuran:
   tahan-outlier, blok t +8,6, net20 +6,41%, dan positif di KEDUA paruh (+1,46/+9,58).
   Aturan tren yang lolos bar tetapi **paruh pertamanya negatif** (`tembus high50`,
   `tren naik + tembus high20`, `puncak 52m baru`) sengaja TIDAK dipakai.
-* **Saham AS** — 20 aturan diukur, **3 lolos bar, 0 dipasang**. Yang lolos:
-  `pullback di uptrend` (+0,54/+0,64, t +30,2, net +0,42), `di atas SMA200`
-  (+0,47/+0,54, t +30,8, net +0,28), `dekat puncak 52m` (+0,20/+0,44, net **+0,04**).
+* **Saham AS** — 20 aturan diukur, **3 lolos bar, 3 dipasang** (sejak 26 Sep 2026):
+  `us_pullback_uptrend` (+0,54/+0,64, t +30,2, net +0,42), `us_above_sma200`
+  (+0,47/+0,54, t +30,8, net +0,28), `us_near_high52` (+0,20/+0,44, net **+0,04**).
 
-  **Kenapa tetap 0 dipasang** — tiga alasan yang bisa diperiksa, bukan keraguan:
-  1. **Ekonomis tipis.** Setelah biaya 0,3%, aturan terlemah hanya menyisakan
-     net20 **+0,04%**; dua lainnya +0,28% dan +0,42% — lolos bar, tetapi bukan
-     *edge* yang layak dijadikan menu tanpa verifikasi eksekusi.
-  2. **Belum ada jalur penyajian.** Snapshot penuh AS (~5.800 ticker) **tidak boleh**
-     diekspor ke repo (puluhan MB), dan aturan ini adalah **filter keadaan**
-     (di atas SMA200 / dekat puncak 52m), bukan sinyal harian yang jarang — jadi
-     "daftar kandidat" masih perlu dirancang, bukan sekadar disalin dari snapshot.
-  3. **Belum diverifikasi eksekusi.** 6,3 juta bar mengukur kondisi historis, bukan
-     hasil order: likuiditas per ticker, harga eksekusi, dan *survivorship* belum diuji.
+  Dua penghalang yang dulu menahan pemasangan sudah dibereskan:
+  1. **Jalur penyajian.** Snapshot penuh AS (~5.800 ticker) tetap **tidak** diekspor.
+     Yang diekspor hanya **keadaan turunan** (`api/market_us_state.csv`): satu baris
+     per emiten berisi close, SMA20/50/200, high52, ret5, nilai transaksi 20 hari, dan
+     tanda ketiga aturan — ratusan KB, bukan puluhan MB. Karena aturan ini **filter
+     keadaan** (bukan sinyal harian yang jarang), nilai terakhir per emiten sudah cukup
+     untuk menyajikannya.
+  2. **Verifikasi eksekusi** (`execute_us.py` → `api/market_us_exec.json`): likuiditas
+     (nilai transaksi harian), sisa alpha setelah slippage 0,2/0,5/1,0%, dan apakah
+     alpha bertahan bila masuk di **open** hari berikutnya (bukan di close hari sinyal,
+     yang tidak bisa dibeli). Hasilnya ditampilkan bersama tabel ukur, bukan disembunyikan.
 
-  Karena itu `installed.us` sengaja dikosongkan dan alasan ini **ikut dikirim ke
-  dashboard** (`install_note` di `api/market_study.json`), supaya tidak terbaca
-  sebagai lupa. Alternatif yang disiapkan bila nanti dipasang: ekspor **keadaan
-  turunan** per ticker (close, SMA20/50/200, high52, ret5) — ratusan KB, bukan puluhan
-  MB — sehingga aturan bisa disajikan tanpa membengkakkan repo.
+  Batasan yang tetap dibaca: net20 aturan terlemah cuma **+0,04%** setelah biaya 0,3%,
+  dan alpha AS kecil secara absolut (+0,2% s/d +0,5%) — paling rentan terhadap
+  slippage. Karena itu ia dipasang sebagai **daftar kandidat** (filter keadaan), dengan
+  angka verifikasi eksekusi ikut tampil; bukan sebagai sinyal beli hari ini.
+
+* **ETF** — 20 aturan diukur di panel ETF SENDIRI, lalu yang **lolos bar di ETF**
+  dipasang **otomatis** oleh `summary.py` (tidak boleh ada aturan ETF yang tampil tanpa
+  pengukuran ETF). Selama belum ada aturan yang lolos bar di data ETF, menu ETF
+  **sengaja kosong** dan API menjawab 503 beserta alasannya — itu keadaan yang benar,
+  bukan kekurangan data. Yang bisa disajikan hanya aturan yang punya kolom di keadaan
+  turunan (`pullback di uptrend`, `di atas SMA200`, `dekat puncak 52m`); aturan lain yang
+  lolos bar di ETF belum bisa disajikan sampai kolomnya ditambahkan.
 
 Permukaan produksi:
 
 | bagian | gunanya |
 |---|---|
-| `GET /api/markets/study` | hasil ukur kedua pasar + aturan yang DIPASANG & yang lolos bar + `install_note` |
-| `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota); menolak pasar `us` |
+| `GET /api/markets/study` | hasil ukur tiap pasar + aturan yang DIPASANG & yang lolos bar + `install_note` + verifikasi eksekusi |
+| `GET /api/markets/crypto/screener?criteria=…` | pemindai crypto dari snapshot (0 kuota) |
+| `GET /api/markets/us/screener?criteria=…` | pemindai AS dari keadaan turunan (`all|pullback_uptrend|above_sma200|near_high52`) |
+| `GET /api/markets/etf/screener?criteria=…` | pemindai **ETF** dari keadaan turunan ETF; kriterianya hanya yang lolos bar di ETF |
 | `api/market_crypto.csv` | snapshot 220 bar × 91 koin (di-commit pipeline CI) |
-| `api/market_crypto_meta.json` | cakupan: berapa ticker dapat dari berapa (kini 91/100) |
+| `api/market_crypto_meta.json` | cakupan: berapa ticker dapat dari berapa + dari sumber mana |
+| `api/market_us_state.csv` | keadaan turunan AS, satu baris/emiten (ratusan KB, di-commit pipeline CI) |
+| `api/market_etf_state.csv` | keadaan turunan ETF, satu baris/ETF (kolom sama seperti AS) |
+| `api/market_us_exec.json` / `api/market_etf_exec.json` | verifikasi eksekusi AS & ETF (likuiditas, slippage, masuk-di-open) |
 | `api/market_study.json` | ringkasan hasil ukur + `installed` + `age_days`/`stale` (di-commit pipeline CI) |
-| tab **🌐 AS & Crypto** di dashboard | status data, tabel hasil ukur, pemindai crypto |
+| tab **🌐 AS & Crypto** di dashboard | status data, tabel hasil ukur, pemindai crypto, AS, & ETF (klik ticker → buka tab Analisis) |
 
 ### Cakupan data: 91 dari 100 (disebut apa adanya)
 
@@ -212,6 +270,10 @@ karena pembatasan. Karena itu:
 
 * puller memakai **Kraken** sebagai sumber kedua (aktif di CI: 91 koin terisi, naik
   dari 74 saat Kraken tidak terjangkau dari mesin lokal);
+* puller juga memakai **CoinGecko `market_chart`** sebagai sumber KETIGA untuk koin
+  yang tidak ada di Yahoo maupun Kraken (mis. HYPE, WLFI, ASTER). Batasannya:
+  CoinGecko hanya memberi harga+volume harian (tanpa OHLC), jadi open=high=low=close
+  untuk koin itu dan mereka ditandai `approx_close_only` di meta cakupan;
 * jumlah yang benar-benar dapat **ditulis ke `api/market_crypto_meta.json`** dan
   ditampilkan di dashboard sebagai "cakupan 91/100" — supaya tidak pernah terbaca
   sebagai cakupan penuh.
@@ -236,7 +298,11 @@ Diuji: tanggal 24 hari lalu → `stale=True`; 1 hari → `stale=False`.
   `api/index.py` untuk kutipan intraday. Terverifikasi: penuh untuk 5.794 ticker AS.
 * **Kraken tidak selalu bisa dijangkau dari mesin lokal** (verifikasi SSL jaringan
   lokal), tetapi **bekerja di CI** — karena itu cakupan crypto lebih tinggi di CI.
-* **Riwayat**: 5 tahun untuk kedua pasar; Kraken ~2 tahun (cadangan). P/E & P/B pasar
+* **CoinGecko hanya memberi harga+volume harian**, bukan OHLC. Untuk koin yang hanya
+  ada di CoinGecko, `tembus high20` sebenarnya `tembus high dari close`, bukan dari
+  high intraday — dan itu ditandai `approx_close_only` di `market_crypto_meta.json`.
+* **Riwayat**: 5 tahun untuk kedua pasar; Kraken ~2 tahun, CoinGecko ~2 tahun (keduanya
+  cadangan). P/E & P/B pasar
   AS belum diintegrasikan (kunci FMP yang ada **tidak** memberi akses riwayat harga;
   endpoint-nya membalas kosong), jadi pengukuran saat ini berbasis harga+volume.
 * **Survivorship bias** tetap ada: yang diukur hanya emiten yang masih tercatat.
@@ -246,6 +312,14 @@ Diuji: tanggal 24 hari lalu → `stale=True`; 1 hari → `stale=False`.
   bisa dibandingkan langsung dengan tabel IDX.
 * **Alpha AS sangat kecil secara absolut** (+0,2% s/d +0,5%). Ia lolos bar statistik,
   tetapi nilainya paling rentan terhadap slippage.
+* **ETF belum diukur di mesin ini (lokal)** — tidak ada panel ETF di cache, jadi menunya
+  masih kosong sampai workflow CI menjalankan `pull/study/execute/export --market etf`.
+  Banyak ETF juga tipis likuiditasnya; saringan `MIN_VALUE_USD` membuat hasilnya jujur
+  (yang tidak bisa dieksekusi tidak dihitung), tetapi cakupannya bisa lebih kecil dari
+  seluruh universe ETF.
+* **Analisis ETF memakai jalur `/api/analyze/{ticker}` yang sama** (mis. `SPY`, `QQQ`).
+  Endpoint itu mencoba varian `.JK` lebih dulu untuk kode pendek lalu kode aslinya, jadi
+  ticker ETF 3 huruf tetap terlayani — tidak ada jalur analisis terpisah untuk ETF.
 
 ## Kriteria kandidat yang diukur (`study.py`)
 
@@ -257,11 +331,15 @@ kalau kontrol ikut "menang", yang bekerja bukan aturannya melainkan arah pasar.
 
 ## Tahap berikutnya
 
-1. **Jalur saham AS**: ekspor **keadaan turunan** (close, SMA20/50/200, high52, ret5)
-   per ticker — ratusan KB, bukan puluhan MB — agar aturan AS yang lolos bar bisa
-   disajikan tanpa membengkakkan repo; lalu verifikasi eksekusi (fee, slippage,
-   likuiditas) sebelum dipasang.
-2. **Crypto lebih luas**: sisa 9 koin butuh sumber lain (CoinGecko OHLC) karena Yahoo
-   tidak mengenalnya.
-3. **Snapshot AS yang sudah ada di cache**: dipakai untuk kalibrasi ulang bila
-   aturan AS akhirnya dipasang.
+1. **Kalibrasi ulang aturan AS** dengan snapshot yang sudah ada di cache: bandingkan
+   hasil pemasangan terhadap pengukuran awal, dan awasi bila net20 aturan terlemah
+   turun di bawah nol.
+2. **Kerapatan pemindaian AS**: keadaan turunan saat ini diproduksi mingguan. Bila
+   dipakai harian, perlu jadwal tarik yang lebih rapat (dan tetap di CI, bukan Vercel).
+3. **Crypto lebih luas**: ukur ulang setelah sumber ke-3 aktif supaya angka `91/100`
+   dan tabel ukur crypto dinyatakan pada cakupan terbaru (bukan cakupan lama).
+4. **Ukur ETF pertama**: jalankan `--market etf` di workflow, lalu baca tabelnya. Bila
+   ada aturan yang lolos bar, menu ETF terisi otomatis; bila tidak, menu tetap kosong
+   dan itu jawabannya (jangan dipaksa dengan meminjam angka saham biasa).
+5. **Survivorship**: emiten/ETF/koin yang delisting belum diuji; ini batasan yang masih
+   terbuka untuk ketiga pasar.

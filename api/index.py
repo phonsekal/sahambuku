@@ -8120,7 +8120,7 @@ def fundamentals_only(
 
 
 # ---------------------------------------------------------------------------
-# PASAR LAIN (AS & CRYPTO): hasil ukur + screener crypto
+# PASAR LAIN (AS, ETF & CRYPTO): hasil ukur + screener
 #
 # Kenapa TERPISAH dari /api/screener, bukan cabang di dalamnya: seluruh penyaring
 # IDX (regime IHSG, kelas likuiditas dalam Rupiah, Broker Summary) tidak berlaku
@@ -8129,9 +8129,10 @@ def fundamentals_only(
 # research/markets/study.py — jadi yang dipasang di sini harus sama persis
 # definisinya dengan yang diukur, dan hanya yang lolos bar proyek.
 #
-# Sumber data runtime: berkas snapshot hasil pipeline CI (api/market_crypto.csv +
-# api/market_study.json). TIDAK ada panggilan jaringan saat request — Vercel tidak
-# bisa memindai ratusan ticker, dan Yahoo membatasi IP datacenter.
+# Sumber data runtime: berkas snapshot hasil pipeline CI (api/market_crypto.csv,
+# api/market_us_state.csv, api/market_etf_state.csv + api/market_study.json). TIDAK
+# ada panggilan jaringan saat request — Vercel tidak bisa memindai ratusan ticker,
+# dan Yahoo membatasi IP datacenter.
 # ---------------------------------------------------------------------------
 _API_DIR = os.path.dirname(os.path.abspath(__file__))
 MARKET_STUDY_PATH = os.path.join(_API_DIR, "market_study.json")
@@ -8269,11 +8270,168 @@ def crypto_screen(criteria: str, limit: int) -> dict:
         "results": out[:limit],
         "measurement": measured,
         "notes": [
-            "Diukur pada 74 koin, 5 tahun (research/markets/study.py): tren & breakout "
-            "MENANG, sedangkan membeli jenuh jual (RSI<30) GAGAL (-2,01%).",
+            f"Diukur pada {df['code'].nunique()} koin, 5 tahun "
+            "(research/markets/study.py): tren & breakout MENANG, sedangkan membeli "
+            "jenuh jual (RSI<30) GAGAL.",
             "Harga dari snapshot harian CI (bukan real-time); as_of di atas.",
             "Crypto diperdagangkan 24/7 — tidak ada 'harga pra-tutup' seperti IDX.",
         ],
+        "disclaimer": DISCLAIMER,
+    }
+
+
+# AS & ETF: keadaan TURUNAN per ticker (satu baris/ticker, bukan panel penuh).
+# Kolom & definisi aturannya SAMA untuk kedua pasar, TETAPI tiap pasar punya
+# pengukuran sendiri (research/markets/study.py --market us|etf): ETF = keranjang,
+# bukan emiten tunggal, sehingga angka saham biasa tidak pernah dipinjam untuk ETF.
+# Hanya aturan yang LOLOS BAR DI PASAR ITU yang disajikan; kuncinya sama dengan yang
+# ditulis research/markets/export.py --state supaya definisinya tidak bisa menyimpang.
+STATE_RULES = {
+    "pullback_uptrend": "pullback di uptrend",
+    "above_sma200": "di atas SMA200",
+    "near_high52": "dekat puncak 52m",
+}
+STATE_CRITERIA = {
+    "pullback_uptrend": ("close di atas SMA200 DAN |close/SMA20 - 1| <= 3% "
+                         "DAN RSI14 antara 35-65"),
+    "above_sma200": "close di atas SMA200",
+    "near_high52": "close >= 95% dari high 52 minggu",
+    "all": "salah satu dari aturan keadaan yang lolos bar di pasar ini",
+}
+STATE_UNIVERSE = {
+    "us": "saham biasa tercatat di AS (ETF/warrant/unit dibuang)",
+    "etf": "ETF terdaftar di AS (bendera ETF NASDAQ Trader; warrant/unit dibuang)",
+}
+STATE_BASIS = {
+    "us": "Diukur pada saham biasa tercatat di AS, bukan pada ETF.",
+    "etf": ("Diukur pada ETF saja (pasar terpisah) — keranjang berperilaku lain dari "
+            "emiten tunggal, jadi angkanya tidak diwarisi dari saham biasa."),
+}
+STATE_CSV = {m: os.path.join(_API_DIR, f"market_{m}_state.csv") for m in ("us", "etf")}
+
+
+def load_state(market: str) -> Optional[pd.DataFrame]:
+    """Keadaan turunan api/market_<pasar>_state.csv untuk pasar us/etf (ekspor CI, 0 kuota)."""
+    path = STATE_CSV.get(market)
+    if not path or not os.path.exists(path):
+        return None
+    try:
+        mt = os.path.getmtime(path)
+    except OSError:
+        return None
+    hit = _MARKET_CACHE.get(path)
+    if hit and hit.get("mtime") == mt:
+        return hit.get("data")
+    try:
+        df = pd.read_csv(path)
+    except Exception:
+        return None
+    _MARKET_CACHE[path] = {"mtime": mt, "data": df}
+    return df
+
+
+def _state_measured(study: Optional[dict], market: str, key: str) -> Optional[dict]:
+    """Baris hasil ukur pasar ini untuk sebuah aturan produksi (angka sama di UI & riset)."""
+    want = STATE_RULES.get(key)
+    if not study or not want:
+        return None
+    rows = ((study.get("markets") or {}).get(market) or {}).get("rules") or []
+    for row in rows:
+        if row.get("aturan") == want:
+            return row
+    return None
+
+
+def _state_allowed(study: Optional[dict], market: str, df: pd.DataFrame) -> Dict[str, str]:
+    """Aturan keadaan yang BOLEH disajikan: LOLOS BAR di pasar ini DAN punya kolom.
+
+    Gerbangnya sengaja `lolos_bar` dari hasil ukur pasar ITU (bukan daftar yang
+    diketik di sini), sehingga aturan yang belum terbukti tidak mungkin tampil, dan
+    pasar tanpa aturan lolos (mis. ETF sebelum diukur) tampil kosong apa adanya.
+    """
+    ms = (study or {}).get("markets") or {}
+    lolos = set(((ms.get(market) or {}).get("lolos_bar")) or [])
+    return {k: STATE_CRITERIA[k] for k, rule in STATE_RULES.items()
+            if rule in lolos and k in df.columns}
+
+
+def state_screen(market: str, criteria: str, limit: int) -> dict:
+    """Saring saham AS / ETF dari KEADAAN TURUNAN (tanpa jaringan, 0 kuota).
+
+    Kenapa dari keadaan turunan, bukan panel penuh: snapshot penuh (~5.900 ticker x
+    220 bar) puluhan MB dan tidak boleh masuk repo. Aturan yang lolos bar di pasar ini
+    berupa FILTER KEADAAN, jadi nilai terakhir per ticker sudah cukup untuk
+    menyajikannya.
+    """
+    df = load_state(market)
+    if df is None or df.empty:
+        raise HTTPException(503, (
+            f"Keadaan turunan '{market}' belum ada di server "
+            f"(api/market_{market}_state.csv). Pipeline CI yang menulisnya — "
+            "lihat /api/markets/study untuk status."))
+    study = _read_json_cached(MARKET_STUDY_PATH)
+    allowed = _state_allowed(study, market, df)
+    if not allowed:
+        raise HTTPException(503, (
+            f"Pasar '{market}' belum punya aturan yang LOLOS BAR dan bisa disajikan, "
+            "jadi tidak ada yang ditampilkan. Lihat /api/markets/study untuk hasil "
+            "ukurnya — ini disengaja, bukan kekurangan data."))
+    if criteria == "all":
+        hit_cols = list(allowed)
+    elif criteria in allowed:
+        hit_cols = [criteria]
+    else:
+        raise HTTPException(422, (
+            f"Kriteria '{criteria}' tidak dikenal untuk {market}. Pilih salah satu: "
+            f"{', '.join(list(allowed) + ['all'])}."))
+    mask = df[hit_cols].fillna(0).astype(int).sum(axis=1) > 0
+    out: List[dict] = []
+    for r in df[mask].itertuples(index=False):
+        met = [STATE_CRITERIA[c] for c in hit_cols if int(getattr(r, c) or 0) == 1]
+        price = getattr(r, "close", None)
+        if not price or float(price) <= 0:
+            continue
+        out.append({
+            "ticker": str(getattr(r, "code")),
+            "date": str(getattr(r, "date")),
+            "price": num(price, 4),
+            "sma20": num(getattr(r, "sma20", None), 4),
+            "sma50": num(getattr(r, "sma50", None), 4),
+            "sma200": num(getattr(r, "sma200", None), 4),
+            "dist_sma200_pct": (num((float(price) / float(getattr(r, "sma200")) - 1) * 100, 2)
+                                if getattr(r, "sma200", None) else None),
+            "high52": num(getattr(r, "high52", None), 4),
+            "dist_high52_pct": num(getattr(r, "dist_high52_pct", None), 2),
+            "ret5_pct": num(getattr(r, "ret5_pct", None), 2),
+            "v20_usd": num(getattr(r, "v20_usd", None), 0),
+            "criteria_met": met,
+        })
+    out.sort(key=lambda x: (x.get("v20_usd") or 0), reverse=True)
+    measured = {c: _state_measured(study, market, c) for c in hit_cols}
+    ms = ((study or {}).get("markets") or {}).get(market) or {}
+    notes = [n for n in (STATE_BASIS.get(market), ) if n]
+    if ms.get("tickers"):
+        notes.append(
+            f"Diukur penuh: {ms['tickers']:,} ticker, {ms.get('rows', 0):,} baris "
+            "(research/markets/study.py).")
+    notes.append(
+        "Alpha kecil secara absolut; baca bersama verifikasi eksekusi pasar ini "
+        "(likuiditas, slippage, masuk-di-open).")
+    notes.append("Aturan ini FILTER KEADAAN — daftar kandidat, bukan sinyal beli hari ini.")
+    return {
+        "market": market,
+        "criteria": criteria,
+        "criteria_label": STATE_CRITERIA.get(criteria),
+        "universe": STATE_UNIVERSE.get(market, market),
+        "as_of": str(df["date"].max()),
+        "scanned": int(len(df)),
+        "total_matched": len(out),
+        "results": out[:limit],
+        "measurement": measured,
+        "data_basis": ("Keadaan turunan per ticker (nilai TERAKHIR), bukan panel penuh. "
+                       "Harga = close harian; bukan real-time."),
+        "execution": _read_json_cached(os.path.join(_API_DIR, f"market_{market}_exec.json")),
+        "notes": notes,
         "disclaimer": DISCLAIMER,
     }
 
@@ -8321,23 +8479,34 @@ def markets_study():
 def markets_screener(
     market: str,
     criteria: str = Query("momentum_breakout",
-                          pattern="^(momentum_breakout|breakout|momentum)$"),
+                          description="crypto: momentum_breakout|breakout|momentum · "
+                                      "us/etf: all|pullback_uptrend|above_sma200|near_high52"),
     limit: int = Query(30, ge=1, le=200),
 ):
-    """Pemindai pasar di luar IDX. Saat ini hanya `crypto` yang punya aturan DIPASANG.
+    """Pemindai pasar di luar IDX, HANYA untuk aturan yang lolos bar proyek.
 
-    AS diukur penuh (5.794 ticker) dan 3 aturannya lolos bar, tetapi belum dipasang:
-    snapshot penuh AS tidak boleh diekspor ke repo, dan net20 aturan terlemah hanya
-    +0,04% setelah biaya. Karena itu `us` ditolak dengan 422, bukan diberi daftar
-    yang belum terbukti — alasannya bisa diperiksa di `install_note`
-    (`GET /api/markets/study`) dan di `research/markets/README.md`.
+    crypto: disaring dari snapshot harga ringkas (api/market_crypto.csv).
+    us    : disaring dari KEADAAN TURUNAN (api/market_us_state.csv) — snapshot penuh
+            AS tetap tidak diekspor.
+    etf   : pasar TERPISAH, disaring dari api/market_etf_state.csv. Aturan ETF diukur
+            sendiri; yang belum lolos bar di ETF tidak akan muncul di sini.
+
+    Aturan yang tidak lolos sengaja tidak disediakan. Pasar yang belum punya aturan
+    lolos ditolak dengan 503/422, bukan diberi daftar yang belum terbukti.
     """
-    if market != "crypto":
-        raise HTTPException(422, (
-            f"Screener pasar '{market}' belum dipasang: belum ada aturannya yang lolos "
-            "bar proyek (alpha>0, rata-rata & tahan-outlier positif, blok t>=+2, net>0, "
-            "kedua paruh positif). Lihat /api/markets/study untuk angkanya."))
-    return crypto_screen(criteria, limit)
+    criteria = (criteria or "").strip()
+    if market == "crypto":
+        if criteria not in CRYPTO_CRITERIA:
+            raise HTTPException(422, (
+                f"Kriteria '{criteria}' tidak dikenal untuk crypto. Pilih salah satu: "
+                f"{', '.join(CRYPTO_CRITERIA)}."))
+        return crypto_screen(criteria, limit)
+    if market in ("us", "etf"):
+        return state_screen(market, criteria, limit)
+    raise HTTPException(422, (
+        f"Screener pasar '{market}' belum dipasang: belum ada aturannya yang lolos "
+        "bar proyek (alpha>0, rata-rata & tahan-outlier positif, blok t>=+2, net>0, "
+        "kedua paruh positif). Lihat /api/markets/study untuk angkanya."))
 
 
 @app.get("/api/quotes")

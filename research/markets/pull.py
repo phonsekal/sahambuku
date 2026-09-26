@@ -9,10 +9,19 @@ yfinance sudah `YFRateLimitError`). Karena itu penarikan dilakukan di LUAR runti
 request — persis pola yang sudah dipakai `fundamentals_pull.py` untuk IDX.
 
 Sumber data:
-  * yfinance (utama, AS & crypto) — satu jalur kode, batch per potongan.
-  * Kraken OHLC (cadangan crypto, tanpa kunci) — dipakai hanya bila yfinance gagal
-    untuk koin itu. Terbukti pernah tidak terjangkau dari jaringan tertentu, jadi
-    ia cadangan, bukan andalan.
+  * Yahoo chart API (utama, AS & crypto) — satu simbol per permintaan via curl_cffi.
+  * yfinance (jalur alternatif, AS & crypto) — batch per potongan.    * Kraken OHLC (cadangan crypto ke-2, tanpa kunci) — dipakai hanya bila Yahoo gagal
+    untuk koin itu. Terbukti pernah tidak terjangkau dari jaringan tertentu.
+
+Pasar AS punya dua daftar: `us` (saham biasa) dan `etf` (ETF terdaftar). Keduanya
+memakai tarik-menarik yang sama; yang berbeda hanya universe dan pasar ukurnya.
+  * CoinGecko market_chart (cadangan crypto ke-3, tanpa kunci) — dipakai untuk sisa
+    koin yang TIDAK ada di Yahoo maupun Kraken (mis. HYPE, WLFI, ASTER). Batasannya
+    ditulis di `coingecko_daily()`: hanya harga+volume harian (tanpa OHLC).
+
+CATATAN SUMBER: tiap frame diberi `df.attrs["source"]` (yahoo/kraken/coingecko),
+sehingga cakupan yang ditulis ke meta bisa menyebut dari mana tiap koin berasal —
+dan koin yang datanya hanya close (CoinGecko) ditandai `approx_close_only`.
 
 KETAHANAN: hasil per potongan disimpan sebagai checkpoint di
 `research/.cache/markets/parts/{market}/part_NNN.pkl`. Kalau penarikan terputus
@@ -22,6 +31,7 @@ dilewati. `--merge` menyatukan semua potongan menjadi satu panel.
 Jalankan:
     .venv/bin/python research/markets/pull.py --market us --limit 300
     .venv/bin/python research/markets/pull.py --market us            # seluruh pasar
+    .venv/bin/python research/markets/pull.py --market etf           # seluruh ETF AS
     .venv/bin/python research/markets/pull.py --market crypto --top 100
     .venv/bin/python research/markets/pull.py --market us --merge    # gabung checkpoint
 """
@@ -46,6 +56,11 @@ import universe as U  # noqa: E402
 CACHE_DIR = os.path.join(HERE, "..", ".cache", "markets")
 PARTS_DIR = os.path.join(CACHE_DIR, "parts")
 OHLCV = ["Open", "High", "Low", "Close", "Volume"]
+COINGECKO_CHART = "https://api.coingecko.com/api/v3/coins/{id}/market_chart"
+# Sumber yang datanya HANYA harga harian (tanpa OHLC) -> open=high=low=close.
+# Dipakai untuk menandai koin di meta cakupan supaya breakout pada koin itu tidak
+# terbaca seolah memakai high intraday.
+CLOSE_ONLY_SOURCES = {"coingecko"}
 
 
 def _parts_dir(market: str) -> str:
@@ -285,6 +300,52 @@ def kraken_ohlc(pair: str, days: int = 730) -> Optional[pd.DataFrame]:
     return out.iloc[:-1] if len(out) > 61 else None
 
 
+def coingecko_daily(coin_id: str, days: int = 730) -> Optional[pd.DataFrame]:
+    """OHLCV harian dari CoinGecko market_chart (SUMBER KETIGA crypto, tanpa kunci).
+
+    KENAPA ADA: sebagian koin tidak ada di Yahoo (mis. HYPE, WLFI, ASTER) dan tidak
+    punya pair Kraken, sehingga dua sumber sebelumnya berhenti di ~91/100. CoinGecko
+    mengenal hampir semua koin dan endpoint-nya tanpa kunci.
+
+    BATASAN YANG DITULIS TERBUKA: endpoint ini memberi harga + volume HARIAN, bukan
+    OHLC — jadi open=high=low=close=harga harian. Akibatnya `tembus high20` untuk koin
+    ini sebenarnya `tembus high dari close`, bukan dari high intraday. Itu sebabnya
+    sumbernya dicatat (`approx_close_only`) di meta cakupan, bukan disembunyikan.
+    """
+    import json as _json
+    import urllib.request
+    url = (f"{COINGECKO_CHART.format(id=coin_id)}?vs_currency=usd"
+           f"&days={days}&interval=daily")
+    try:
+        req = urllib.request.Request(url, headers=U._UA)
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            data = _json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception as exc:
+        print(f"  CoinGecko gagal untuk {coin_id}: {str(exc)[:100]}")
+        return None
+    prices = (data or {}).get("prices") or []
+    vols = (data or {}).get("total_volumes") or []
+    if len(prices) < 61:
+        return None
+    p = pd.DataFrame(prices, columns=["t", "close"])
+    p.index = pd.to_datetime(p["t"], unit="ms").dt.normalize()
+    p = p[~p.index.duplicated(keep="last")]
+    v = pd.DataFrame(vols, columns=["t", "volume"])
+    v.index = pd.to_datetime(v["t"], unit="ms").dt.normalize()
+    v = v[~v.index.duplicated(keep="last")]
+    df = pd.DataFrame(index=p.index)
+    px = p["close"].astype(float)
+    for c in ("Open", "High", "Low", "Close"):
+        df[c] = px
+    df["Volume"] = v["volume"].reindex(p.index).fillna(0.0).astype(float)
+    df = df.dropna(subset=["Close"])
+    # Hari terakhir (00:00 UTC) biasanya belum lengkap -> buang supaya tidak jadi sinyal palsu.
+    df = df.iloc[:-1] if len(df) > 61 else df
+    df.index.name = None
+    df.attrs["source"] = "coingecko"
+    return df if len(df) >= 60 else None
+
+
 def pull_market(market: str, limit: Optional[int], period: str, days: int,
                 top: int, chunk: int, force: bool = False,
                 sweep_max: int = 60, source: str = "yahoo", workers: int = 6) -> None:
@@ -293,14 +354,20 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
     # code = nama yang DIPAKAI di panel (BTC, AAPL); yahoo = simbol yang diunduh
     # (BTC-USD, AAPL). Untuk crypto keduanya berbeda, dan itu pernah bikin pull
     # diam-diam gagal karena Yahoo tidak mengenal "BTC" polos.
-    if market == "us":
-        rows = U.us_universe()
+    if market in ("us", "etf"):
+        # ETF punya universe sendiri (hanya baris yang ditandai ETF) supaya aturannya
+        # diukur terpisah dari saham biasa — campur keduanya akan menyembunyikan
+        # perbedaan perilaku keranjang vs emiten tunggal.
+        rows = U.us_universe() if market == "us" else U.etf_universe()
         tickers = [r["symbol"] for r in rows]
         code_to_yahoo = {r["symbol"]: r["symbol"] for r in rows}
+        code_to_cg: Dict[str, Optional[str]] = {}
     else:
         rows = U.crypto_universe(top)
         tickers = [r["symbol"] for r in rows]
         code_to_yahoo = {r["symbol"]: r["yahoo"] for r in rows}
+        # ID CoinGecko per simbol: sumber terakhir untuk koin yang tidak ada di Yahoo/Kraken.
+        code_to_cg = {r["symbol"]: r.get("id") for r in rows}
     yahoo_to_code = {v: k for k, v in code_to_yahoo.items()}
     if limit and limit < len(tickers):
         # Ambil sampel TERSEBAR MERATA, bukan `limit` pertama. Daftar NASDAQ Trader
@@ -329,6 +396,8 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
             frames = pull_yfinance(dl, period, chunk=len(dl))
             # kembalikan kunci frame ke nama panel (BTC-USD -> BTC)
             frames = {yahoo_to_code.get(k, k): v for k, v in frames.items()}
+        for f in frames.values():
+            f.attrs.setdefault("source", "yahoo")
         # Crypto: isi yang gagal dengan Kraken (bila pair-nya ada dan terjangkau).
         if market == "crypto" and krk_idx:
             missing = [t for t in group if t not in frames]
@@ -338,8 +407,20 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
                     continue
                 df = kraken_ohlc(pair, days=days)
                 if df is not None:
+                    df.attrs["source"] = "kraken"
                     frames[sym] = df
                     print(f"    {sym}: diisi dari Kraken ({pair})")
+        # Crypto: sisa yang tidak ada di Yahoo MAUPUN Kraken dicoba dari CoinGecko.
+        if market == "crypto":
+            for sym in [t for t in group if t not in frames]:
+                cid = code_to_cg.get(sym)
+                if not cid:
+                    continue
+                dg = coingecko_daily(cid, days=days)
+                if dg is not None:
+                    frames[sym] = dg
+                    print(f"    {sym}: diisi dari CoinGecko ({cid}, close-only)")
+                time.sleep(2)      # laju CoinGecko tetap sopan
         if not frames:
             # Jangan simpan checkpoint kosong: kalau disimpan, jalankan berikutnya
             # akan menganggap potongan ini "sudah" padahal isinya nol.
@@ -393,8 +474,22 @@ def pull_market(market: str, limit: Optional[int], period: str, days: int,
                         continue
                     dk = kraken_ohlc(pair, days=days)
                     if dk is not None:
+                        dk.attrs["source"] = "kraken"
                         frames[sym] = dk
                         print(f"    {sym}: diisi dari Kraken ({pair})")
+            for f in frames.values():
+                f.attrs.setdefault("source", "yahoo")
+            # Sisa yang Yahoo & Kraken tetap tidak punya: CoinGecko (close-only).
+            if market == "crypto":
+                for sym in [t for t in group if t not in frames]:
+                    cid = code_to_cg.get(sym)
+                    if not cid:
+                        continue
+                    dg = coingecko_daily(cid, days=days)
+                    if dg is not None:
+                        frames[sym] = dg
+                        print(f"    {sym}: diisi dari CoinGecko ({cid}, close-only)")
+                    time.sleep(2)
             if frames:
                 with open(sp, "wb") as fh:
                     pickle.dump({"frames": frames, "period": period}, fh)
@@ -411,10 +506,12 @@ def merge_parts(market: str) -> pd.DataFrame:
     if not files:
         raise SystemExit(f"Tidak ada checkpoint di {pdir}.")
     long_rows: List[pd.DataFrame] = []
+    sources: Dict[str, str] = {}
     for f in files:
         with open(os.path.join(pdir, f), "rb") as fh:
             blob = pickle.load(fh)
         for tk, df in (blob.get("frames") or {}).items():
+            sources[tk] = str((df.attrs or {}).get("source") or "unknown")
             # Kolom tanggal dibuat EKSPLISIT dari indeks. Sebelumnya mengandalkan
             # nama indeks ("index"/"Date") dan itu pernah gagal `KeyError: 'date'`
             # begitu ada frame yang indeksnya bernama lain — jalur crypto di CI.
@@ -438,9 +535,17 @@ def merge_parts(market: str) -> pd.DataFrame:
         if os.path.exists(cov_path):
             with open(cov_path, "r", encoding="utf-8") as fh:
                 prev = json.load(fh) or {}
+        by_source: Dict[str, int] = {}
+        for tk in panel["code"].unique():
+            src = sources.get(str(tk), "unknown")
+            by_source[src] = by_source.get(src, 0) + 1
+        approx = sorted(str(tk) for tk in panel["code"].unique()
+                        if sources.get(str(tk)) in CLOSE_ONLY_SOURCES)
         prev.update({"scanned": int(panel["code"].nunique()),
                      "as_of": str(panel["date"].max().date()),
-                     "rows": int(len(panel))})
+                     "rows": int(len(panel)),
+                     "sources": by_source,
+                     "approx_close_only": approx})
         with open(cov_path, "w", encoding="utf-8") as fh:
             json.dump(prev, fh)
     except Exception as exc:
@@ -456,7 +561,7 @@ def merge_parts(market: str) -> pd.DataFrame:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Tarik OHLCV AS/crypto ke cache lokal")
-    ap.add_argument("--market", choices=["us", "crypto"], required=True)
+    ap.add_argument("--market", choices=["us", "etf", "crypto"], required=True)
     ap.add_argument("--limit", type=int, default=None, help="batasi jumlah ticker (uji)")
     ap.add_argument("--period", default="5y", help="jendela yfinance (mis. 5y, max)")
     ap.add_argument("--days", type=int, default=730, help="riwayat Kraken (crypto)")

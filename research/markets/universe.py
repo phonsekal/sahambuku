@@ -53,7 +53,7 @@ _SKIP_NAME = re.compile(
 
 # Benchmark tiap pasar. Sengaja dicatat di sini supaya studi memakai pembanding
 # yang sama dengan yang ditampilkan aplikasi (bukan indeks yang berbeda-beda).
-BENCHMARK = {"us": "SPY", "crypto": "BTC-USD"}
+BENCHMARK = {"us": "SPY", "etf": "SPY", "crypto": "BTC-USD"}
 
 # Stablecoin & token "wrapped/staked": harganya menempel ~1 atau menyalin koin lain,
 # sehingga bukan kandidat screener dan akan merusak rata-rata lintas-koin. Dibuang
@@ -144,6 +144,22 @@ def us_universe(include_etf: bool = False, include_test: bool = False) -> List[d
         seen.add(row["symbol"])
         uniq.append(row)
     return uniq
+
+
+def etf_universe() -> List[dict]:
+    """ETF terdaftar di AS, HANYA baris yang ditandai ETF oleh NASDAQ Trader.
+
+    KENAPA DIPISAH dari `us_universe`: ETF dan saham biasa punya perilaku berbeda
+    (ETF = keranjang, tanpa cerita emiten, tanpa aksi korporasi idiosyncratic), jadi
+    aturannya harus DIUKUR SENDIRI di `study.py --market etf`, bukan diwarisi dari
+    saham biasa. Fungsi ini hanya menyediakan daftarnya; menunya (screener) baru
+    muncul setelah ada aturan yang lolos bar di pasar ini.
+
+    Wadah/ETN dengan kata "notes"/"units"/"warrant" tetap dibuang lewat
+    `_SKIP_NAME` — sama seperti saham biasa — supaya yang tersisa benar-benar ETF
+    yang diperdagangkan seperti saham.
+    """
+    return [r for r in us_universe(include_etf=True) if r.get("etf") is True]
 
 
 def crypto_universe(top: int = 100) -> List[dict]:
@@ -239,14 +255,16 @@ def resolve_kraken(symbol: str, idx: Optional[Dict[str, str]] = None) -> Optiona
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Periksa universe AS & crypto")
-    ap.add_argument("--market", choices=["us", "crypto"], default="us")
+    ap.add_argument("--market", choices=["us", "etf", "crypto"], default="us")
     ap.add_argument("--top", type=int, default=100, help="jumlah crypto teratas")
     ap.add_argument("--limit", type=int, default=20, help="cetak contoh sejumlah ini")
     args = ap.parse_args()
 
-    if args.market == "us":
-        rows = us_universe()
-        print(f"Saham AS (saham biasa, ETF/warrant dibuang): {len(rows)} emiten")
+    if args.market in ("us", "etf"):
+        rows = us_universe() if args.market == "us" else etf_universe()
+        label = ("Saham AS (saham biasa, ETF/warrant dibuang)" if args.market == "us"
+                 else "ETF terdaftar di AS (bendera ETF NASDAQ Trader)")
+        print(f"{label}: {len(rows)} emiten")
         for r in rows[:args.limit]:
             print(f"  {r['symbol']:<6} {r['exchange']:<6} {r['name'][:60]}")
     else:

@@ -48,26 +48,62 @@ INSTALLED: Dict[str, List[dict]] = {
         {"key": "crypto_momentum", "label": "Momentum 5 hari (crypto)",
          "rule": "ret 5 hari >= +10%"},
     ],
-    # AS: 3 aturan MEMANG lolos bar (pullback di uptrend, di atas SMA200,
-    # dekat puncak 52m), tetapi sengaja TIDAK dipasang. Alasannya ditulis di
-    # INSTALL_NOTE di bawah supaya keputusan ini bisa ditelusuri, bukan terbaca
-    # sebagai "lupa" atau "tidak ada yang lolos".
-    "us": [],
+    # AS: 3 aturan lolos bar (pullback di uptrend, di atas SMA200, dekat puncak
+    # 52m). Dulu sengaja ditahan karena snapshot penuh AS tidak boleh diekspor;
+    # sekarang disajikan lewat KEADAAN TURUNAN (api/market_us_state.csv — satu baris
+    # per emiten) sehingga bisa dipasang tanpa membengkakkan repo. Batasan yang tetap
+    # dibaca: verifikasi eksekusi ada di `markets.us.execution`.
+    "us": [
+        {"key": "us_pullback_uptrend",
+         "label": "Pullback di uptrend (AS)",
+         "rule": "close > SMA200 DAN |close/SMA20 - 1| <= 3% DAN RSI14 antara 35-65"},
+        {"key": "us_above_sma200",
+         "label": "Di atas SMA200 (AS)",
+         "rule": "close di atas SMA200"},
+        {"key": "us_near_high52",
+         "label": "Dekat puncak 52 minggu (AS)",
+         "rule": "close >= 95% dari high 52 minggu"},
+    ],
+    # ETF: diisi OTOMATIS di main() dari hasil ukur pasar ETF sendiri (lihat
+    # STATE_RULE_CANDIDATES). Dibiarkan kosong di sini supaya tidak ada aturan ETF
+    # yang tampil sebelum ada pengukurannya.
+    "etf": [],
 }
+
+# Kandidat aturan KEADAAN yang punya kolom di api/market_<pasar>_state.csv (kunci
+# produksinya sama dengan US_RULES di api/index.py; definisinya di export.py).
+# Untuk ETF aturan ini dipasang otomatis HANYA bila lolos bar di pasar ETF — jadi
+# menu ETF tidak pernah menyajikan aturan yang belum diukur di ETF, dan angkanya
+# tidak diwarisi dari saham biasa (keranjang != emiten tunggal).
+STATE_RULE_CANDIDATES = [
+    {"key": "pullback_uptrend", "label": "Pullback di uptrend (ETF)",
+     "rule": "pullback di uptrend"},
+    {"key": "above_sma200", "label": "Di atas SMA200 (ETF)",
+     "rule": "di atas SMA200"},
+    {"key": "near_high52", "label": "Dekat puncak 52 minggu (ETF)",
+     "rule": "dekat puncak 52m"},
+]
 
 # Kenapa aturan yang lolos bar belum tentu dipasang. Diukur dengan bar proyek,
 # tetapi pemasangan menuntut SATU hal lagi: aturan itu bisa DISAJIKAN dan sudah
 # masuk akal secara biaya. Keduanya diperiksa di sini.
 INSTALL_NOTE: Dict[str, str] = {
-    "us": ("3 aturan lolos bar (pullback di uptrend, di atas SMA200, dekat puncak "
-           "52m) tetapi belum dipasang: yang terkuat pun hanya +0,54% rata-rata "
-           "dengan net20 +0,04% di aturan terlemah (setelah biaya 0,3% nyaris "
-           "nol), dan snapshot penuh AS (~5.800 ticker) TIDAK boleh diekspor ke "
-           "repo sehingga belum ada jalur penyajian yang terverifikasi eksekusi. "
-           "Aturan hanya dipasang bila lolos bar DAN bisa disajikan."),
+    "us": ("3 aturan lolos bar DAN kini dipasang, setelah dua penghalang lama "
+           "dibereskan: (1) jalur penyajian — snapshot penuh AS (~5.800 ticker) tetap "
+           "TIDAK diekspor, yang diekspor hanya KEADAAN TURUNAN satu baris per emiten "
+           "(close, SMA20/50/200, high52, ret5, + tanda aturan) sehingga ratusan KB, "
+           "bukan puluhan MB; (2) verifikasi eksekusi ada di markets.us.execution "
+           "(likuiditas, sisa alpha setelah slippage, dan masuk di open besok). "
+           "Net20 aturan terlemah memang tipis (+0,04% di study); angkanya dibaca apa "
+           "adanya bersama hasil verifikasi, bukan disembunyikan."),
     "crypto": ("7 aturan lolos bar, 3 dipasang. Aturan tren yang lolos bar tetapi "
                "paruh pertamanya negatif (tembus high50, tren naik + tembus high20, "
                "puncak 52m baru) sengaja tidak dipakai."),
+    "etf": ("ETF diukur TERPISAH dari saham biasa (keranjang, bukan emiten tunggal). "
+            "Dari tiga aturan keadaan yang bisa disajikan, hanya yang LOLOS BAR di "
+            "pasar ETF sendiri yang dipasang (diisi otomatis oleh summary.py) — jadi "
+            "angka saham biasa tidak pernah dipinjam untuk ETF. Bila tidak ada yang "
+            "lolos, menu ETF sengaja kosong dan itu ditampilkan apa adanya."),
 }
 
 _ROW_RE = re.compile(
@@ -81,6 +117,17 @@ _HEAD_RE = re.compile(
     r"(?P<rows>[\d,]+)\s*baris\s*·\s*(?P<start>\S+)\s*->\s*(?P<end>\S+)\s*·\s*"
     r"biaya\s*(?P<cost>[\d.]+)%(?:\s*·\s*return dipotong di \+/-(?P<winsor>[\d.]+)%)?"
 )
+
+
+def installed_for_state_market(lolos_bar: Optional[List[str]]) -> List[dict]:
+    """Aturan keadaan yang DIPASANG untuk pasar us/etf: yang LOLOS BAR dan bisa disajikan.
+
+    Dipisah dari `main()` supaya keputusan ini bisa diuji tanpa menjalankan seluruh
+    pipeline. Untuk ETF ia satu-satunya gerbang: aturan yang belum lolos bar di data
+    ETF tidak akan pernah tampil di menu, dan angkanya tidak diwarisi dari saham biasa.
+    """
+    passed = set(lolos_bar or [])
+    return [dict(c) for c in STATE_RULE_CANDIDATES if c["rule"] in passed]
 
 
 def _num(s: str) -> float:
@@ -154,18 +201,37 @@ def main() -> int:
         "install_note": INSTALL_NOTE,
         "markets": {},
     }
-    for market in ("crypto", "us"):
+    for market in ("crypto", "us", "etf"):
         rep = parse_report(os.path.join(REPORTS, f"report_{market}.txt"))
         if rep:
-            # Cakupan dari export.py (mis. 74 dari 100 koin) supaya angka di dashboard
-            # tidak terbaca seolah seluruh universe sudah diukur.
-            meta_path = os.path.join(API_DIR, f"market_{market}_meta.json")
-            if os.path.exists(meta_path):
+            # ETF: pemasangan dihitung dari hasil ukur ETF sendiri (lolos bar), bukan
+            # diketik manual — supaya tidak mungkin memasang aturan yang belum diukur.
+            if market == "etf":
+                INSTALLED["etf"] = installed_for_state_market(rep.get("lolos_bar"))
+            # Verifikasi EKSEKUSI (bila ada) ditempelkan ke pasar AS: likuiditas,
+            # slippage, dan masuk-di-open — supaya pemasangan bisa diperiksa hasilnya,
+            # bukan hanya lolos bar statistik.
+            exec_path = os.path.join(API_DIR, f"market_{market}_exec.json")
+            if os.path.exists(exec_path):
                 try:
-                    with open(meta_path, "r", encoding="utf-8") as fh:
-                        rep["coverage"] = json.load(fh)
+                    with open(exec_path, "r", encoding="utf-8") as fh:
+                        rep["execution"] = json.load(fh)
                 except Exception:
                     pass
+            # Cakupan dari export.py (mis. 91 dari 100 koin) supaya angka di dashboard
+            # tidak terbaca seolah seluruh universe sudah diukur. AS tidak punya
+            # market_us.csv (panel penuh ditolak), jadi cakupannya diambil dari meta
+            # KEADAAN TURUNAN (market_us_state_meta.json).
+            for meta_name in (f"market_{market}_meta.json",
+                              f"market_{market}_state_meta.json"):
+                meta_path = os.path.join(API_DIR, meta_name)
+                if os.path.exists(meta_path):
+                    try:
+                        with open(meta_path, "r", encoding="utf-8") as fh:
+                            rep["coverage"] = json.load(fh)
+                        break
+                    except Exception:
+                        pass
             out["markets"][market] = rep
             cov = rep.get("coverage") or {}
             cov_txt = (f" · cakupan {cov.get('scanned')}/{cov.get('universe')} ticker"

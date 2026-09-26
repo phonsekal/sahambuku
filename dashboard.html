@@ -86,6 +86,36 @@
       </div>
       <div id="mkResult" class="text-xs text-slate-500">Belum dipindai.</div>
     </div>
+
+    <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
+      <div class="flex flex-wrap items-center gap-3 mb-3">
+        <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">📈 Pemindai Saham AS</h2>
+        <select id="mkUsCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+          <option value="all">Semua aturan AS (3)</option>
+          <option value="pullback_uptrend">Pullback di uptrend</option>
+          <option value="above_sma200">Di atas SMA200</option>
+          <option value="near_high52">Dekat puncak 52 minggu</option>
+        </select>
+        <button id="btnMkUsScan" onclick="scanMarketUS()" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-5 py-2 text-sm shadow-lg shadow-sky-500/25 transition">Pindai</button>
+        <span class="text-[11px] text-slate-500">Dari keadaan turunan per emiten (bukan panel penuh). Ini FILTER KEADAAN — daftar kandidat, bukan sinyal beli.</span>
+      </div>
+      <div id="mkUsResult" class="text-xs text-slate-500">Belum dipindai.</div>
+    </div>
+
+    <div class="bg-slate-900/70 backdrop-blur border border-slate-800/80 rounded-2xl p-5 mb-4 shadow-xl shadow-black/20">
+      <div class="flex flex-wrap items-center gap-3 mb-3">
+        <h2 class="text-[11px] font-bold uppercase tracking-wider text-slate-500">🧺 Pemindai ETF</h2>
+        <select id="mkEtfCriteria" class="bg-slate-900/80 border border-slate-700 rounded-xl px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500">
+          <option value="all">Semua aturan ETF yang lolos bar</option>
+          <option value="pullback_uptrend">Pullback di uptrend</option>
+          <option value="above_sma200">Di atas SMA200</option>
+          <option value="near_high52">Dekat puncak 52 minggu</option>
+        </select>
+        <button id="btnMkEtfScan" onclick="scanMarketETF()" class="bg-gradient-to-r from-sky-500 to-blue-600 hover:from-sky-400 hover:to-blue-500 text-white font-bold rounded-xl px-5 py-2 text-sm shadow-lg shadow-sky-500/25 transition">Pindai</button>
+        <span class="text-[11px] text-slate-500">ETF diukur TERPISAH dari saham biasa. Hanya aturan yang lolos bar di ETF sendiri yang muncul.</span>
+      </div>
+      <div id="mkEtfResult" class="text-xs text-slate-500">Belum dipindai.</div>
+    </div>
   </section>
 
   <!-- ======= TAB ANALISIS ======= -->
@@ -3521,7 +3551,8 @@ async function scanMarket() {
     if (m.a20 != null) {
       h += '<div class="mb-3 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3 py-2">Bukti ukurnya: ' +
         '<b class="text-sky-300">' + esc(m.aturan) + '</b> — rata-rata h20 ' + mkSgn(m.a20) + '%, tahan-outlier ' + mkSgn(m.m20) +
-        '%, blok t ' + mkSgn(m.t20, 1) + ', net20 ' + mkSgn(m.net20) + '%, paruh ' + mkHalves(m.halves) + ' (74 koin, 5 tahun).</div>';
+        '%, blok t ' + mkSgn(m.t20, 1) + ', net20 ' + mkSgn(m.net20) + '%, paruh ' + mkHalves(m.halves) +
+        ' (' + j.scanned + ' koin, 5 tahun).</div>';
     }
     if (!j.results.length) {
       h += '<div class="text-slate-400">Tidak ada koin yang memenuhi kriteria pada snapshot terakhir. Ini wajar: syaratnya memang sempit.</div>';
@@ -3535,6 +3566,130 @@ async function scanMarket() {
           '<td class="text-right tabular text-emerald-400">' + mkSgn(x.ret5_pct) + '%</td>' +
           '<td class="text-right tabular text-slate-400">' + mkSgn(x.dist_high20_pct) + '%</td>' +
           '<td class="text-right tabular text-slate-400">' + (x.vol_vs_ma20_x == null ? "—" : fmt(x.vol_vs_ma20_x, 2) + "×") + '</td></tr>').join("") +
+        '</tbody></table></div>';
+    }
+    h += '<div class="mt-2 text-[11px] text-slate-500">' + (j.notes || []).map(esc).join(" · ") + '</div>';
+    out.innerHTML = h;
+  } catch (e) {
+    out.innerHTML = '<span class="text-rose-300">Gagal memindai: ' + esc(String(e)) + '</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function scanMarketUS() {
+  const btn = $("#btnMkUsScan"), crit = $("#mkUsCriteria").value, out = $("#mkUsResult");
+  btn.disabled = true; out.innerHTML = '<span class="text-slate-400">Memindai…</span>';
+  try {
+    const r = await fetch("/api/markets/us/screener?criteria=" + encodeURIComponent(crit) + "&limit=60");
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    let h = '<div class="mb-2 text-slate-400">Keadaan <b class="text-slate-300">' + esc(j.as_of) +
+      '</b> · ' + esc(String(j.scanned)) + ' emiten · <b class="text-slate-200">' + esc(String(j.total_matched)) +
+      '</b> lolos · kriteria: ' + esc(j.criteria_label || j.criteria) + '</div>';
+    const m = j.measurement || {};
+    Object.keys(m).forEach(k => {
+      if (!m[k] || m[k].a20 == null) return;
+      h += '<div class="mb-1 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3 py-2">Bukti ukurnya: ' +
+        '<b class="text-sky-300">' + esc(m[k].aturan) + '</b> — rata-rata h20 ' + mkSgn(m[k].a20) + '%, tahan-outlier ' +
+        mkSgn(m[k].m20) + '%, blok t ' + mkSgn(m[k].t20, 1) + ', net20 ' + mkSgn(m[k].net20) + '%, paruh ' +
+        mkHalves(m[k].halves) + '.</div>';
+    });
+    if (j.execution && j.execution.rules) {
+      const ex = j.execution.rules;
+      const lines = Object.keys(ex).filter(k => ex[k] && ex[k].n).map(k => {
+        const r = ex[k], oe = r.open_entry || {};
+        return '<b class="text-slate-200">' + esc(k) + '</b>: likuiditas median ' +
+          fmt((r.liquidity || {}).v20_median_usd || 0, 0) + ' USD · net masuk-di-open (slip 0,5%) ' +
+          mkSgn((oe.net_by_slippage || {})["0.5"]) + '%';
+      }).join('<br>');
+      if (lines) h += '<div class="mb-3 text-[11px] text-slate-400 bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2">' +
+        '<b>Verifikasi eksekusi:</b><br>' + lines + '</div>';
+    }
+    if (!j.results.length) {
+      h += '<div class="text-slate-400">Tidak ada emiten yang memenuhi kriteria pada keadaan terakhir.</div>';
+    } else {
+      h += '<div class="overflow-x-auto"><table class="w-full text-xs min-w-[720px]"><thead><tr class="text-[10px] uppercase text-slate-500 border-b border-slate-700/60">' +
+        '<th class="text-left py-1.5">Ticker</th><th class="text-right">Harga</th><th class="text-right">SMA200</th>' +
+        '<th class="text-right">Jarak SMA200</th><th class="text-right">Jarak high52</th><th class="text-right">5 hari</th>' +
+        '<th class="text-right">Nilai 20h (USD)</th></tr></thead><tbody>' +
+        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker) + '</td>' +
+          '<td class="text-right tabular">' + mkPrice(x.price) + '</td>' +
+          '<td class="text-right tabular text-slate-500">' + mkPrice(x.sma200) + '</td>' +
+          '<td class="text-right tabular ' + ((x.dist_sma200_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.dist_sma200_pct) + '%</td>' +
+          '<td class="text-right tabular ' + ((x.dist_high52_pct || 0) >= 0 ? 'text-emerald-400' : 'text-slate-400') + '">' + mkSgn(x.dist_high52_pct) + '%</td>' +
+          '<td class="text-right tabular ' + ((x.ret5_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.ret5_pct) + '%</td>' +
+          '<td class="text-right tabular text-slate-400">' + fmt(x.v20_usd || 0, 0) + '</td></tr>').join("") +
+        '</tbody></table></div>';
+    }
+    h += '<div class="mt-2 text-[11px] text-slate-500">' + (j.notes || []).map(esc).join(" · ") + '</div>';
+    out.innerHTML = h;
+  } catch (e) {
+    out.innerHTML = '<span class="text-rose-300">Gagal memindai: ' + esc(String(e)) + '</span>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+/* Link ticker -> buka tab Analisis dan jalankan analisisnya (ETF/saham AS masuk akal
+di sini karena /api/analyze/{ticker} menerima ticker AS/ETF apa adanya). */
+function tickLink(code) {
+  const c = esc(String(code));
+  return '<a href="#" onclick="openAnalyze(\'' + c + '\');return false;" ' +
+    'class="hover:text-sky-300 underline decoration-dotted">' + c + '</a>';
+}
+
+function openAnalyze(code) {
+  const tab = document.querySelector('.tab[data-tab="analyze"]');
+  if (tab) tab.click();
+  const inp = $("#ticker");
+  if (inp) inp.value = code;
+  if (typeof analyze === "function") analyze();
+}
+
+async function scanMarketETF() {
+  const btn = $("#btnMkEtfScan"), crit = $("#mkEtfCriteria").value, out = $("#mkEtfResult");
+  btn.disabled = true; out.innerHTML = '<span class="text-slate-400">Memindai…</span>';
+  try {
+    const r = await fetch("/api/markets/etf/screener?criteria=" + encodeURIComponent(crit) + "&limit=60");
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.detail || ("HTTP " + r.status));
+    let h = '<div class="mb-2 text-slate-400">Keadaan <b class="text-slate-300">' + esc(j.as_of) +
+      '</b> · ' + esc(String(j.scanned)) + ' ETF · <b class="text-slate-200">' + esc(String(j.total_matched)) +
+      '</b> lolos · kriteria: ' + esc(j.criteria_label || j.criteria) + '</div>';
+    const m = j.measurement || {};
+    Object.keys(m).forEach(k => {
+      if (!m[k] || m[k].a20 == null) return;
+      h += '<div class="mb-1 text-[11px] text-slate-300 bg-slate-800/60 border border-slate-700 rounded-xl px-3 py-2">Bukti ukurnya (ETF): ' +
+        '<b class="text-sky-300">' + esc(m[k].aturan) + '</b> — rata-rata h20 ' + mkSgn(m[k].a20) + '%, tahan-outlier ' +
+        mkSgn(m[k].m20) + '%, blok t ' + mkSgn(m[k].t20, 1) + ', net20 ' + mkSgn(m[k].net20) + '%, paruh ' +
+        mkHalves(m[k].halves) + '.</div>';
+    });
+    if (j.execution && j.execution.rules) {
+      const ex = j.execution.rules;
+      const lines = Object.keys(ex).filter(k => ex[k] && ex[k].n).map(k => {
+        const rr = ex[k], oe = rr.open_entry || {};
+        return '<b class="text-slate-200">' + esc(k) + '</b>: likuiditas median ' +
+          fmt((rr.liquidity || {}).v20_median_usd || 0, 0) + ' USD · net masuk-di-open (slip 0,5%) ' +
+          mkSgn((oe.net_by_slippage || {})["0.5"]) + '%';
+      }).join('<br>');
+      if (lines) h += '<div class="mb-3 text-[11px] text-slate-400 bg-slate-900/60 border border-slate-800 rounded-xl px-3 py-2">' +
+        '<b>Verifikasi eksekusi:</b><br>' + lines + '</div>';
+    }
+    if (!j.results.length) {
+      h += '<div class="text-slate-400">Tidak ada ETF yang memenuhi kriteria pada keadaan terakhir.</div>';
+    } else {
+      h += '<div class="overflow-x-auto"><table class="w-full text-xs min-w-[720px]"><thead><tr class="text-[10px] uppercase text-slate-500 border-b border-slate-700/60">' +
+        '<th class="text-left py-1.5">ETF</th><th class="text-right">Harga</th><th class="text-right">SMA200</th>' +
+        '<th class="text-right">Jarak SMA200</th><th class="text-right">Jarak high52</th><th class="text-right">5 hari</th>' +
+        '<th class="text-right">Nilai 20h (USD)</th></tr></thead><tbody>' +
+        j.results.map(x => '<tr class="border-b border-slate-800/60"><td class="py-1.5 font-semibold text-slate-200">' + tickLink(x.ticker) + '</td>' +
+          '<td class="text-right tabular">' + mkPrice(x.price) + '</td>' +
+          '<td class="text-right tabular text-slate-500">' + mkPrice(x.sma200) + '</td>' +
+          '<td class="text-right tabular ' + ((x.dist_sma200_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.dist_sma200_pct) + '%</td>' +
+          '<td class="text-right tabular ' + ((x.dist_high52_pct || 0) >= 0 ? 'text-emerald-400' : 'text-slate-400') + '">' + mkSgn(x.dist_high52_pct) + '%</td>' +
+          '<td class="text-right tabular ' + ((x.ret5_pct || 0) >= 0 ? 'text-emerald-400' : 'text-rose-400') + '">' + mkSgn(x.ret5_pct) + '%</td>' +
+          '<td class="text-right tabular text-slate-400">' + fmt(x.v20_usd || 0, 0) + '</td></tr>').join("") +
         '</tbody></table></div>';
     }
     h += '<div class="mt-2 text-[11px] text-slate-500">' + (j.notes || []).map(esc).join(" · ") + '</div>';

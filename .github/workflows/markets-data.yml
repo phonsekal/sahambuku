@@ -1,4 +1,4 @@
-name: Data & Ukur Pasar AS + Crypto
+name: Data & Ukur Pasar AS + ETF + Crypto
 
 # KENAPA CRON INI ADA DI LUAR VERCEL:
 # Screener IDX dilayani dari daftar emiten + kuota IDX Edge, tetapi untuk AS & crypto
@@ -27,11 +27,11 @@ on:
   workflow_dispatch:
     inputs:
       market:
-        description: "Pasar yang diukur"
+        description: "Pasar yang diukur ('both' = us + etf + crypto)"
         required: true
         default: "both"
         type: choice
-        options: ["both", "us", "crypto"]
+        options: ["both", "us", "etf", "crypto"]
       us_limit:
         description: "Batasi jumlah saham AS (kosong = seluruh pasar)"
         required: false
@@ -89,9 +89,28 @@ jobs:
           python research/markets/pull.py "${ARGS[@]}" 2>&1 | tee research/markets/reports/pull_us.log || true
           if [ -f research/.cache/markets/us_panel.pkl ]; then
             python research/markets/study.py --market us 2>&1 | tee research/markets/reports/report_us.txt || true
+            # Verifikasi EKSEKUSI (likuiditas, slippage, masuk-di-open) — bukan pemasangan.
+            python research/markets/execute_us.py 2>&1 | tee research/markets/reports/report_us_exec.txt || true
           else
             echo "Panel AS tidak terbentuk — laporan dilewati (lihat pull_us.log)" \
               | tee research/markets/reports/report_us.txt
+          fi
+
+      - name: Tarik + ukur ETF
+        if: steps.m.outputs.market == 'both' || steps.m.outputs.market == 'etf'
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          mkdir -p research/markets/reports
+          python research/markets/pull.py --market etf --period 5y --chunk 250 \
+            2>&1 | tee research/markets/reports/pull_etf.log || true
+          if [ -f research/.cache/markets/etf_panel.pkl ]; then
+            python research/markets/study.py --market etf 2>&1 | tee research/markets/reports/report_etf.txt || true
+            # Verifikasi EKSEKUSI ETF (likuiditas, slippage, masuk-di-open).
+            python research/markets/execute_us.py --market etf 2>&1 | tee research/markets/reports/report_etf_exec.txt || true
+          else
+            echo "Panel ETF tidak terbentuk — laporan dilewati (lihat pull_etf.log)" \
+              | tee research/markets/reports/report_etf.txt
           fi
 
       - name: Tarik + ukur crypto
@@ -110,11 +129,10 @@ jobs:
               | tee research/markets/reports/report_crypto.txt
           fi
 
-      # Ekspor yang dibutuhkan runtime: snapshot harga ringkas (hanya pasar yang
-      # memang dipasang, saat ini crypto) + ringkasan hasil ukur untuk endpoint
-      # /api/markets/study dan tab dashboard. AS sengaja TIDAK diekspor penuh
-      # (puluhan MB) dan belum punya aturan yang lolos.
-      - name: Ekspor snapshot + ringkasan ukur
+      # Ekspor yang dibutuhkan runtime: snapshot harga ringkas (crypto) + KEADAAN
+      # TURUNAN saham AS & ETF (satu baris/ticker, bukan panel penuh yang puluhan MB)
+      # + ringkasan hasil ukur untuk /api/markets/study dan tab dashboard.
+      - name: Ekspor snapshot + keadaan turunan + ringkasan ukur
         if: always()
         continue-on-error: true
         run: |
@@ -125,6 +143,18 @@ jobs:
             python research/markets/export.py --market crypto --bars 220 2>&1 | tee -a research/markets/reports/export.log || true
           else
             echo "Panel crypto tidak ada — ekspor dilewati" | tee -a research/markets/reports/export.log
+          fi
+          if [ -f research/.cache/markets/us_panel.pkl ]; then
+            # Keadaan turunan (close, SMA20/50/200, high52, ret5, tanda aturan) — ratusan KB.
+            python research/markets/export.py --market us --state 2>&1 | tee -a research/markets/reports/export.log || true
+          else
+            echo "Panel AS tidak ada — keadaan turunan dilewati" | tee -a research/markets/reports/export.log
+          fi
+          if [ -f research/.cache/markets/etf_panel.pkl ]; then
+            # Keadaan turunan ETF (kolom sama, panelnya berbeda) — pasar TERPISAH dari AS.
+            python research/markets/export.py --market etf --state 2>&1 | tee -a research/markets/reports/export.log || true
+          else
+            echo "Panel ETF tidak ada — keadaan turunan dilewati" | tee -a research/markets/reports/export.log
           fi
           python research/markets/summary.py 2>&1 | tee -a research/markets/reports/export.log || true
 
@@ -139,11 +169,15 @@ jobs:
           # menyimpan meta lama (74/260) sementara CSV & ringkasannya sudah 91/220 —
           # cakupan di dashboard jadi bisa berbeda dari isi snapshot yang sebenarnya.
           git add research/markets/reports api/market_crypto.csv \
-            api/market_crypto_meta.json api/market_study.json 2>/dev/null || true
+            api/market_crypto_meta.json api/market_study.json \
+            api/market_us_state.csv api/market_us_state_meta.json \
+            api/market_us_exec.json \
+            api/market_etf_state.csv api/market_etf_state_meta.json \
+            api/market_etf_exec.json 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "Tidak ada perubahan laporan."
           else
-            git commit -m "Perbarui laporan ukur pasar AS & crypto (otomatis)"
+            git commit -m "Perbarui laporan ukur pasar AS, ETF & crypto (otomatis)"
             git push || echo "Push ditolak (mungkin ada perubahan lain) — laporan tetap ada di artefak."
           fi
 
