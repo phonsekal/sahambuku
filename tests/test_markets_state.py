@@ -333,9 +333,15 @@ class TestStudyMinValueHonoured(unittest.TestCase):
                                   "a20": 1.0, "m20": 1.0, "t20": 3.0,
                                   "net20": 1.0, "p20": "+1.00/+1.00"}])
 
-        with mock.patch.object(ST, "measure", side_effect=fake_measure):
+        import contextlib, io
+        buf = io.StringIO()
+        with mock.patch.object(ST, "measure", side_effect=fake_measure), \
+                contextlib.redirect_stdout(buf):
             ST.report(S, "etf", ["x"], benchmark=None, min_value_usd=20_000_000)
         self.assertEqual(seen["min_value_usd"], 20_000_000)
+        # Ambang HARUS tertulis di kepala laporan (kalau tersembunyi, run berikutnya
+        # bisa salah menyimpulkan "BEDA" lagi).
+        self.assertIn("min nilai 20,000,000 USD/hari", buf.getvalue())
 
     def test_parse_report_membaca_min_value_dari_kepala(self):
         import tempfile
