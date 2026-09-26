@@ -242,15 +242,24 @@ def verdict(row: pd.Series) -> str:
 
 
 def report(S: pd.DataFrame, market: str, signals: List[str],
-           benchmark: Optional[str] = None) -> pd.DataFrame:
-    tab = measure(S, market, signals)
+           benchmark: Optional[str] = None,
+           min_value_usd: float = MIN_VALUE_USD) -> pd.DataFrame:
+    # `min_value_usd` HARUS diteruskan ke measure(): dulu tidak, sehingga
+    # `--min-value` diabaikan dan laporan memakai default $1 jt. Itu membuat study.py
+    # (default) dan backtest_screener.py (yang MEMANG meneruskan --min-value) mengukur
+    # aturan yang sama di panel yang sama tetapi dengan saringan berbeda — angkanya
+    # lalu tampak "BEDA" padahal mesin ukurnya benar. Ambang DITULIS di kepala laporan
+    # supaya tidak bisa lagi tersembunyi.
+    tab = measure(S, market, signals, min_value_usd=min_value_usd)
     tab["putusan"] = tab.apply(verdict, axis=1)
     pembanding = (f"pembanding {benchmark} (pasar)" if benchmark
                   else "pembanding rata-rata lintas-aset pada tanggal yang sama")
+    saring = (f"min nilai {min_value_usd:,.0f} USD/hari" if min_value_usd
+              else "tanpa saringan likuiditas")
     print(f"\n=== {market.upper()} · {S['code'].nunique()} ticker · "
           f"{len(S):,} baris · {S['date'].min().date()} -> {S['date'].max().date()} · "
           f"biaya {COST.get(market, 0.003) * 100:.1f}% · "
-          f"return dipotong di +/-{WINSOR_PCT:.0f}% · {pembanding}")
+          f"return dipotong di +/-{WINSOR_PCT:.0f}% · {saring} · {pembanding}")
     print(f"{'aturan':<32}{'n':>8}  {'a5':>7}{'t5':>7}  {'a20':>7}{'m20':>7}{'t20':>7}"
           f"  {'net20':>7}  {'paruh20':>14}  putusan")
     for _, r in tab.sort_values("a20", ascending=False).iterrows():
@@ -313,7 +322,8 @@ def main() -> int:
     S = build_frame(panel, args.market, benchmark=args.benchmark)
     sigs = [c for c in S.columns if c not in ("code", "date", "v20")
             and not c.startswith(("fwd", "excg"))]
-    report(S, args.market, sigs, benchmark=args.benchmark)
+    report(S, args.market, sigs, benchmark=args.benchmark,
+           min_value_usd=args.min_value)
     return 0
 
 

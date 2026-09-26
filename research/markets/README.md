@@ -296,9 +296,15 @@ Permukaan produksi:
 `backtest_screener.py` mengukur ulang aturan yang DISAJIKAN screener pada panel yang
 SAMA yang dipakai `study.py` (mesin ukur dipakai ulang, bukan ditulis ulang), lalu
 membandingkan `a20`/`m20`/`net20` dengan `api/market_study.json`. Hasilnya ditulis ke
-`reports/backtest_<pasar>.json` dan dijalankan otomatis di pipeline CI (langkah ini
-berjalan SEBELUM ringkasan ukur, sehingga angkanya ikut dilampirkan ke
-`api/market_study.json` pada `markets.<pasar>.backtest` dan ditampilkan di dashboard):
+`reports/backtest_<pasar>.json` dan dijalankan otomatis di pipeline CI — **setelah**
+ringkasan ukur (supaya pembandingnya adalah `api/market_study.json` yang baru saja
+ditulis di run ini, bukan run sebelumnya), lalu ringkasan dijalankan sekali lagi
+tanpa jaringan untuk melampirkan angkanya ke `markets.<pasar>.backtest` yang dibaca
+dashboard. Urutan ini penting: pernah langkah backtest jalan sebelum ringkasan,
+sehingga saat ambang study berubah seluruh tabel tampak "BEDA" walau mesin ukurnya
+benar (alarm palsu). Ambang `--min-value` study.py dan backtest HARUS sama; ambang
+itu kini juga ditulis di kepala laporan dan dibaca `summary.py` sebagai
+`min_value_usd`, jadi ketidakcocokan terlihat, bukan tersembunyi:
 
 ```bash
 .venv/bin/python research/markets/backtest_screener.py --market crypto

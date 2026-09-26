@@ -136,30 +136,6 @@ jobs:
               | tee research/markets/reports/report_crypto.txt
           fi
 
-      # Backtest AKURASI screener: mengukur ulang aturan yang DISAJIKAN screener pada
-      # panel yang SAMA yang dipakai study, lalu membandingkan angkanya dengan
-      # api/market_study.json. Kalau tidak sama, ada yang menyimpang antara yang
-      # disajikan dan yang diukur. Dijalankan SEBELUM ringkasan ukur supaya angka
-      # backtest yang segar ikut dilampirkan ke api/market_study.json (dipakai
-      # dashboard). ETF diuji --all-rules supaya keputusan menunya punya buktinya.
-      - name: Backtest akurasi screener
-        if: always()
-        continue-on-error: true
-        run: |
-          set -uo pipefail
-          if [ -f research/.cache/markets/us_panel.pkl ]; then
-            python research/markets/backtest_screener.py --market us \
-              2>&1 | tee -a research/markets/reports/backtest.log || true
-          fi
-          if [ -f research/.cache/markets/etf_panel.pkl ]; then
-            python research/markets/backtest_screener.py --market etf --all-rules --benchmark SPY --min-value 20000000 \
-              2>&1 | tee -a research/markets/reports/backtest.log || true
-          fi
-          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
-            python research/markets/backtest_screener.py --market crypto \
-              2>&1 | tee -a research/markets/reports/backtest.log || true
-          fi
-
       # Ekspor yang dibutuhkan runtime: snapshot harga ringkas (crypto) + KEADAAN
       # TURUNAN saham AS & ETF (satu baris/ticker, bukan panel penuh yang puluhan MB)
       # + ringkasan hasil ukur untuk /api/markets/study dan tab dashboard.
@@ -187,6 +163,46 @@ jobs:
           else
             echo "Panel ETF tidak ada — keadaan turunan dilewati" | tee -a research/markets/reports/export.log
           fi
+          python research/markets/summary.py 2>&1 | tee -a research/markets/reports/export.log || true
+
+      # Backtest AKURASI screener: mengukur ulang aturan yang DISAJIKAN screener pada
+      # panel yang SAMA dengan study, lalu membandingkan angkanya dengan
+      # api/market_study.json — berkas yang benar-benar dibaca dashboard.
+      #
+      # URUTAN PENTING: langkah ini HARUS setelah ringkasan ukur. Dulu ia jalan
+      # sebelum summary, sehingga pembandingnya adalah api/market_study.json dari run
+      # SEBELUMNYA. Begitu ambang/parameter study berubah, seluruh tabel langsung
+      # tampak "BEDA" walau mesin ukurnya benar — persis alarm palsu yang terjadi saat
+      # ambang ETF dinaikkan ke $20 jt. Sekarang pembandingnya = ringkasan run ini.
+      # Setelah backtest, ringkasan dijalankan ULANG (langkah berikut) supaya angka
+      # segar ini ikut dilampirkan ke api/market_study.json.
+      - name: Backtest akurasi screener
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
+          if [ -f research/.cache/markets/us_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market us \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+          if [ -f research/.cache/markets/etf_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market etf --all-rules --benchmark SPY --min-value 20000000 \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+          if [ -f research/.cache/markets/crypto_panel.pkl ]; then
+            python research/markets/backtest_screener.py --market crypto \
+              2>&1 | tee -a research/markets/reports/backtest.log || true
+          fi
+
+      # Tempelkan hasil backtest yang baru ke api/market_study.json. summary.py
+      # membaca reports/backtest_<pasar>.json bila ada, jadi menjalankannya sekali lagi
+      # (tanpa jaringan) cukup — dan deterministik. Tanpa langkah ini, dashboard akan
+      # memuat angka backtest dari run sebelumnya.
+      - name: Tempelkan hasil backtest ke ringkasan
+        if: always()
+        continue-on-error: true
+        run: |
+          set -uo pipefail
           python research/markets/summary.py 2>&1 | tee -a research/markets/reports/export.log || true
 
       # Selalu jalan: laporan pasar yang berhasil tidak boleh hilang karena pasar lain gagal.

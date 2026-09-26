@@ -110,10 +110,15 @@ _ROW_RE = re.compile(
     r"(?P<a20>[+\-][\d.]+)\s+(?P<m20>[+\-][\d.]+)\s+(?P<t20>[+\-][\d.]+)\s+"
     r"(?P<net20>[+\-][\d.]+)\s+(?P<halves>\S+)\s+(?P<putusan>\S+)\s*$"
 )
+# Ambang likuiditas ikut dibaca dari kepala laporan. Kalau study.py dan backtest
+# memakai ambang BERBEDA, angkanya akan tampak "BEDA" walau mesin ukurnya benar —
+# itu persis bug yang pernah terjadi (study.py mengabaikan --min-value). Dengan
+# ambang tertulis & terbaca, ketidakcocokan seperti itu bisa dideteksi, bukan disembunyikan.
 _HEAD_RE = re.compile(
     r"^===\s*(?P<market>[A-Z]+)\s*·\s*(?P<tickers>[\d,]+)\s*ticker\s*·\s*"
     r"(?P<rows>[\d,]+)\s*baris\s*·\s*(?P<start>\S+)\s*->\s*(?P<end>\S+)\s*·\s*"
     r"biaya\s*(?P<cost>[\d.]+)%(?:\s*·\s*return dipotong di \+/-(?P<winsor>[\d.]+)%)?"
+    r"(?:\s*·\s*(?:min nilai (?P<minval>[\d,]+) USD/hari|tanpa saringan likuiditas))?"
 )
 
 
@@ -160,6 +165,8 @@ def parse_report(path: str) -> Optional[dict]:
                         "start": d["start"], "as_of": d["end"],
                         "cost_pct": float(d["cost"]),
                         "winsor_pct": float(d["winsor"]) if d.get("winsor") else None,
+                        "min_value_usd": (float(d["minval"].replace(",", ""))
+                                          if d.get("minval") else 0.0),
                     }
                 continue
             m = _ROW_RE.match(line)

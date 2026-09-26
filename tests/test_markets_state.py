@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(ROOT, "research", "markets"))   # export/summary
 import export as EXP        # noqa: E402
 import index as IDX         # noqa: E402
 import state_rules as SR    # noqa: E402
+import study as ST          # noqa: E402
 import summary as SUM       # noqa: E402
 import universe as UNI      # noqa: E402
 
@@ -310,6 +311,69 @@ class TestSummaryEtfInstall(unittest.TestCase):
             ["pullback di uptrend", "di atas SMA200", "dekat puncak 52m"])
         self.assertEqual([c["key"] for c in got],
                          ["pullback_uptrend", "above_sma200", "near_high52"])
+
+
+class TestStudyMinValueHonoured(unittest.TestCase):
+    """Bug yang pernah terjadi: study.py MENGABAIKAN `--min-value`, sehingga laporan
+    diukur dengan ambang default ($1 jt) sementara backtest_screener.py memakai ambang
+    yang diminta ($20 jt). Panel sama, mesin ukur sama, tetapi angka tampak "BEDA" —
+    yang tampak seperti kerusakan pasar padahal kerusakan WIRING. Uji ini mengunci
+    perbaikan itu supaya tidak kembali.
+    """
+
+    def test_report_meneruskan_min_value_ke_measure(self):
+        S = pd.DataFrame({"code": ["AAA"], "date": [pd.Timestamp("2026-01-02")],
+                          "v20": [5_000_000.0]})
+        seen: dict = {}
+
+        def fake_measure(sframe, market, signals, min_value_usd=None):
+            seen["min_value_usd"] = min_value_usd
+            seen["market"] = market
+            return pd.DataFrame([{"aturan": "x", "n": 1, "a5": 1.0, "t5": 1.0,
+                                  "a20": 1.0, "m20": 1.0, "t20": 3.0,
+                                  "net20": 1.0, "p20": "+1.00/+1.00"}])
+
+        with mock.patch.object(ST, "measure", side_effect=fake_measure):
+            ST.report(S, "etf", ["x"], benchmark=None, min_value_usd=20_000_000)
+        self.assertEqual(seen["min_value_usd"], 20_000_000)
+
+    def test_parse_report_membaca_min_value_dari_kepala(self):
+        import tempfile
+        head = ("=== ETF · 3600 ticker · 2,890,729 baris · 2021-09-27 -> 2026-09-25 · "
+                "biaya 0.3% · return dipotong di +/-100% · min nilai 20,000,000 USD/hari · "
+                "pembanding SPY (pasar)\n")
+        row = ("mom5d>=10%                          3,498    +0.19   +1.2    "
+               "+0.02  +0.24   +0.0    +1.82     -0.77/+0.81  EKOR\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(head + row)
+            path = fh.name
+        try:
+            rep = SUM.parse_report(path)
+        finally:
+            os.unlink(path)
+        self.assertIsNotNone(rep)
+        self.assertEqual(rep["min_value_usd"], 20_000_000.0)
+        self.assertEqual(rep["winsor_pct"], 100.0)   # tidak rusak oleh tambahan segmen
+        self.assertEqual(rep["rows"], 2890729)
+
+    def test_parse_report_tanpa_saringan_dibaca_sebagai_nol(self):
+        import tempfile
+        head = ("=== US · 10 ticker · 1,000 baris · 2021-01-01 -> 2026-01-01 · "
+                "biaya 0.3% · return dipotong di +/-100% · tanpa saringan likuiditas "
+                "· pembanding rata-rata lintas-aset pada tanggal yang sama\n")
+        row = ("di atas SMA20                         1,000    +0.10   +2.0    "
+               "+0.20  +0.30  +10.0    +0.10     +0.10/+0.30  SEPAKAT\n")
+        with tempfile.NamedTemporaryFile("w", suffix=".txt", delete=False,
+                                         encoding="utf-8") as fh:
+            fh.write(head + row)
+            path = fh.name
+        try:
+            rep = SUM.parse_report(path)
+        finally:
+            os.unlink(path)
+        self.assertIsNotNone(rep)
+        self.assertEqual(rep["min_value_usd"], 0.0)
 
 
 class TestSchemaConsistency(unittest.TestCase):
