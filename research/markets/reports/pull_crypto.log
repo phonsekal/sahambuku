@@ -8,11 +8,11 @@
   CoinGecko gagal untuk bitway: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk hashnote-usyc: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk blockchain-capital: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk eutbl: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk blockchain-capital: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk eutbl: HTTP Error 401: Unauthorized
   CoinGecko gagal untuk superstate-short-duration-us-government-securities-fund-ustb: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk janus-henderson-anemoy-aaa-clo-fund: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk janus-henderson-anemoy-aaa-clo-fund: HTTP Error 401: Unauthorized
   SWEEP selesai — total dapat 91 ticker
 [crypto] panel: 122,370 saham-hari · 91 ticker · 2021-09-25 -> 2026-09-25
 [crypto] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/crypto_panel.pkl

@@ -1,6 +1,6 @@
 Panel crypto: 122,370 saham-hari · 91 ticker
 
-=== CRYPTO · 91 ticker · 122,370 baris · 2021-09-25 -> 2026-09-25 · biaya 0.5% · return dipotong di +/-100% · pembanding rata-rata lintas-aset pada tanggal yang sama
+=== CRYPTO · 91 ticker · 122,370 baris · 2021-09-25 -> 2026-09-25 · biaya 0.5% · return dipotong di +/-100% · min nilai 1,000,000 USD/hari · pembanding rata-rata lintas-aset pada tanggal yang sama
 aturan                                 n       a5     t5      a20    m20    t20    net20         paruh20  putusan
 mom5d>=10% + tembus high20         2,897    +1.50   +5.0    +5.52  +7.52   +8.6    +6.41     +1.46/+9.58  SEPAKAT
 tembus high50                      2,777    +1.24   +3.6    +4.45  +6.41   +8.6    +5.96     -0.46/+9.36  SEPAKAT
