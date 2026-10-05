@@ -3,17 +3,8 @@
   [1] checkpoint ada — dilewati
   [2] checkpoint ada — dilewati
   [3] checkpoint ada — dilewati
-  SWEEP: 10 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
-  CoinGecko gagal untuk rain: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk bitway: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk hashnote-usyc: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 401: Unauthorized
-  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk blockchain-capital: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk superstate-short-duration-us-government-securities-fund-ustb: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk eutbl: HTTP Error 429: Too Many Requests
-  CoinGecko gagal untuk janus-henderson-anemoy-aaa-clo-fund: HTTP Error 429: Too Many Requests
+  SWEEP: 11 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
   SWEEP selesai — total dapat 92 ticker
-[crypto] 1 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
-[crypto] panel: 122,722 saham-hari · 91 ticker · 2021-09-25 -> 2026-09-28
+[crypto] 3 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
+[crypto] panel: 119,759 saham-hari · 89 ticker · 2021-09-25 -> 2026-09-25
 [crypto] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/crypto_panel.pkl

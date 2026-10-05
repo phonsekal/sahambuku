@@ -1,8 +1,8 @@
-Panel etf: 2,890,729 baris · 3600 ticker
-  ... 1000/3600 ticker
-  ... 2000/3600 ticker
-  ... 3000/3600 ticker
-=== VERIFIKASI EKSEKUSI ETF · 3600 ticker · 2,890,729 baris · biaya 0.3% · return dipotong +/-100%
+Panel etf: 2,891,282 baris · 3609 ticker
+  ... 1000/3609 ticker
+  ... 2000/3609 ticker
+  ... 3000/3609 ticker
+=== VERIFIKASI EKSEKUSI ETF · 3609 ticker · 2,891,282 baris · biaya 0.3% · return dipotong +/-100%
 Pertanyaan: apakah alpha study BERTAHAN saat likuiditas, slippage, dan masuk-di-open diperhitungkan?
 aturan                         n    v20 median  >=5jt   net close  net open   open +slip 0,5%
 pullback di uptrend      150,927        65.4jt   100%       +0.58     +0.53             +0.03
