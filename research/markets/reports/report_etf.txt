@@ -1,13 +1,13 @@
-Panel etf: 2,891,282 saham-hari · 3609 ticker
-  ... 500/3609 ticker
-  ... 1000/3609 ticker
-  ... 1500/3609 ticker
-  ... 2000/3609 ticker
-  ... 2500/3609 ticker
-  ... 3000/3609 ticker
-  ... 3500/3609 ticker
+Panel etf: 2,889,083 saham-hari · 3612 ticker
+  ... 500/3612 ticker
+  ... 1000/3612 ticker
+  ... 1500/3612 ticker
+  ... 2000/3612 ticker
+  ... 2500/3612 ticker
+  ... 3000/3612 ticker
+  ... 3500/3612 ticker
 
-=== ETF · 3609 ticker · 2,891,282 baris · 2021-09-27 -> 2026-10-02 · biaya 0.3% · return dipotong di +/-100% · min nilai 20,000,000 USD/hari · pembanding SPY (pasar)
+=== ETF · 3612 ticker · 2,889,083 baris · 2021-09-27 -> 2026-10-09 · biaya 0.3% · return dipotong di +/-100% · min nilai 20,000,000 USD/hari · pembanding SPY (pasar)
 aturan                                 n       a5     t5      a20    m20    t20    net20         paruh20  putusan
 mom5d>=10%                         3,498    -0.12   -0.7    +0.02  +0.24   +0.0    +1.82     -0.77/+0.81  TIPIS
 golden cross 50/200                  802    +0.32   +4.3    -0.07  +0.46   -0.2    +1.08     -0.99/+0.84  RAPUH
@@ -21,7 +21,7 @@ pullback di uptrend              150,927    -0.17   -7.8    -0.65  -0.23  -12.4 
 di atas SMA50                    218,456    -0.16   -9.5    -0.69  -0.36  -14.3    +0.27     -0.74/-0.64  RAPUH
 turun 5d>=10% di atas SMA200         757    +1.42   +4.2    -0.75  -0.50   -0.5    +0.44     -1.72/+0.22  RAPUH
 puncak 52m baru                   34,750    -0.25   -8.2    -0.76  -0.54  -10.2    +0.42     -0.77/-0.75  RAPUH
-tren naik (SMA20>50)             146,800    -0.14  -12.4    -0.84  -0.60  -13.5    +0.16     -0.91/-0.77  RAPUH
+tren naik (SMA20>50)             146,800    -0.14  -12.4    -0.84  -0.59  -13.5    +0.16     -0.91/-0.77  RAPUH
 dekat puncak 52m                 177,311    -0.24  -18.8    -0.86  -0.45  -19.2    +0.48     -1.30/-0.41  RAPUH
 mom5d>=10% + tembus high20         1,382    -0.28   -0.7    -0.99  -0.81   -1.6    +1.88     -2.59/+0.61  RAPUH
 RSI<30 (jenuh jual)                8,323    -0.09   -0.8    -1.18  -0.77   -4.0    +2.60     -0.69/-1.66  RAPUH
