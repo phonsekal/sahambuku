@@ -3,8 +3,8 @@
   [1] checkpoint ada — dilewati
   [2] checkpoint ada — dilewati
   [3] checkpoint ada — dilewati
-  SWEEP: 13 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
+  SWEEP: 14 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
   SWEEP selesai — total dapat 92 ticker
-[crypto] 5 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
-[crypto] panel: 117,498 saham-hari · 87 ticker · 2021-09-25 -> 2026-09-25
+[crypto] 6 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
+[crypto] panel: 117,207 saham-hari · 86 ticker · 2021-09-25 -> 2026-09-25
 [crypto] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/crypto_panel.pkl

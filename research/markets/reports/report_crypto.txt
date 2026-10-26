@@ -1,24 +1,24 @@
-Panel crypto: 117,498 saham-hari · 87 ticker
+Panel crypto: 117,207 saham-hari · 86 ticker
 
-=== CRYPTO · 87 ticker · 117,498 baris · 2021-09-25 -> 2026-09-25 · biaya 0.5% · return dipotong di +/-100% · min nilai 1,000,000 USD/hari · pembanding rata-rata lintas-aset pada tanggal yang sama
+=== CRYPTO · 86 ticker · 117,207 baris · 2021-09-25 -> 2026-09-25 · biaya 0.5% · return dipotong di +/-100% · min nilai 1,000,000 USD/hari · pembanding rata-rata lintas-aset pada tanggal yang sama
 aturan                                 n       a5     t5      a20    m20    t20    net20         paruh20  putusan
-mom5d>=10% + tembus high20         2,737    +1.30   +2.8    +4.91  +6.83   +8.7    +5.86     +1.09/+8.73  SEPAKAT
-tembus high50                      2,673    +1.16  +10.9    +4.32  +6.19   +9.6    +5.57     -0.45/+9.09  SEPAKAT
-tren naik + tembus high20          2,828    +1.02   +5.4    +4.12  +6.10   +6.1    +4.63     -0.43/+8.67  SEPAKAT
-puncak 52m baru                    1,785    +1.50   +4.1    +3.62  +5.90   +6.0    +5.03     -0.42/+7.65  SEPAKAT
-tembus high20                      4,606    +1.00   +7.6    +3.43  +5.10   +6.9    +4.72     +0.26/+6.60  SEPAKAT
-mom5d>=10%                         9,843    +0.91   +9.5    +2.38  +2.80   +5.2    +1.64     +1.06/+3.70  SEPAKAT
-volume 2x MA20                     4,233    +0.79   +1.9    +1.72  +3.81   +4.8    +4.97     +2.39/+1.05  SEPAKAT
-mom1d>=5%                          7,796    +0.60   +1.3    +1.49  +2.45   +2.6    +1.20     +0.88/+2.09  SEPAKAT
-mom1d>=3%                         14,528    +0.34   +2.2    +0.96  +1.51   +3.2    +0.50     +0.37/+1.55  SEPAKAT
-golden cross 50/200                  240    +0.53   +0.8    +0.83  +4.59   +0.6    +4.69     +0.48/+1.19  TIPIS
-dekat puncak 52m                   8,184    +0.21   +4.1    +0.61  +1.89   +5.3    +2.55     -0.38/+1.60  SEPAKAT
-pullback di uptrend               11,114    -0.10   -1.2    +0.52  +2.28   +3.5    -0.14     +1.38/-0.33  SEPAKAT
-tren naik (SMA20>50)              21,660    +0.34   +4.3    +0.41  +1.06   +3.4    +1.53     -1.06/+1.88  SEPAKAT
-di atas SMA20                     39,083    +0.15   +3.5    +0.41  +0.63   +2.1    +1.30     -0.30/+1.11  SEPAKAT
-di atas SMA200                    32,017    +0.09   +4.2    +0.38  +0.98   +5.5    +0.85     +0.67/+0.09  SEPAKAT
-di atas SMA50                     36,753    +0.12   +3.1    +0.35  +0.86   +3.1    +0.80     +0.10/+0.60  SEPAKAT
-RSI pulih >30                      1,061    -0.02   -0.1    +0.10  +1.61   +0.2    +0.51     -0.12/+0.31  TIPIS
-turun 5d>=10% di atas SMA200       2,195    -0.18   -0.5    -0.54  +1.11   -0.6    -2.66     +1.11/-2.18  RAPUH
-dasar 52m baru (kontrol)           2,342    -0.59   -5.7    -0.94  +0.70   -2.2    +2.57     -1.73/-0.15  RAPUH
-RSI<30 (jenuh jual)                3,255    -0.76   -3.7    -1.59  +0.33   -3.3    +1.97     -3.46/+0.28  RAPUH
+mom5d>=10% + tembus high20         2,737    +1.30   +2.8    +4.92  +6.83   +8.8    +5.86     +1.09/+8.76  SEPAKAT
+tembus high50                      2,673    +1.16  +11.0    +4.34  +6.19   +9.6    +5.57     -0.45/+9.12  SEPAKAT
+tren naik + tembus high20          2,828    +1.02   +5.4    +4.13  +6.10   +6.2    +4.63     -0.43/+8.70  SEPAKAT
+puncak 52m baru                    1,785    +1.51   +4.1    +3.64  +5.90   +6.0    +5.03     -0.42/+7.69  SEPAKAT
+tembus high20                      4,606    +1.00   +7.6    +3.45  +5.10   +6.9    +4.72     +0.26/+6.62  SEPAKAT
+mom5d>=10%                         9,843    +0.91   +9.5    +2.39  +2.80   +5.3    +1.64     +1.06/+3.72  SEPAKAT
+volume 2x MA20                     4,233    +0.79   +1.9    +1.73  +3.81   +4.9    +4.97     +2.39/+1.08  SEPAKAT
+mom1d>=5%                          7,796    +0.61   +1.3    +1.50  +2.45   +2.6    +1.20     +0.88/+2.11  SEPAKAT
+mom1d>=3%                         14,528    +0.34   +2.2    +0.97  +1.51   +3.3    +0.50     +0.37/+1.57  SEPAKAT
+golden cross 50/200                  240    +0.53   +0.8    +0.82  +4.57   +0.6    +4.69     +0.48/+1.17  TIPIS
+dekat puncak 52m                   8,184    +0.21   +4.2    +0.62  +1.89   +5.4    +2.55     -0.38/+1.63  SEPAKAT
+pullback di uptrend               11,114    -0.10   -1.2    +0.54  +2.28   +3.6    -0.14     +1.38/-0.30  SEPAKAT
+tren naik (SMA20>50)              21,660    +0.34   +4.3    +0.42  +1.07   +3.5    +1.53     -1.06/+1.91  SEPAKAT
+di atas SMA20                     39,083    +0.16   +3.6    +0.42  +0.63   +2.2    +1.30     -0.30/+1.14  SEPAKAT
+di atas SMA200                    32,017    +0.09   +4.4    +0.39  +0.98   +5.7    +0.85     +0.67/+0.12  SEPAKAT
+di atas SMA50                     36,753    +0.12   +3.2    +0.36  +0.86   +3.2    +0.80     +0.10/+0.62  SEPAKAT
+RSI pulih >30                      1,061    -0.02   -0.1    +0.11  +1.61   +0.2    +0.51     -0.12/+0.33  TIPIS
+turun 5d>=10% di atas SMA200       2,195    -0.18   -0.5    -0.52  +1.11   -0.6    -2.66     +1.11/-2.15  RAPUH
+dasar 52m baru (kontrol)           2,342    -0.58   -5.7    -0.92  +0.71   -2.1    +2.57     -1.73/-0.12  RAPUH
+RSI<30 (jenuh jual)                3,255    -0.76   -3.6    -1.58  +0.33   -3.2    +1.97     -3.46/+0.30  RAPUH
