@@ -1,4 +1,4 @@
-[us] 5886 ticker · period=5y · chunk=250
+[us] 5882 ticker · period=5y · chunk=250
   [0] checkpoint ada — dilewati
   [1] checkpoint ada — dilewati
   [2] checkpoint ada — dilewati
@@ -23,8 +23,8 @@
   [21] checkpoint ada — dilewati
   [22] checkpoint ada — dilewati
   [23] checkpoint ada — dilewati
-  SWEEP: 85 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
+  SWEEP: 83 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
   SWEEP selesai — total dapat 5828 ticker
-[us] 12 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
-[us] panel: 6,327,179 saham-hari · 5816 ticker · 2021-11-01 -> 2026-11-06
+[us] 29 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
+[us] panel: 6,309,391 saham-hari · 5799 ticker · 2021-11-01 -> 2026-11-06
 [us] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/us_panel.pkl
