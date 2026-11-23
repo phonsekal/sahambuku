@@ -1,13 +1,13 @@
-Panel etf: 2,923,721 baris · 3666 ticker
-  ... 1000/3666 ticker
-  ... 2000/3666 ticker
-  ... 3000/3666 ticker
-=== VERIFIKASI EKSEKUSI ETF · 3666 ticker · 2,923,721 baris · biaya 0.3% · return dipotong +/-100%
+Panel etf: 2,957,169 baris · 3695 ticker
+  ... 1000/3695 ticker
+  ... 2000/3695 ticker
+  ... 3000/3695 ticker
+=== VERIFIKASI EKSEKUSI ETF · 3695 ticker · 2,957,169 baris · biaya 0.3% · return dipotong +/-100%
 Pertanyaan: apakah alpha study BERTAHAN saat likuiditas, slippage, dan masuk-di-open diperhitungkan?
 aturan                         n    v20 median  >=5jt   net close  net open   open +slip 0,5%
-pullback di uptrend      156,788        65.5jt   100%       +0.51     +0.46             -0.04
-di atas SMA200           245,084        67.2jt   100%       +0.65     +0.59             +0.09
-dekat puncak 52m         180,821        64.6jt   100%       +0.47     +0.43             -0.07
+pullback di uptrend      158,941        65.6jt   100%       +0.43     +0.39             -0.11
+di atas SMA200           248,223        67.2jt   100%       +0.56     +0.50             +0.00
+dekat puncak 52m         182,866        64.5jt   100%       +0.41     +0.37             -0.13
 
 Bacaan: 'net close' = seperti study (masuk di close hari sinyal). 'net open' = masuk di open besok (yang benar-benar bisa dibeli). Kalau 'net open' di slippage 0,5% sudah <= 0, aturan itu belum layak dipasang ke menu tanpa eksekusi yang jauh lebih baik.
 

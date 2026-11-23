@@ -1,10 +1,55 @@
 [crypto] 100 ticker · period=5y · chunk=25
-  [0] checkpoint ada — dilewati
-  [1] checkpoint ada — dilewati
-  [2] checkpoint ada — dilewati
-  [3] checkpoint ada — dilewati
+  [0] menarik 25 ticker ...
+    HYPE: diisi dari Kraken (HYPEUSD)
+    CC: diisi dari Kraken (CCUSD)
+    USD1: diisi dari Kraken (USD1USD)
+    UNI: diisi dari Kraken (UNIUSD)
+    SUI: diisi dari Kraken (SUIUSD)
+  [0] tersimpan 25 ticker
+  [1] menarik 25 ticker ...
+    TAO: diisi dari Kraken (TAOUSD)
+    U: diisi dari Kraken (UUSD)
+    PEPE: diisi dari Kraken (PEPEUSD)
+    WLFI: diisi dari Kraken (WLFIUSD)
+    ASTER: diisi dari Kraken (ASTERUSD)
+    VVV: diisi dari Kraken (VVVUSD)
+  CoinGecko gagal untuk rain: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk hashnote-usyc: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 401: Unauthorized
+  CoinGecko gagal untuk mantle: HTTP Error 429: Too Many Requests
+  [1] tersimpan 20 ticker
+  [2] menarik 25 ticker ...
+    MORPHO: diisi dari Kraken (MORPHOUSD)
+    PUMP: diisi dari Kraken (PUMPUSD)
+    POL: diisi dari Kraken (POLUSD)
+  CoinGecko gagal untuk bitway: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk pearl-2: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk superstate-short-duration-us-government-securities-fund-ustb: HTTP Error 429: Too Many Requests
+  [2] tersimpan 22 ticker
+  [3] menarik 25 ticker ...
+    PI: diisi dari Kraken (PIUSD)
+    LIT: diisi dari Kraken (LITUSD)
+    STX: diisi dari Kraken (STXUSD)
+    ZRO: diisi dari Kraken (ZROUSD)
+    STABLE: diisi dari Kraken (STABLEUSD)
+    DRV: diisi dari Kraken (DRVUSD)
+  CoinGecko gagal untuk janus-henderson-anemoy-aaa-clo-fund: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk eutbl: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk bianrensheng: HTTP Error 429: Too Many Requests
+  [3] tersimpan 22 ticker
   SWEEP: 11 ticker belum dapat — paling banyak 900 dicoba ulang pelan-pelan (sisanya tunggu run berikutnya)
-  SWEEP selesai — total dapat 92 ticker
-[crypto] 3 ticker dari cache lama di luar universe saat ini — dibuang (universe berubah).
-[crypto] panel: 119,369 saham-hari · 89 ticker · 2021-11-02 -> 2026-11-09
+    MNT: diisi dari Kraken (MNTUSD)
+  CoinGecko gagal untuk rain: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk spiko-amundi-overnight-swap-fund-eur: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk hashnote-usyc: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk blackrock-usd-institutional-digital-liquidity-fund: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk bitway: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk pearl-2: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk superstate-short-duration-us-government-securities-fund-ustb: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk janus-henderson-anemoy-aaa-clo-fund: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk eutbl: HTTP Error 429: Too Many Requests
+  CoinGecko gagal untuk bianrensheng: HTTP Error 429: Too Many Requests
+  SWEEP selesai — total dapat 90 ticker
+[crypto] panel: 120,332 saham-hari · 90 ticker · 2021-11-23 -> 2026-11-23
 [crypto] tersimpan: /home/runner/work/sahambuku/sahambuku/research/markets/../.cache/markets/crypto_panel.pkl
